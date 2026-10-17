@@ -1,0 +1,23 @@
+# =============================================================================
+# lib/30_complex.math — Non-Consuming Complex Struct & Overloaded Operations
+# =============================================================================
+
+[complex_ext]
+<[arith]
+
+# Non-consuming struct type (constructed only via operations)
+$complex(re:real, im:real)
+
+# Constructing `complex` from consuming `real` and `iota` (`1 + 1i`, `3 - 4i`)
+(a:real) "+" (b:iota) :<50 -> complex = complex(a, @raw(b))
+(a:real) "-" (b:iota) :<50 -> complex = complex(a, -@raw(b))
+(a:iota) "+" (b:real) :<50 -> complex = complex(b, @raw(a))
+
+# Overloaded arithmetic on `complex` numbers
+(a:complex) "+" (b:complex) :<50 -> complex = complex(a.re + b.re, a.im + b.im)
+(a:complex) "-" (b:complex) :<50 -> complex = complex(a.re - b.re, a.im - b.im)
+(a:complex) "*" (b:complex) :<60 -> complex =
+    complex(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re)
+
+"conj"(z:complex) -> complex = complex(z.re, -z.im)
+"cabs"(z:complex) -> real    = √(z.re^2 + z.im^2)

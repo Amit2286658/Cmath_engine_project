@@ -1,0 +1,36 @@
+# =============================================================================
+# lib/20_trig.math — Trigonometric, Transcendental & Number Theory Functions
+# =============================================================================
+
+[trig]
+<[arith]
+
+"sin"(x:real)   -> real = @sin(x)
+"cos"(x:real)   -> real = @cos(x)
+"tan"(x:real)   -> real = @tan(x)
+"asin"(x:real)  -> real = @asin(x)
+"acos"(x:real)  -> real = @acos(x)
+"atan"(x:real)  -> real = @atan(x)
+"atan2"(y:real, x:real) -> real = @atan2(y, x)
+"ln"(x:real)    -> real = @ln(x)
+"log10"(x:real) -> real = @log10(x)
+"exp"(x:real)   -> real = @exp(x)
+"abs"(x:real)   -> real = @abs(x)
+"floor"(x:real) -> real = @floor(x)
+"ceil"(x:real)  -> real = @ceil(x)
+"hypot"(a:real, b:real) -> real = √(a^2 + b^2)
+
+# Conditional branch function using `if` from `00_bootstrap.math`
+"abs_diff"(a:real, b:real) -> real = if(a < b, b - a, a - b)
+
+# Multi-instruction Euclidean GCD using `;`, `:=`, `=`, and `??` from `00_bootstrap.math`
+"gcd"(a:real, b:real) -> real = (
+    x := a;
+    y := b;
+    (y > 0) ?? (
+        t := x % y;
+        x = y;
+        y = t
+    );
+    x
+)

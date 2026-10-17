@@ -1,0 +1,22 @@
+# =============================================================================
+# lib/40_geom.math — Flat C-Style Structs (`$vec2`, Nested `$circle`)
+# =============================================================================
+
+[geom_ext]
+<[arith]
+
+$vec2(x:real, y:real)
+$circle(center:vec2, radius:real)
+
+(a:vec2) "+" (b:vec2) :<50 -> vec2 = vec2(a.x + b.x, a.y + b.y)
+(a:vec2) "-" (b:vec2) :<50 -> vec2 = vec2(a.x - b.x, a.y - b.y)
+"dot"(a:vec2, b:vec2) -> real = a.x * b.x + a.y * b.y
+
+# Multi-instruction struct field mutation using `;` and `=` from `00_bootstrap.math`
+"move_circle"(c:circle, dx:real, dy:real) -> circle = (
+    c.center.x = c.center.x + dx;
+    c.center.y = c.center.y + dy;
+    c
+)
+
+"circle_area"(c:circle) -> real = π * c.radius^2

@@ -1,0 +1,60 @@
+# =============================================================================
+# lib/10_arith.math — Core Arithmetic, Comparisons & Multi-Char Operators
+# =============================================================================
+
+[arith]
+<[boot_types]
+<[boot_control]
+
+# Basic Left-Associative Infix Arithmetic (:<prec)
+(a:real) "+" (b:real) :<50 -> real = @add(a, b)
+(a:real) "-" (b:real) :<50 -> real = @sub(a, b)
+(a:real) "*" (b:real) :<60 -> real = @mul(a, b)
+(a:real) "/" (b:real) :<60 -> real = @div(a, b)
+(a:real) "%" (b:real) :<60 -> real = @mod(a, b)
+
+# Word-Based Operators Calling `+` and `-` (Inlined at Parse Time!)
+(a:real) "plus"  (b:real) :<45 -> real = a + b
+(a:real) "minus" (b:real) :<45 -> real = a - b
+
+# Right-Associative Infix Exponentiation (:>prec)
+(a:real) "^" (b:real) :>75 -> real = @pow(a, b)
+
+# Comparisons (:<30)
+(a:real) "==" (b:real) :<30 -> real = @eq(a, b)
+(a:real) "!=" (b:real) :<30 -> real = @ne(a, b)
+(a:real) "<"  (b:real) :<30 -> real = @lt(a, b)
+(a:real) "<=" (b:real) :<30 -> real = @le(a, b)
+(a:real) ">"  (b:real) :<30 -> real = @gt(a, b)
+(a:real) ">=" (b:real) :<30 -> real = @ge(a, b)
+
+# Prefix Unary Operators (`"sym" (x:T) :prec`)
+"-"   (x:real) :80 -> real = @neg(x)
+"+"   (x:real) :80 -> real = x
+"√"   (x:real) :80 -> real = @sqrt(x)
+
+# Multi-Character Overlapping Prefix & Postfix Operators (`++`, `+++`, `--`, `---`)
+"++"  (x:real) :85 -> real = x + 1
+"+++" (x:real) :85 -> real = x + 2
+"--"  (x:real) :85 -> real = x - 1
+"---" (x:real) :85 -> real = x - 2
+(x:real) "++"  :90 -> real = x + 1
+(x:real) "+++" :90 -> real = x + 2
+(x:real) "--"  :90 -> real = x - 1
+(x:real) "---" :90 -> real = x - 2
+
+# Postfix Factorial (`(n:real) "!" :90`)
+# Built purely using `;`, `:=`, `=`, and `??` from `00_bootstrap.math`!
+(n:real) "!" :90 -> real = (
+    acc := 1;
+    i   := n;
+    (i > 1) ?? (
+        acc = acc * i;
+        i   = i - 1
+    );
+    acc
+)
+
+# Mathematical Constants
+"π" : real = 3.141592653589793
+"e" : real = 2.718281828459045
