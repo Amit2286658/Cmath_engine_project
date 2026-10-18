@@ -2,7 +2,7 @@
  * sym_table.c — Dynamic Module, Type, Struct, Symbol & Overload Registry Implementation
  */
 
-#include "../Headers/sym_table.h"
+#include "sym_table.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -16,6 +16,7 @@ static const IntrEntry k_intrinsics[] = {
     { "f64_trim1", INTR_PARSE_F64_TRIM1 },
     { "i64",       INTR_PARSE_I64 },
     { "str_slice", INTR_PARSE_STR_SLICE },
+    { "vec_type",  INTR_VEC_TYPE },
     { "lparen",    INTR_LPAREN },
     { "rparen",    INTR_RPAREN },
     { "comma",     INTR_COMMA },
@@ -24,6 +25,17 @@ static const IntrEntry k_intrinsics[] = {
     { "while",     INTR_WHILE },
     { "if",        INTR_IF },
     { "field",     INTR_FIELD },
+    { "vnew",      INTR_VNEW },
+    { "vfill",     INTR_VFILL },
+    { "vpush",     INTR_VPUSH },
+    { "vpop",      INTR_VPOP },
+    { "vget",      INTR_VGET },
+    { "vset",      INTR_VSET },
+    { "vlen",      INTR_VLEN },
+    { "vcap",      INTR_VCAP },
+    { "vresize",   INTR_VRESIZE },
+    { "vshrink",   INTR_VSHRINK },
+    { "vclear",    INTR_VCLEAR },
     { "add",       INTR_ADD },
     { "sub",       INTR_SUB },
     { "mul",       INTR_MUL },
@@ -173,6 +185,10 @@ uint8_t sym_active_meta_tag(const SymTable *tab, uint8_t sym_id, OpFixity fix_fi
 }
 
 uint16_t sym_find_type(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
+    /* Generic type parameter wildcard (`T` or `any`) */
+    if ((len == 1 && name[0] == 'T') || (len == 3 && memcmp(name, "any", 3) == 0)) {
+        return SYM_TYPE_ANY;
+    }
     for (uint16_t i = 1; i < tab->type_count; ++i) {
         if (!sym_mod_enabled(tab, tab->types[i].mod_id)) continue;
         StrSlice s = tab->types[i].name;
@@ -188,7 +204,7 @@ bool sym_resolve_field(const SymTable *tab, const MemArena *mem, uint16_t type_i
                        uint16_t *out_field_type, uint16_t *out_flat_off) {
     if (type_id == 0 || type_id >= tab->type_count) return false;
     const TypeDef *td = &tab->types[type_id];
-    if (td->is_consuming) return false;
+    if (td->is_consuming || td->field_count == 0) return false;
     for (uint8_t i = 0; i < td->field_count; ++i) {
         const FieldDef *fd = &tab->fields[td->start_idx + i];
         if (fd->name.len == flen && memcmp(mem_str_ptr(mem, fd->name), fname, flen) == 0) {
@@ -202,6 +218,10 @@ bool sym_resolve_field(const SymTable *tab, const MemArena *mem, uint16_t type_i
 
 const char *sym_type_name(const SymTable *tab, const MemArena *mem, uint16_t type_id,
                           char *buf, size_t cap) {
+    if (type_id == SYM_TYPE_ANY) {
+        snprintf(buf, cap, "T");
+        return buf;
+    }
     if (type_id == 0 || type_id >= tab->type_count) {
         snprintf(buf, cap, "void");
         return buf;

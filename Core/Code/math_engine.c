@@ -1,26 +1,24 @@
 /*
- * math_engine.c — Top-Level Facade Implementation Tying All Sub-Modules Together
+ * math_engine.c — Top-Level Engine Wrapper Implementation
+ *
+ * Internally loads the precompiled bootstrap and standard `.math` modules
+ * (`stdlib_precompiled.h`) in O(1) `memcpy` time inside `eng_init()` with
+ * zero filesystem or directory dependencies.
  */
 
-#include "../Headers/math_engine.h"
+#include "math_engine.h"
+#include "stdlib_precompiled.h"
 #include <stdio.h>
 #include <string.h>
 
-void eng_init(Engine *eng) {
+void eng_init_blank(Engine *eng) {
     mem_init(&eng->mem);
     sym_init(&eng->sym);
 }
 
-bool eng_boot_dir(Engine *eng, const char *lib_dir_path) {
-    return ext_boot_dir(&eng->mem, &eng->sym, lib_dir_path);
-}
-
-bool eng_load_ext_file(Engine *eng, const char *filepath) {
-    return ext_load_file(&eng->mem, &eng->sym, filepath);
-}
-
-bool eng_load_ext(Engine *eng, const char *ext_src) {
-    return ext_load_str(&eng->mem, &eng->sym, ext_src);
+bool eng_init(Engine *eng) {
+    eng_init_blank(eng);
+    return ext_load_mathc_mem(&eng->mem, &eng->sym, k_stdlib_mathc, sizeof(k_stdlib_mathc));
 }
 
 bool eng_set_module(Engine *eng, const char *mod_name, bool enabled) {
@@ -53,7 +51,18 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
         return false;
     }
 
-    Value res = eval_ast(&eng->mem, &eng->sym, root, 0, 0);
+    uint16_t frame_base = 0;
+    if (P.local_count > 0) {
+        frame_base = mem_push_frame(&eng->mem, P.local_count);
+        for (uint8_t i = 0; i < P.local_count; ++i) {
+            mem_set_slot(&eng->mem, frame_base, i, val_make_f64(&eng->mem, eng->mem.fast_real_type, 0.0));
+        }
+    }
+
+    Value res = eval_ast(&eng->mem, &eng->sym, root, frame_base, 0);
+    if (P.local_count > 0) {
+        mem_pop_frame(&eng->mem, frame_base);
+    }
     if (eng->mem.has_error) return false;
     if (out_val) *out_val = res;
     return true;
@@ -72,7 +81,45 @@ const char *eng_last_error(const Engine *eng) {
 }
 
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
+                             char *buf, size_t cap);
+
+static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
+    uint16_t elem_tid = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 1);
+    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 3);
+    uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)
+                        ? eng->sym.types[elem_tid].flat_size : 1;
+
+    size_t used = (size_t)snprintf(buf, cap, "[");
+    for (uint16_t i = 0; i < len && used < cap; ++i) {
+        uint16_t elem_pidx = (uint16_t)(data_idx + i * stride);
+        char elem_str[96];
+        if (elem_tid == eng->mem.str_type_id && elem_tid != 0) {
+            uint32_t packed = (uint32_t)mem_read_pool(&eng->mem, elem_pidx);
+            StrSlice s = { (uint16_t)(packed >> 16), (uint16_t)(packed & 0xFFFFu) };
+            snprintf(elem_str, sizeof(elem_str), "\"%.*s\"",
+                     (int)s.len, mem_str_ptr(&eng->mem, s));
+        } else if (elem_tid == eng->mem.vec_type_id && elem_tid != 0) {
+            format_vec_at(eng, elem_pidx, elem_str, sizeof(elem_str));
+        } else if (elem_tid > 0 && elem_tid < eng->sym.type_count &&
+                   !eng->sym.types[elem_tid].is_consuming) {
+            format_struct_at(eng, elem_tid, elem_pidx, elem_str, sizeof(elem_str));
+        } else {
+            snprintf(elem_str, sizeof(elem_str), "%.6g", mem_read_pool(&eng->mem, elem_pidx));
+        }
+        used += (size_t)snprintf(buf + used, cap - used, "%s%s",
+                                 (i > 0 ? ", " : ""), elem_str);
+    }
+    if (used < cap) snprintf(buf + used, cap - used, "]");
+}
+
+static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                              char *buf, size_t cap) {
+    if (type_id == eng->mem.vec_type_id && type_id != 0) {
+        format_vec_at(eng, pool_idx, buf, cap);
+        return;
+    }
+
     const TypeDef *td = &eng->sym.types[type_id];
     char tname[32];
     eng_type_name(eng, type_id, tname, sizeof(tname));

@@ -2,9 +2,9 @@
  * mem_arena.h — Isolated Memory Management & Value Representation Module
  *
  * Purpose:
- *   Encapsulates ALL memory allocation, string interning, float/struct pools,
- *   AST node storage, call stack frames, scratch watermarks, and Value bit
- *   packing (8-byte IEEE-754 NaN-boxing vs. 12-byte Tagged Union).
+ *   Encapsulates ALL memory allocation, string interning, float/struct/vector
+ *   pools, AST node storage, call stack frames, scratch watermarks, and Value
+ *   bit packing (8-byte IEEE-754 NaN-boxing vs. 12-byte Tagged Union).
  *
  *   To customize memory sizes, switch to a heap/slab/embedded SRAM allocator,
  *   or change Value encoding in the future, you ONLY edit `mem_arena.h` and
@@ -32,11 +32,12 @@ extern "C" {
 
 #define MEM_SRC_BUF_CAP     6144   /* UTF-8 source buffer for interned strings   */
 #define MEM_MAX_AST_NODES   1024   /* 8-byte AST nodes (8 KB)                    */
-#define MEM_MAX_F64_POOL     512   /* Flat double pool for literals & structs    */
+#define MEM_MAX_F64_POOL    1024   /* Flat double pool for literals/structs/vecs */
 #define MEM_MAX_CALL_STACK   256   /* Evaluation & local variable stack slots    */
 
 #define MEM_NO_IDX        0xFFFFu  /* Null 16-bit index sentinel                 */
 #define MEM_TYPE_VOID          0u  /* Invalid / void type ID                     */
+#define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
 
 /* ============================================================================
  * 2. PRIMITIVE STORAGE TYPES (`StrSlice`, `Value`, `AstNode`)
@@ -99,7 +100,7 @@ typedef struct {
     uint16_t    ast_count;
     uint16_t    perm_ast_count;
 
-    /* Flat 64-Bit Float & C-Struct Field Pool */
+    /* Flat 64-Bit Float, C-Struct & Dynamic Vector Pool */
     double      f64_pool[MEM_MAX_F64_POOL];
     uint16_t    pool_top;
     uint16_t    perm_pool_top;
@@ -108,9 +109,10 @@ typedef struct {
     Value       stack[MEM_MAX_CALL_STACK];
     uint16_t    sp;
 
-    /* Primary unboxed real type ID (used by 8-byte NaN-boxing fastpath) */
+    /* Special Bootstrap Type IDs */
     uint8_t     fast_real_type;
     uint8_t     str_type_id;
+    uint8_t     vec_type_id;
 
     /* Error state */
     bool        has_error;
@@ -139,6 +141,11 @@ bool     mem_slice_eq_cstr(const MemArena *mem, StrSlice s, const char *cstr);
 uint16_t mem_alloc_pool(MemArena *mem, uint16_t count);
 double   mem_read_pool(const MemArena *mem, uint16_t idx);
 void     mem_write_pool(MemArena *mem, uint16_t idx, double val);
+
+/* Dynamic Vector Header & Resizable Payload Management (`$vec` of any `T`) */
+uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap);
+bool     mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t min_cap);
+void     mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride);
 
 /* AST Node Pool Allocation & Access */
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,

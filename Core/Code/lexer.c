@@ -2,7 +2,7 @@
  * lexer.c — Standalone UTF-8 & Dynamic Pattern-Driven Lexer Implementation
  */
 
-#include "../Headers/lexer.h"
+#include "lexer.h"
 #include <stdlib.h>
 #include <string.h>
 

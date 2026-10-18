@@ -1,0 +1,82 @@
+# =============================================================================
+# user_physics.math — Sample User-Defined Extension Hooked via `user_loader.h`
+# =============================================================================
+# Demonstrates:
+#   1. Defining multiple functions, operators, constants, and structs in one file
+#   2. Calling predefined stdlib functions (`sin`, `hypot`, `if`), operators
+#      (`+`, `-`, `*`, `/`, `^`, `√`), and constants (`π`)
+#   3. Calling earlier user-defined functions (`deg2rad`, `ke`) from later ones
+#   4. Operating on growable/shrinkable dynamic vectors (`$vec`) of both
+#      primitive `$real` values and composite `$vec3` structs!
+
+[user_physics]
+<[boot_syntax]
+<[boot_types]
+<[boot_control]
+<[arith]
+<[trig]
+
+# 1. User-defined 3D Vector Struct ($vec3)
+$vec3(x:real, y:real, z:real)
+
+# 2. User-defined Physical Constant (Standard Gravity g0 in m/s^2)
+"g0" : real = 9.80665
+
+# 3. User-defined Infix Operator `**` for 3D Dot Product (left-assoc, prec 20)
+(a:vec3) "**" (b:vec3) :<20 -> real = a.x * b.x + a.y * b.y + a.z * b.z
+
+# 4. Multiple User-Defined Functions in the Same File:
+
+# 4a. Convert degrees to radians using predefined constant `π` from `10_arith.math`
+"deg2rad"(deg:real) -> real = deg * π / 180
+
+# 4b. Kinetic energy: K = 0.5 * m * v^2
+"ke"(mass:real, vel:real) -> real = 0.5 * mass * (vel ^ 2)
+
+# 4c. Potential energy: U = m * g0 * h (uses `g0` defined above)
+"pe"(mass:real, height:real) -> real = mass * g0 * height
+
+# 4d. Total mechanical energy: calls BOTH `ke(m, v)` and `pe(m, h)` defined above!
+"mech_energy"(mass:real, vel:real, height:real) -> real =
+    ke(mass, vel) + pe(mass, height)
+
+# 4e. Projectile horizontal range: R = (v^2 * sin(2 * theta)) / g0
+#     Calls user-defined `deg2rad(deg)` AND predefined `sin(x)` from `20_trig.math`!
+"proj_range"(vel:real, angle_deg:real) -> real =
+    (vel ^ 2) * sin(2 * deg2rad(angle_deg)) / g0
+
+# 4f. 3D vector magnitude: calls predefined `hypot(x, y)` from `20_trig.math`!
+"vec3_mag"(v:vec3) -> real = hypot(hypot(v.x, v.y), v.z)
+
+# 4g. 3D Euclidean distance between two `vec3` points (calls `vec3_mag` above)
+"vec3_dist"(a:vec3, b:vec3) -> real =
+    vec3_mag(vec3(b.x - a.x, b.y - a.y, b.z - a.z))
+
+# 4h. Linear interpolation
+"lerp"(a:real, b:real, t:real) -> real = a + (b - a) * t
+
+# 5. User-Defined Functions Operating on Dynamic Vectors (`$vec` of any `T`):
+
+# 5a. Sum all elements of a dynamic `vec<real>` of arbitrary runtime length
+"vec_sum"(v:vec) -> real = (
+    s := 0 ;
+    i := 0 ;
+    n := len(v) ;
+    (i < n) ?? (
+        s = s + at(v, i) ;
+        i = i + 1
+    ) ;
+    s
+)
+
+# 5b. Total 3D trajectory path length across a dynamic `vec<vec3>` of waypoints
+"vec3_path_len"(pts:vec) -> real = (
+    total := 0 ;
+    i := 1 ;
+    n := len(pts) ;
+    (i < n) ?? (
+        total = total + vec3_dist(at(pts, i - 1), at(pts, i)) ;
+        i = i + 1
+    ) ;
+    total
+)

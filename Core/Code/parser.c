@@ -2,7 +2,7 @@
  * parser.c — Standalone Pratt Parser & AST Builder Implementation
  */
 
-#include "../Headers/parser.h"
+#include "parser.h"
 #include <string.h>
 
 static int find_local_slot(const Parser *P, const char *name, uint16_t len) {
@@ -69,15 +69,18 @@ static uint16_t parse_field_step(Parser *P, uint16_t left) {
 
     uint16_t ftype = MEM_TYPE_VOID;
     uint16_t foff  = 0;
-    if (cur_type != MEM_TYPE_VOID) {
+    if (cur_type != MEM_TYPE_VOID && cur_type < tab->type_count &&
+        !tab->types[cur_type].is_consuming && tab->types[cur_type].field_count > 0) {
         if (!sym_resolve_field(tab, mem, cur_type, fname, flen, &ftype, &foff)) {
             mem_err(mem, "Struct type has no field '%.*s'", (int)flen, fname);
             return MEM_NO_IDX;
         }
     } else {
+        /* Dynamic/polymorphic base (e.g. `at(v, i).x` on a `vec` of structs): search active structs */
         bool found = false;
         for (uint16_t tid = 1; tid < tab->type_count; ++tid) {
-            if (!tab->types[tid].is_consuming && sym_mod_enabled(tab, tab->types[tid].mod_id)) {
+            if (!tab->types[tid].is_consuming && tab->types[tid].field_count > 0 &&
+                sym_mod_enabled(tab, tab->types[tid].mod_id)) {
                 if (sym_resolve_field(tab, mem, tid, fname, flen, &ftype, &foff)) {
                     found = true;
                     break;
@@ -126,17 +129,12 @@ static uint16_t parse_nud(Parser *P) {
         if (P->lex.cur.kind != TOK_RPAREN) {
             mem_err(mem, "Expected closing delimiter ')'");
         } else {
-            if (P->lex.stop_at_newline && P->lex.paren_depth == 0) {
-                P->lex.cur.kind = TOK_EOF;
-                P->lex.cur.off  = P->lex.pos;
-            } else {
-                lex_next(&P->lex);
-            }
+            lex_next(&P->lex);
         }
         return inner;
     }
 
-    /* 3. Private C Intrinsic `@add(a, b)`, `@seq(a, b)`, `@store(a, b)`, `@while(c, b)`, `@if(c, t, e)` */
+    /* 3. Private C Intrinsic `@add(a, b)`, `@vset(v, i, x)`, etc. (0..3 args) */
     if (t.kind == TOK_AT) {
         if (!P->in_ext_body) {
             mem_err(mem, "Private C intrinsics (@) cannot be called outside extensions");
@@ -160,6 +158,7 @@ static uint16_t parse_nud(Parser *P) {
         lex_next(&P->lex);
         uint16_t arg1 = MEM_NO_IDX;
         uint16_t arg2 = MEM_NO_IDX;
+        uint16_t arg3 = MEM_NO_IDX;
         if (P->lex.cur.kind != TOK_RPAREN) {
             arg1 = parser_parse_expr(P, 0);
             if (P->lex.cur.kind == TOK_COMMA) {
@@ -167,7 +166,7 @@ static uint16_t parse_nud(Parser *P) {
                 arg2 = parser_parse_expr(P, 0);
                 if (P->lex.cur.kind == TOK_COMMA) {
                     lex_next(&P->lex);
-                    (void)parser_parse_expr(P, 0);
+                    arg3 = parser_parse_expr(P, 0);
                 }
             }
         }
@@ -176,7 +175,7 @@ static uint16_t parse_nud(Parser *P) {
         } else {
             lex_next(&P->lex);
         }
-        return mem_alloc_ast(mem, AST_INTRINSIC, (uint8_t)intr, 0, arg1, arg2);
+        return mem_alloc_ast(mem, AST_INTRINSIC, (uint8_t)intr, arg3, arg1, arg2);
     }
 
     /* 4. Prefix Unary Operator (`-x`, `√x`, `++x`, `+++x`) */
@@ -200,15 +199,13 @@ static uint16_t parse_nud(Parser *P) {
         lex_next(&P->lex);
 
         /* 5a. Local variable or parameter slot (auto-allocated if followed by an `@store` op) */
-        if (P->in_ext_body) {
-            int slot = find_local_slot(P, id_str, id_len);
-            if (slot < 0 && P->lex.cur.kind == TOK_OP &&
-                sym_active_meta_tag(tab, P->lex.cur.sym_id, FIX_INFIX_RIGHT) == INTR_STORE) {
-                slot = parser_add_local(P, id_str, id_len, mem->fast_real_type);
-            }
-            if (slot >= 0) {
-                return mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)slot, 0, MEM_NO_IDX, MEM_NO_IDX);
-            }
+        int slot = find_local_slot(P, id_str, id_len);
+        if (slot < 0 && P->lex.cur.kind == TOK_OP &&
+            sym_active_meta_tag(tab, P->lex.cur.sym_id, FIX_INFIX_RIGHT) == INTR_STORE) {
+            slot = parser_add_local(P, id_str, id_len, mem->fast_real_type);
+        }
+        if (slot >= 0) {
+            return mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)slot, 0, MEM_NO_IDX, MEM_NO_IDX);
         }
 
         /* 5b. Call syntax `name(arg1, arg2, ...)` -> Struct Constructor OR Function Call */
@@ -240,7 +237,8 @@ static uint16_t parse_nud(Parser *P) {
             }
 
             uint16_t st_tid = sym_find_type(tab, mem, id_str, id_len);
-            if (st_tid != MEM_TYPE_VOID && !tab->types[st_tid].is_consuming) {
+            if (st_tid != MEM_TYPE_VOID && st_tid < tab->type_count &&
+                !tab->types[st_tid].is_consuming && tab->types[st_tid].parser_intr == INTR_NONE) {
                 return mem_alloc_ast(mem, AST_CONSTRUCT, argc, st_tid, head, MEM_NO_IDX);
             }
 
@@ -252,7 +250,7 @@ static uint16_t parse_nud(Parser *P) {
             return mem_alloc_ast(mem, AST_CALL, argc, (uint16_t)sym_id, head, MEM_NO_IDX);
         }
 
-        /* 5c. Named Global Constant (`π`, `e`) */
+        /* 5c. Named Global Constant (`π`, `e`, `g0`) */
         int sym_id = sym_find(tab, mem, id_str, id_len);
         if (sym_id >= 0) {
             for (uint8_t i = 0; i < tab->const_count; ++i) {
@@ -313,6 +311,13 @@ uint16_t parser_parse_expr(Parser *P, int min_prec) {
                 break;
             }
             uint16_t right = parser_parse_expr(P, next_min);
+            if (mtag == INTR_STORE && left != MEM_NO_IDX && right != MEM_NO_IDX) {
+                const AstNode *ln = mem_get_ast(mem, left);
+                const AstNode *rn = mem_get_ast(mem, right);
+                if (ln->kind == AST_SLOT_LOAD && rn->kind == AST_CONSTRUCT) {
+                    P->locals[ln->sub].type_id = rn->ref;
+                }
+            }
             left = mem_alloc_ast(mem, AST_BINARY, (uint8_t)fix, t.sym_id, left, right);
             continue;
         }

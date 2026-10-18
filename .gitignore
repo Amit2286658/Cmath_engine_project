@@ -6,6 +6,9 @@ build/
 *.a
 *.so
 
+# Runtime-generated compiled extensions
+Test/*.mathc
+
 # Editor / OS
 .vscode/
 .idea/

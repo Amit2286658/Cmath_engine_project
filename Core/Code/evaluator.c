@@ -2,13 +2,217 @@
  * evaluator.c — Standalone AST Evaluator & Private C Intrinsics Implementation
  */
 
-#include "../Headers/evaluator.h"
+#include "evaluator.h"
 #include <math.h>
 #include <stddef.h>
+#include <string.h>
+
+/* ============================================================================
+ * 1. DYNAMIC VECTOR (`$vec` OF ANY `T` TYPE) ELEMENT READ/WRITE & INTRINSICS
+ * ============================================================================ */
+
+static void vec_write_elem(MemArena *mem, const SymTable *tab,
+                           uint16_t elem_tid, uint16_t dst_pidx, Value item) {
+    if (elem_tid == mem->str_type_id && elem_tid != 0) {
+        StrSlice s = val_get_str(mem, item);
+        uint32_t packed = ((uint32_t)s.off << 16) | (uint32_t)s.len;
+        mem_write_pool(mem, dst_pidx, (double)packed);
+    } else if (elem_tid < tab->type_count && !tab->types[elem_tid].is_consuming) {
+        uint16_t stride   = tab->types[elem_tid].flat_size;
+        uint16_t src_pidx = val_get_pool_idx(item);
+        for (uint16_t k = 0; k < stride; ++k) {
+            mem_write_pool(mem, dst_pidx + k, mem_read_pool(mem, src_pidx + k));
+        }
+    } else {
+        mem_write_pool(mem, dst_pidx, val_get_f64(mem, item));
+    }
+}
+
+static Value vec_read_elem(MemArena *mem, const SymTable *tab,
+                           uint16_t elem_tid, uint16_t src_pidx) {
+    if (elem_tid == mem->str_type_id && elem_tid != 0) {
+        uint32_t packed = (uint32_t)mem_read_pool(mem, src_pidx);
+        StrSlice s = { (uint16_t)(packed >> 16), (uint16_t)(packed & 0xFFFFu) };
+        return val_make_str(mem, elem_tid, s);
+    } else if (elem_tid < tab->type_count && !tab->types[elem_tid].is_consuming) {
+        uint16_t stride = tab->types[elem_tid].flat_size;
+        return val_make_comp(mem, elem_tid, src_pidx, stride);
+    } else {
+        return val_make_f64(mem, elem_tid ? elem_tid : mem->fast_real_type,
+                            mem_read_pool(mem, src_pidx));
+    }
+}
+
+static Value eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
+                                IntrinsicId intr, Value a, Value b, Value c) {
+    if (mem->vec_type_id == 0) {
+        mem_err(mem, "Dynamic vector type ($vec) is not loaded");
+        return val_void();
+    }
+
+    if (intr == INTR_VNEW) {
+        int cap_in = (val_get_type(mem, a) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, a) : 0;
+        if (cap_in < 0) {
+            mem_err(mem, "Vector capacity cannot be negative (%d)", cap_in);
+            return val_void();
+        }
+        uint16_t hdr_idx = mem_vec_alloc_hdr(mem, 0, (uint16_t)cap_in);
+        if (mem->has_error) return val_void();
+        return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+    }
+
+    if (intr == INTR_VFILL) {
+        int count = (int)val_get_f64(mem, a);
+        if (count < 0) {
+            mem_err(mem, "Vector fill count cannot be negative (%d)", count);
+            return val_void();
+        }
+        uint16_t elem_tid = val_get_type(mem, b);
+        uint16_t stride   = (elem_tid < tab->type_count) ? tab->types[elem_tid].flat_size : 1;
+        uint16_t hdr_idx  = mem_vec_alloc_hdr(mem, elem_tid, (uint16_t)count);
+        if (mem->has_error) return val_void();
+        if (count > 0) {
+            if (!mem_vec_reserve(mem, hdr_idx, stride, (uint16_t)count)) return val_void();
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            for (uint16_t i = 0; i < (uint16_t)count; ++i) {
+                vec_write_elem(mem, tab, elem_tid, (uint16_t)(data_idx + i * stride), b);
+            }
+            mem_write_pool(mem, hdr_idx + 1, (double)count);
+        }
+        return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+    }
+
+    /* Remaining vector intrinsics take `a` as a `$vec` handle */
+    if (val_get_type(mem, a) != mem->vec_type_id) {
+        mem_err(mem, "Expected dynamic vector ($vec) argument");
+        return val_void();
+    }
+    uint16_t hdr_idx  = val_get_pool_idx(a);
+    uint16_t elem_tid = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
+    uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
+                        ? tab->types[elem_tid].flat_size : 1;
+
+    switch (intr) {
+        case INTR_VLEN:
+            return val_make_f64(mem, mem->fast_real_type, (double)len);
+
+        case INTR_VCAP:
+            return val_make_f64(mem, mem->fast_real_type, (double)cap);
+
+        case INTR_VCLEAR:
+            mem_write_pool(mem, hdr_idx + 1, 0.0);
+            return a;
+
+        case INTR_VSHRINK:
+            mem_vec_shrink_to_fit(mem, hdr_idx, stride);
+            return a;
+
+        case INTR_VPUSH: {
+            uint16_t item_tid = val_get_type(mem, b);
+            if (elem_tid == 0) {
+                elem_tid = item_tid;
+                stride   = (elem_tid < tab->type_count) ? tab->types[elem_tid].flat_size : 1;
+                mem_write_pool(mem, hdr_idx + 0, (double)elem_tid);
+            } else if (elem_tid != item_tid) {
+                char exp_t[32], got_t[32];
+                sym_type_name(tab, mem, elem_tid, exp_t, sizeof(exp_t));
+                sym_type_name(tab, mem, item_tid, got_t, sizeof(got_t));
+                mem_err(mem, "Vector type mismatch: cannot push '%s' into vec<%s>", got_t, exp_t);
+                return val_void();
+            }
+            if (!mem_vec_reserve(mem, hdr_idx, stride, (uint16_t)(len + 1))) {
+                return val_void();
+            }
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            vec_write_elem(mem, tab, elem_tid, (uint16_t)(data_idx + len * stride), b);
+            mem_write_pool(mem, hdr_idx + 1, (double)(len + 1));
+            return a;
+        }
+
+        case INTR_VPOP: {
+            if (len == 0) {
+                mem_err(mem, "Cannot pop from an empty vector");
+                return val_void();
+            }
+            uint16_t new_len  = (uint16_t)(len - 1);
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            mem_write_pool(mem, hdr_idx + 1, (double)new_len);
+            return vec_read_elem(mem, tab, elem_tid, (uint16_t)(data_idx + new_len * stride));
+        }
+
+        case INTR_VGET: {
+            int idx = (int)val_get_f64(mem, b);
+            if (idx < 0) idx += (int)len;
+            if (idx < 0 || idx >= (int)len) {
+                mem_err(mem, "Vector index %d out of bounds (len=%u)",
+                        (int)val_get_f64(mem, b), (unsigned)len);
+                return val_void();
+            }
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            return vec_read_elem(mem, tab, elem_tid, (uint16_t)(data_idx + (uint16_t)idx * stride));
+        }
+
+        case INTR_VSET: {
+            int idx = (int)val_get_f64(mem, b);
+            if (idx < 0) idx += (int)len;
+            if (idx < 0 || idx >= (int)len) {
+                mem_err(mem, "Vector index %d out of bounds (len=%u)",
+                        (int)val_get_f64(mem, b), (unsigned)len);
+                return val_void();
+            }
+            uint16_t item_tid = val_get_type(mem, c);
+            if (elem_tid != 0 && elem_tid != item_tid) {
+                char exp_t[32], got_t[32];
+                sym_type_name(tab, mem, elem_tid, exp_t, sizeof(exp_t));
+                sym_type_name(tab, mem, item_tid, got_t, sizeof(got_t));
+                mem_err(mem, "Vector type mismatch: cannot set '%s' in vec<%s>", got_t, exp_t);
+                return val_void();
+            }
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            vec_write_elem(mem, tab, elem_tid, (uint16_t)(data_idx + (uint16_t)idx * stride), c);
+            return a;
+        }
+
+        case INTR_VRESIZE: {
+            int new_len_in = (int)val_get_f64(mem, b);
+            if (new_len_in < 0) {
+                mem_err(mem, "Vector resize length cannot be negative (%d)", new_len_in);
+                return val_void();
+            }
+            uint16_t new_len = (uint16_t)new_len_in;
+            if (elem_tid == 0) {
+                elem_tid = mem->fast_real_type;
+                stride   = 1;
+                mem_write_pool(mem, hdr_idx + 0, (double)elem_tid);
+            }
+            if (new_len > len) {
+                if (!mem_vec_reserve(mem, hdr_idx, stride, new_len)) return val_void();
+                uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+                memset(&mem->f64_pool[data_idx + len * stride], 0,
+                       (size_t)((new_len - len) * stride) * sizeof(double));
+            }
+            mem_write_pool(mem, hdr_idx + 1, (double)new_len);
+            return a;
+        }
+
+        default:
+            return val_void();
+    }
+}
+
+/* ============================================================================
+ * 2. SCALAR ARITHMETIC & TRANSCENDENTAL INTRINSICS
+ * ============================================================================ */
 
 static Value eval_intrinsic(MemArena *mem, const SymTable *tab,
-                            IntrinsicId intr, Value a, Value b, uint8_t ret_type) {
-    uint16_t rtid = (ret_type != 0 && tab->types[ret_type].is_consuming)
+                            IntrinsicId intr, Value a, Value b, Value c, uint8_t ret_type) {
+    if (intr >= INTR_VNEW && intr <= INTR_VCLEAR) {
+        return eval_vec_intrinsic(mem, tab, intr, a, b, c);
+    }
+
+    uint16_t rtid = (ret_type != 0 && ret_type < tab->type_count && tab->types[ret_type].is_consuming)
                     ? ret_type
                     : mem->fast_real_type;
     double da  = val_get_f64(mem, a);
@@ -56,6 +260,10 @@ static Value eval_intrinsic(MemArena *mem, const SymTable *tab,
     return val_make_f64(mem, rtid, res);
 }
 
+/* ============================================================================
+ * 3. MULTIPLE DISPATCH (CONCRETE TYPES + GENERIC `T` / `SYM_TYPE_ANY`)
+ * ============================================================================ */
+
 static Value dispatch_overload(MemArena *mem, const SymTable *tab,
                                uint8_t sym_id, OpFixity fixity,
                                uint8_t argc, const Value *args) {
@@ -64,25 +272,34 @@ static Value dispatch_overload(MemArena *mem, const SymTable *tab,
         arg_types[i] = (uint8_t)val_get_type(mem, args[i]);
     }
 
-    const OpOverload *matched = NULL;
+    const OpOverload *matched         = NULL;
+    const OpOverload *generic_matched = NULL;
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
         if (ov->sym_id != sym_id || ov->fixity != (uint8_t)fixity) continue;
         if (ov->param_count != argc) continue;
         if (!sym_mod_enabled(tab, ov->mod_id)) continue;
 
-        bool sig_ok = true;
+        bool exact_ok = true;
+        bool gen_ok   = true;
         for (uint8_t p = 0; p < argc; ++p) {
             if (ov->param_types[p] != arg_types[p]) {
-                sig_ok = false;
-                break;
+                exact_ok = false;
+                if (ov->param_types[p] != SYM_TYPE_ANY) {
+                    gen_ok = false;
+                    break;
+                }
             }
         }
-        if (sig_ok) {
+        if (exact_ok) {
             matched = ov;
             break;
         }
+        if (gen_ok && !generic_matched) {
+            generic_matched = ov;
+        }
     }
+    if (!matched) matched = generic_matched;
 
     if (!matched) {
         StrSlice s = tab->syms[sym_id];
@@ -105,7 +322,10 @@ static Value dispatch_overload(MemArena *mem, const SymTable *tab,
     for (uint8_t i = 0; i < matched->local_count; ++i) {
         if (i < argc) {
             uint16_t tid = val_get_type(mem, args[i]);
-            if (tid != 0 && tid < tab->type_count && !tab->types[tid].is_consuming) {
+            /* Pass `$vec` by handle so vector mutations update the header in-place;
+               clone fixed-size value structs so value semantics are preserved. */
+            if (tid != 0 && tid < tab->type_count &&
+                !tab->types[tid].is_consuming && tid != mem->vec_type_id) {
                 mem_set_slot(mem, frame_base, i, val_clone_comp(mem, args[i], tab->types[tid].flat_size));
             } else {
                 mem_set_slot(mem, frame_base, i, args[i]);
@@ -119,6 +339,10 @@ static Value dispatch_overload(MemArena *mem, const SymTable *tab,
     mem_pop_frame(mem, frame_base);
     return result;
 }
+
+/* ============================================================================
+ * 4. RECURSIVE AST EVALUATOR
+ * ============================================================================ */
 
 Value eval_ast(MemArena *mem, const SymTable *tab,
                uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type) {
@@ -156,7 +380,7 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
             uint16_t base_pidx = val_get_pool_idx(base);
             uint16_t ftid      = n->sub;
             uint16_t foff      = n->ref;
-            if (ftid != 0 && !tab->types[ftid].is_consuming) {
+            if (ftid != 0 && ftid < tab->type_count && !tab->types[ftid].is_consuming) {
                 return val_make_comp(mem, ftid, base_pidx + foff, tab->types[ftid].flat_size);
             }
             return val_make_f64(mem, ftid ? ftid : mem->fast_real_type, mem_read_pool(mem, base_pidx + foff));
@@ -189,7 +413,7 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
                     uint16_t base_pidx = val_get_pool_idx(target);
                     uint16_t foff      = lhs->ref;
                     uint16_t ftid      = lhs->sub;
-                    if (ftid != 0 && !tab->types[ftid].is_consuming) {
+                    if (ftid != 0 && ftid < tab->type_count && !tab->types[ftid].is_consuming) {
                         uint16_t fsize   = tab->types[ftid].flat_size;
                         uint16_t src_idx = val_get_pool_idx(rhs);
                         for (uint16_t i = 0; i < fsize; ++i) {
@@ -259,7 +483,10 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
             if (mem->has_error) return val_void();
             Value b = (n->right != MEM_NO_IDX) ? eval_ast(mem, tab, n->right, frame_base, cur_ret_type) : val_void();
             if (mem->has_error) return val_void();
-            return eval_intrinsic(mem, tab, (IntrinsicId)n->sub, a, b, cur_ret_type);
+            Value c = (n->ref   != MEM_NO_IDX && n->ref != 0)
+                      ? eval_ast(mem, tab, n->ref, frame_base, cur_ret_type) : val_void();
+            if (mem->has_error) return val_void();
+            return eval_intrinsic(mem, tab, (IntrinsicId)n->sub, a, b, c, cur_ret_type);
         }
 
         case AST_CONSTRUCT: {
@@ -276,7 +503,7 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
                 if (mem->has_error) return val_void();
 
                 uint16_t fval_tid = val_get_type(mem, fval);
-                if (fval_tid != 0 && !tab->types[fval_tid].is_consuming) {
+                if (fval_tid != 0 && fval_tid < tab->type_count && !tab->types[fval_tid].is_consuming) {
                     uint16_t sub_sz  = tab->types[fval_tid].flat_size;
                     uint16_t sub_idx = val_get_pool_idx(fval);
                     for (uint16_t k = 0; k < sub_sz && slot_cur < td->flat_size; ++k) {

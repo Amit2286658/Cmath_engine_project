@@ -3,7 +3,8 @@
  *
  * Purpose:
  *   Stores and queries extension modules (with O(1) bitmask toggling),
- *   consuming lexical types, flat C-style structs, operator/function overloads,
+ *   consuming lexical types, flat C-style structs, dynamic vectors (`$vec`),
+ *   generic type wildcards (`T` / `any`), operator/function overloads,
  *   global constants, and private C intrinsic IDs.
  */
 
@@ -17,7 +18,7 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * 1. REGISTRY CAPACITIES
+ * 1. REGISTRY CAPACITIES & POLYMORPHIC TYPE SENTINEL
  * ============================================================================ */
 
 #define SYM_MAX_MODULES       32
@@ -28,17 +29,20 @@ extern "C" {
 #define SYM_MAX_OVERLOADS    160
 #define SYM_MAX_CONSTS        32
 
+#define SYM_TYPE_ANY       0xFEu   /* Generic `T` / `any` parameter or return   */
+
 /* ============================================================================
  * 2. PRIVATE C INTRINSIC OPCODES & AST NODE KINDS
  * ============================================================================ */
 
 typedef enum {
     INTR_NONE = 0,
-    /* Lexer token parsers (`$type ~ pattern => @parser`) */
+    /* Lexer & Container Type Intrinsics (`$type ~ pattern => @parser`) */
     INTR_PARSE_F64,
     INTR_PARSE_F64_TRIM1,
     INTR_PARSE_I64,
     INTR_PARSE_STR_SLICE,
+    INTR_VEC_TYPE,  /* @vec_type (dynamic growable/shrinkable vector of any T) */
 
     /* Bootstrap Expression Syntax Delimiters (`"sym" => @lparen`) */
     INTR_LPAREN,    /* @lparen */
@@ -51,6 +55,19 @@ typedef enum {
     INTR_WHILE,     /* @while(c, body) */
     INTR_IF,        /* @if(c, t, e)    */
     INTR_FIELD,     /* @field(s, f)    */
+
+    /* Dynamic Vector Intrinsics (`$vec` of any `T` type) */
+    INTR_VNEW,      /* @vnew(cap)          */
+    INTR_VFILL,     /* @vfill(cnt, init)   */
+    INTR_VPUSH,     /* @vpush(v, item)     */
+    INTR_VPOP,      /* @vpop(v)            */
+    INTR_VGET,      /* @vget(v, idx)       */
+    INTR_VSET,      /* @vset(v, idx, item) */
+    INTR_VLEN,      /* @vlen(v)            */
+    INTR_VCAP,      /* @vcap(v)            */
+    INTR_VRESIZE,   /* @vresize(v, n)      */
+    INTR_VSHRINK,   /* @vshrink(v)         */
+    INTR_VCLEAR,    /* @vclear(v)          */
 
     /* Core Arithmetic Intrinsics */
     INTR_ADD,
@@ -176,7 +193,9 @@ typedef struct {
 typedef struct {
     uint8_t  sym_id;
     uint8_t  mod_id;
-    uint16_t val_idx;
+    uint8_t  type_id;
+    uint8_t  val_idx;
+    uint16_t pool_idx;       /* Index into MemArena.f64_pool for ABI-neutral .mathc */
 } ConstDef;
 
 /* ============================================================================

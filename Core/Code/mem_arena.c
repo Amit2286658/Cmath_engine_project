@@ -2,7 +2,7 @@
  * mem_arena.c — Isolated Memory Management & Value Representation Implementation
  */
 
-#include "../Headers/mem_arena.h"
+#include "mem_arena.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -80,7 +80,7 @@ bool mem_slice_eq_cstr(const MemArena *mem, StrSlice s, const char *cstr) {
 }
 
 /* ============================================================================
- * 3. FLOAT POOL, AST POOL & CALL STACK ALLOCATION
+ * 3. FLOAT POOL, DYNAMIC VECTOR POOL, AST POOL & CALL STACK ALLOCATION
  * ============================================================================ */
 
 uint16_t mem_alloc_pool(MemArena *mem, uint16_t count) {
@@ -101,6 +101,90 @@ void mem_write_pool(MemArena *mem, uint16_t idx, double val) {
     if (idx < MEM_MAX_F64_POOL) {
         mem->f64_pool[idx] = val;
     }
+}
+
+/*
+ * Dynamic Vector 4-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+3]`:
+ *   [0] = elem_type_id (0 = untyped/auto-inferred on first push, >0 = type ID T)
+ *   [1] = len          (current number of active elements T)
+ *   [2] = cap          (allocated capacity in elements T)
+ *   [3] = data_idx     (start index in `f64_pool` of `cap * stride` doubles, or 0)
+ */
+uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap) {
+    uint16_t hdr_idx = mem_alloc_pool(mem, MEM_VEC_HDR_SLOTS);
+    if (mem->has_error) return 0;
+    mem_write_pool(mem, hdr_idx + 0, (double)elem_tid);
+    mem_write_pool(mem, hdr_idx + 1, 0.0);
+    mem_write_pool(mem, hdr_idx + 2, (double)init_cap);
+    mem_write_pool(mem, hdr_idx + 3, 0.0);
+    return hdr_idx;
+}
+
+bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t min_cap) {
+    if (stride == 0) stride = 1;
+    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+
+    /* Case 1: First payload allocation (lazy buffer allocation once stride is known) */
+    if (data_idx == 0) {
+        uint16_t target_cap = (cap >= min_cap) ? cap : min_cap;
+        if (target_cap < 4) target_cap = 4;
+        uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(target_cap * stride));
+        if (mem->has_error) return false;
+        memset(&mem->f64_pool[new_data], 0, (size_t)(target_cap * stride) * sizeof(double));
+        mem_write_pool(mem, hdr_idx + 2, (double)target_cap);
+        mem_write_pool(mem, hdr_idx + 3, (double)new_data);
+        return true;
+    }
+
+    if (cap >= min_cap) return true;
+
+    uint16_t new_cap = (cap < 4) ? 4 : (uint16_t)(cap * 2);
+    if (new_cap < min_cap) new_cap = min_cap;
+    uint16_t extra_slots = (uint16_t)((new_cap - cap) * stride);
+
+    /* Case 2: In-place tail expansion if this vector's buffer sits at `pool_top` */
+    if ((uint16_t)(data_idx + cap * stride) == mem->pool_top) {
+        uint16_t ext_idx = mem_alloc_pool(mem, extra_slots);
+        if (mem->has_error) return false;
+        memset(&mem->f64_pool[ext_idx], 0, (size_t)extra_slots * sizeof(double));
+        mem_write_pool(mem, hdr_idx + 2, (double)new_cap);
+        return true;
+    }
+
+    /* Case 3: Reallocate contiguous payload block and copy active `len * stride` slots */
+    uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(new_cap * stride));
+    if (mem->has_error) return false;
+    uint16_t copy_slots = (uint16_t)(len * stride);
+    if (copy_slots > 0) {
+        memcpy(&mem->f64_pool[new_data], &mem->f64_pool[data_idx],
+               (size_t)copy_slots * sizeof(double));
+    }
+    if (new_cap * stride > copy_slots) {
+        memset(&mem->f64_pool[new_data + copy_slots], 0,
+               (size_t)(new_cap * stride - copy_slots) * sizeof(double));
+    }
+    mem_write_pool(mem, hdr_idx + 2, (double)new_cap);
+    mem_write_pool(mem, hdr_idx + 3, (double)new_data);
+    return true;
+}
+
+void mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride) {
+    if (stride == 0) stride = 1;
+    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+
+    if (cap <= len) return;
+    /* Reclaim tail slots in `f64_pool` if the vector's payload is at the top of the pool */
+    if (data_idx != 0 && (uint16_t)(data_idx + cap * stride) == mem->pool_top) {
+        mem->pool_top = (uint16_t)(data_idx + len * stride);
+    }
+    if (len == 0) {
+        mem_write_pool(mem, hdr_idx + 3, 0.0);
+    }
+    mem_write_pool(mem, hdr_idx + 2, (double)len);
 }
 
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,

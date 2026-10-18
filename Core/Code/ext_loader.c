@@ -1,13 +1,14 @@
 /*
- * ext_loader.c — External `.math` Extension Compiler & Directory Bootstrapper Implementation
+ * ext_loader.c — In-Memory `.math` Extension Compiler & `.mathc` Binary Serializer
+ *
+ * Pure ISO C99 in-memory implementation: zero filesystem, directory, or path
+ * dependencies (`<dirent.h>`, `<sys/stat.h>`, and `FILE*` I/O removed).
  */
 
-#include "../Headers/ext_loader.h"
-#include "../Headers/parser.h"
-#include <stdio.h>
+#include "ext_loader.h"
+#include "parser.h"
 #include <stdlib.h>
 #include <string.h>
-#include <dirent.h>
 
 typedef struct {
     MemArena   *mem;
@@ -154,6 +155,12 @@ static void ext_parse_type_decl(ExtLoader *L) {
             mem->fast_real_type = (uint8_t)tid;
         } else if (td->parser_intr == INTR_PARSE_STR_SLICE && mem->str_type_id == 0) {
             mem->str_type_id = (uint8_t)tid;
+        } else if (td->parser_intr == INTR_VEC_TYPE) {
+            td->is_consuming = 0;
+            td->flat_size    = MEM_VEC_HDR_SLOTS;
+            if (mem->vec_type_id == 0) {
+                mem->vec_type_id = (uint8_t)tid;
+            }
         }
     } else if (ext_match_char(L, '(')) {
         td->is_consuming = 0;
@@ -190,7 +197,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
         td->field_count = fcount;
         td->flat_size   = flat_off;
     } else {
-        mem_err(mem, "Expected '~' (consuming) or '(' (struct) in type declaration");
+        mem_err(mem, "Expected '~' (consuming/container) or '(' (struct) in type declaration");
     }
 }
 
@@ -355,16 +362,20 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
                 uint16_t c_ast = parser_parse_expr(&P, 0);
                 L.pos = (P.lex.cur.kind == TOK_EOF) ? P.lex.pos : P.lex.cur.off;
 
+                uint16_t c_pool_idx = 0;
                 Value cval = val_void();
                 if (c_ast != MEM_NO_IDX && mem_get_ast(mem, c_ast)->kind == AST_LIT) {
-                    cval = val_make_f64(mem, rtid, mem_read_pool(mem, mem_get_ast(mem, c_ast)->ref));
+                    c_pool_idx = mem_get_ast(mem, c_ast)->ref;
+                    cval = val_make_f64(mem, rtid, mem_read_pool(mem, c_pool_idx));
                 }
                 if (tab->const_count < SYM_MAX_CONSTS) {
                     uint8_t cid = tab->const_count++;
-                    tab->consts[cid].sym_id  = sym_id;
-                    tab->consts[cid].mod_id  = L.cur_mod;
-                    tab->consts[cid].val_idx = cid;
-                    tab->const_vals[cid]     = cval;
+                    tab->consts[cid].sym_id   = sym_id;
+                    tab->consts[cid].mod_id   = L.cur_mod;
+                    tab->consts[cid].type_id  = (uint8_t)rtid;
+                    tab->consts[cid].val_idx  = cid;
+                    tab->consts[cid].pool_idx = c_pool_idx;
+                    tab->const_vals[cid]      = cval;
                 }
                 continue;
             }
@@ -491,67 +502,172 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
     return !mem->has_error;
 }
 
-bool ext_load_file(MemArena *mem, SymTable *tab, const char *filepath) {
-    FILE *fp = fopen(filepath, "rb");
-    if (!fp) {
-        mem_err(mem, "Cannot open extension file '%s'", filepath);
-        return false;
-    }
-    fseek(fp, 0, SEEK_END);
-    long fsize = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (fsize < 0 || fsize > 65535) {
-        fclose(fp);
-        mem_err(mem, "Extension file '%s' too large", filepath);
-        return false;
-    }
-    char *buf = (char *)malloc((size_t)fsize + 1);
-    if (!buf) {
-        fclose(fp);
-        mem_err(mem, "Out of memory reading file");
-        return false;
-    }
-    size_t read_bytes = fread(buf, 1, (size_t)fsize, fp);
-    buf[read_bytes] = '\0';
-    fclose(fp);
+/* ============================================================================
+ * IN-MEMORY `.mathc` BINARY SERIALIZATION & O(1) LOADER IMPLEMENTATION
+ * ============================================================================ */
 
-    bool ok = ext_load_str(mem, tab, buf);
-    free(buf);
-    return ok;
+static uint32_t calc_mathc_payload_bytes(const MathcHeader *h) {
+    return (uint32_t)h->perm_src_len
+         + (uint32_t)h->perm_ast_count  * (uint32_t)sizeof(AstNode)
+         + (uint32_t)h->perm_pool_top   * (uint32_t)sizeof(double)
+         + (uint32_t)h->mod_count       * (uint32_t)sizeof(StrSlice)
+         + (uint32_t)h->type_count      * (uint32_t)sizeof(TypeDef)
+         + (uint32_t)h->pat_elem_count  * (uint32_t)sizeof(PatElem)
+         + (uint32_t)h->field_count     * (uint32_t)sizeof(FieldDef)
+         + (uint32_t)h->sym_count       * (uint32_t)sizeof(StrSlice)
+         + (uint32_t)h->overload_count  * (uint32_t)sizeof(OpOverload)
+         + (uint32_t)h->const_count     * (uint32_t)sizeof(ConstDef);
 }
 
-static int cmp_str(const void *a, const void *b) {
-    return strcmp(*(const char *const *)a, *(const char *const *)b);
+static void fill_mathc_header(const MemArena *mem, const SymTable *tab, MathcHeader *hdr) {
+    memset(hdr, 0, sizeof(*hdr));
+    hdr->magic          = MATHC_MAGIC;
+    hdr->version        = MATHC_VERSION;
+    hdr->fast_real_type = mem->fast_real_type;
+    hdr->str_type_id    = mem->str_type_id;
+    hdr->vec_type_id    = mem->vec_type_id;
+    hdr->mod_count      = tab->mod_count;
+    hdr->type_count     = tab->type_count;
+    hdr->sym_count      = tab->sym_count;
+    hdr->const_count    = tab->const_count;
+    hdr->perm_src_len   = mem->perm_src_len;
+    hdr->perm_ast_count = mem->perm_ast_count;
+    hdr->perm_pool_top  = mem->perm_pool_top;
+    hdr->pat_elem_count = tab->pat_elem_count;
+    hdr->field_count    = tab->field_count;
+    hdr->overload_count = tab->overload_count;
+    hdr->active_modules = tab->active_modules;
+    hdr->payload_bytes  = calc_mathc_payload_bytes(hdr);
 }
 
-bool ext_boot_dir(MemArena *mem, SymTable *tab, const char *lib_dir_path) {
-    DIR *d = opendir(lib_dir_path);
-    if (!d) {
-        mem_err(mem, "Cannot open library directory '%s'", lib_dir_path);
+uint32_t ext_calc_mathc_size(const MemArena *mem, const SymTable *tab) {
+    MathcHeader hdr;
+    fill_mathc_header(mem, tab, &hdr);
+    return (uint32_t)sizeof(MathcHeader) + hdr.payload_bytes;
+}
+
+size_t ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
+                          uint8_t *out_buf, size_t buf_cap) {
+    mem_clear_err(mem);
+    MathcHeader hdr;
+    fill_mathc_header(mem, tab, &hdr);
+
+    size_t total_bytes = sizeof(MathcHeader) + (size_t)hdr.payload_bytes;
+    if (!out_buf || buf_cap < total_bytes) {
+        mem_err(mem, "Output buffer too small for .mathc image (%zu < %zu bytes)",
+                buf_cap, total_bytes);
+        return 0;
+    }
+
+    uint8_t *cur = out_buf;
+
+    #define WRITE_SLICE(src_ptr, byte_cnt) do { \
+        size_t _n = (size_t)(byte_cnt); \
+        if (_n > 0) { \
+            memcpy(cur, (src_ptr), _n); \
+            cur += _n; \
+        } \
+    } while (0)
+
+    WRITE_SLICE(&hdr,           sizeof(MathcHeader));
+    WRITE_SLICE(mem->src_buf,   hdr.perm_src_len);
+    WRITE_SLICE(mem->ast,       hdr.perm_ast_count * sizeof(AstNode));
+    WRITE_SLICE(mem->f64_pool,  hdr.perm_pool_top  * sizeof(double));
+    WRITE_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
+    WRITE_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
+    WRITE_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
+    WRITE_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
+    WRITE_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
+    WRITE_SLICE(tab->overloads, hdr.overload_count * sizeof(OpOverload));
+    WRITE_SLICE(tab->consts,    hdr.const_count    * sizeof(ConstDef));
+
+    #undef WRITE_SLICE
+
+    return total_bytes;
+}
+
+bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
+                        const uint8_t *data, size_t len) {
+    mem_clear_err(mem);
+    if (!data || len < sizeof(MathcHeader)) {
+        mem_err(mem, "Invalid or truncated .mathc image");
         return false;
     }
-    char *files[32];
-    int count = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL && count < 32) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen > 5 && strcmp(ent->d_name + nlen - 5, ".math") == 0) {
-            size_t plen = strlen(lib_dir_path) + 1 + nlen + 1;
-            char *full = (char *)malloc(plen);
-            snprintf(full, plen, "%s/%s", lib_dir_path, ent->d_name);
-            files[count++] = full;
-        }
-    }
-    closedir(d);
 
-    qsort(files, (size_t)count, sizeof(char *), cmp_str);
-
-    bool ok = true;
-    for (int i = 0; i < count; ++i) {
-        if (ok && !ext_load_file(mem, tab, files[i])) {
-            ok = false;
-        }
-        free(files[i]);
+    MathcHeader hdr;
+    memcpy(&hdr, data, sizeof(MathcHeader));
+    if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) {
+        mem_err(mem, "Bad .mathc magic or version mismatch");
+        return false;
     }
-    return ok;
+
+    uint32_t expected_payload = calc_mathc_payload_bytes(&hdr);
+    if (hdr.payload_bytes != expected_payload ||
+        sizeof(MathcHeader) + (size_t)expected_payload > len) {
+        mem_err(mem, "Corrupted .mathc payload size");
+        return false;
+    }
+
+    if (hdr.perm_src_len   > MEM_SRC_BUF_CAP   ||
+        hdr.perm_ast_count > MEM_MAX_AST_NODES ||
+        hdr.perm_pool_top  > MEM_MAX_F64_POOL  ||
+        hdr.mod_count      > SYM_MAX_MODULES   ||
+        hdr.type_count     > SYM_MAX_TYPES     ||
+        hdr.pat_elem_count > SYM_MAX_PAT_ELEMS ||
+        hdr.field_count    > SYM_MAX_FIELDS    ||
+        hdr.sym_count      > SYM_MAX_SYMS      ||
+        hdr.overload_count > SYM_MAX_OVERLOADS ||
+        hdr.const_count    > SYM_MAX_CONSTS) {
+        mem_err(mem, ".mathc image exceeds compiled arena capacities");
+        return false;
+    }
+
+    const uint8_t *cur = data + sizeof(MathcHeader);
+
+    #define COPY_SLICE(dst, byte_cnt) do { \
+        size_t _n = (size_t)(byte_cnt); \
+        if (_n > 0) { \
+            memcpy((dst), cur, _n); \
+            cur += _n; \
+        } \
+    } while (0)
+
+    COPY_SLICE(mem->src_buf,   hdr.perm_src_len);
+    COPY_SLICE(mem->ast,       hdr.perm_ast_count * sizeof(AstNode));
+    COPY_SLICE(mem->f64_pool,  hdr.perm_pool_top  * sizeof(double));
+    COPY_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
+    COPY_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
+    COPY_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
+    COPY_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
+    COPY_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
+    COPY_SLICE(tab->overloads, hdr.overload_count * sizeof(OpOverload));
+    COPY_SLICE(tab->consts,    hdr.const_count    * sizeof(ConstDef));
+
+    #undef COPY_SLICE
+
+    mem->fast_real_type = hdr.fast_real_type;
+    mem->str_type_id    = hdr.str_type_id;
+    mem->vec_type_id    = hdr.vec_type_id;
+    mem->src_len        = hdr.perm_src_len;
+    mem->ast_count      = hdr.perm_ast_count;
+    mem->pool_top       = hdr.perm_pool_top;
+
+    tab->mod_count      = hdr.mod_count;
+    tab->type_count     = hdr.type_count;
+    tab->pat_elem_count = hdr.pat_elem_count;
+    tab->field_count    = hdr.field_count;
+    tab->sym_count      = hdr.sym_count;
+    tab->overload_count = hdr.overload_count;
+    tab->const_count    = hdr.const_count;
+    tab->active_modules = hdr.active_modules;
+
+    /* Reconstruct ABI-specific Value representations for global constants */
+    for (uint8_t i = 0; i < tab->const_count; ++i) {
+        uint16_t rtid = tab->consts[i].type_id;
+        double   dval = mem_read_pool(mem, tab->consts[i].pool_idx);
+        tab->const_vals[i] = val_make_f64(mem, rtid, dval);
+    }
+    mem->pool_top = hdr.perm_pool_top;
+    mem_snapshot_perm(mem);
+    return true;
 }
