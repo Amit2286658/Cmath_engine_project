@@ -1,0 +1,65 @@
+# =============================================================================
+# Library/80_chemistry.math — Gas Laws, Acid-Base, Kinetics & Electrochemistry
+# =============================================================================
+
+[chemistry]
+<[arith]
+<[trig]
+<[units]
+
+# 1. Fundamental Chemical & Thermodynamic Constants
+"N_A"         : real = 6.02214076 * (10 ^ 23)        # Avogadro constant (mol^-1)
+"R_gas"       : real = 8.314462618                   # Universal gas constant (J mol^-1 K^-1)
+"R_atm"       : real = 0.082057366                   # Gas constant in (L atm mol^-1 K^-1)
+"F_faraday"   : real = 96485.33212                   # Faraday constant (C/mol)
+"T_stp"       : real = 273.15                        # Standard temperature (K)
+"P_stp"       : real = 101325                        # Standard pressure (Pa = 1 atm)
+"kw_water"    : real = 10 ^ -14                      # Autoionization constant of water at 25 C
+
+# 2. Stoichiometry, Molarity & Solution Concentration
+"moles"(mass_g:real, molar_mass:real)           -> real = mass_g / molar_mass
+"mass_from_moles"(n_mol:real, molar_mass:real)  -> real = n_mol * molar_mass
+"particles_from_moles"(n_mol:real)              -> real = n_mol * N_A
+"molarity"(n_mol:real, vol_liters:real)         -> real = n_mol / vol_liters
+"dilution_v1"(c1:real, c2:real, v2:real)        -> real = (c2 * v2) / c1
+"molality"(n_solute:real, kg_solvent:real)      -> real = n_solute / kg_solvent
+"osmotic_pressure"(molarity_m:real, temp_k:real)-> real = molarity_m * R_atm * temp_k
+
+# 3. Ideal Gas Law (`P*V = n*R*T` in SI: Pa, m^3, mol, K) & Kinetic Theory
+"ideal_gas_p"(n_mol:real, temp_k:real, vol_m3:real) -> real = (n_mol * R_gas * temp_k) / vol_m3
+"ideal_gas_v"(n_mol:real, temp_k:real, press_pa:real)-> real = (n_mol * R_gas * temp_k) / press_pa
+"ideal_gas_n"(press_pa:real, vol_m3:real, temp_k:real)-> real = (press_pa * vol_m3) / (R_gas * temp_k)
+"ideal_gas_t"(press_pa:real, vol_m3:real, n_mol:real)-> real = (press_pa * vol_m3) / (n_mol * R_gas)
+
+"rms_mol_speed"(temp_k:real, molar_mass_kg:real) -> real = √(3 * R_gas * temp_k / molar_mass_kg)
+"graham_rate_ratio"(molar_mass1:real, molar_mass2:real) -> real = √(molar_mass2 / molar_mass1)
+
+# 4. Acid-Base Chemistry, pH, pOH & Henderson-Hasselbalch Buffer Equation
+"ph_from_h"(h_conc:real)   -> real = -log10(h_conc)
+"h_from_ph"(ph_val:real)   -> real = 10 ^ (-ph_val)
+"poh_from_oh"(oh_conc:real)-> real = -log10(oh_conc)
+"oh_from_poh"(poh_val:real)-> real = 10 ^ (-poh_val)
+"poh_from_ph"(ph_val:real) -> real = 14 - ph_val
+"ph_from_poh"(poh_val:real)-> real = 14 - poh_val
+"ph_from_oh"(oh_conc:real) -> real = 14 - (-log10(oh_conc))
+
+"henderson_hasselbalch"(pka:real, conj_base:real, weak_acid:real) -> real =
+    pka + log10(conj_base / weak_acid)
+
+# 5. Chemical Kinetics, Radioactive Decay, Thermodynamics & Electrochemistry
+"arrhenius_k"(pre_exp_a:real, ea_j_mol:real, temp_k:real) -> real =
+    pre_exp_a * exp(-ea_j_mol / (R_gas * temp_k))
+
+"half_life_1st"(rate_k:real) -> real = ln(2) / rate_k
+"decay_rem"(n0:real, time_t:real, half_life:real) -> real =
+    n0 * (0.5 ^ (time_t / half_life))
+"radiocarbon_age"(fraction_rem:real) -> real =
+    -5730 * (ln(fraction_rem) / ln(2))
+
+"gibbs_free_energy"(dh_j:real, temp_k:real, ds_j_k:real) -> real =
+    dh_j - temp_k * ds_j_k
+"gibbs_from_keq"(temp_k:real, keq:real) -> real =
+    -R_gas * temp_k * ln(keq)
+
+"nernst_cell"(e0_volts:real, n_elec:real, reaction_q:real) -> real =
+    e0_volts - (R_gas * 298.15 / (n_elec * F_faraday)) * ln(reaction_q)

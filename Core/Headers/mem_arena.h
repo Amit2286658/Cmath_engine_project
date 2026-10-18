@@ -30,9 +30,9 @@ extern "C" {
 #define USE_TAGGED_12B 0  /* 0 = 8-byte IEEE-754 NaN-boxing, 1 = 12-byte union */
 #endif
 
-#define MEM_SRC_BUF_CAP     6144   /* UTF-8 source buffer for interned strings   */
-#define MEM_MAX_AST_NODES   1024   /* 8-byte AST nodes (8 KB)                    */
-#define MEM_MAX_F64_POOL    1024   /* Flat double pool for literals/structs/vecs */
+#define MEM_SRC_BUF_CAP    16384   /* UTF-8 source buffer for interned strings   */
+#define MEM_MAX_AST_NODES   4096   /* 8-byte AST nodes (32 KB)                   */
+#define MEM_MAX_F64_POOL    2048   /* Flat double pool for literals/structs/vecs */
 #define MEM_MAX_CALL_STACK   256   /* Evaluation & local variable stack slots    */
 
 #define MEM_NO_IDX        0xFFFFu  /* Null 16-bit index sentinel                 */
@@ -172,6 +172,12 @@ Value    val_make_comp(MemArena *mem, uint16_t type_id, uint16_t pool_idx, uint1
 uint16_t val_get_pool_idx(Value v);
 uint16_t val_get_type(const MemArena *mem, Value v);
 Value    val_clone_comp(MemArena *mem, Value v, uint16_t flat_size);
+
+/* Host Callback Convenience Helpers */
+Value    val_from_f64(MemArena *mem, double d);
+Value    val_from_cstr(MemArena *mem, const char *cstr);
+Value    val_from_f64_vec(MemArena *mem, const double *vals, uint16_t count);
+bool     val_as_cstr(const MemArena *mem, Value v, char *buf, size_t cap);
 
 #ifdef __cplusplus
 }

@@ -1,56 +1,66 @@
 # Cmath Engine
 
-A lightweight, fast, embeddable **C11 math expression engine** built on a
-*blank-slate* architecture. The C core ships with **zero built-in types,
-operators, or syntax** — every capability is compiled from modular `.math`
-files into a portable `.mathc` binary image. Modules can be enabled or disabled
-in **O(1)** via a bitmask flip, letting a host program reshape the language on
-the fly.
+A lightweight, fast, embeddable **C11 mathematical programming engine** built on
+a *blank-slate* architecture. The C core ships with **zero hardcoded math,
+types, or grammar** — every delimiter, type, operator, function, constant, and
+control structure is compiled from modular `.math` files into a portable
+`.mathc` binary image. Modules can be enabled or disabled in **O(1)** via a
+bitmask flip.
 
-The engine has **no filesystem, directory, or OS dependencies**: file I/O and
-paths belong to the host frontend, while the engine compiles `.math` text and
-loads `.mathc` images strictly in memory.
+The engine core (`Core/`) has **no filesystem, path, or networking
+dependencies**. The host frontend owns all file I/O; the engine compiles
+`.math` text and loads `.mathc` images strictly in memory, and can call back
+into host-provided C functions (`@extern`) for things like live web APIs,
+databases, or sensor reads.
 
 ## Highlights
 
-- **Blank-slate core** — the engine knows nothing until `.math` teaches it.
-- **Embedded precompiled stdlib** — `eng_init()` boots the whole standard
-  library from an embedded byte image in O(1) `memcpy` time, no parsing, no I/O.
-- **Pure in-memory user extensions** — `user_compile_ext` turns raw `.math`
-  text into host-managed `.mathc` bytes; `user_load_mathc` loads them in O(1).
-- **AOT `.math` → `.mathc` + C header compiler** (`mathc`) for build-time baking.
-- **Pattern-driven lexer** — consuming `$type` patterns (`$real`, `$str`, `$iota`, `$vec`).
-- **Pratt (top-down operator precedence) parser** — fixity and precedence are data.
+- **Blank-slate core** — `eng_init_blank()` rejects even `1 + 2`. Nothing is
+  built in.
+- **Embedded precompiled stdlib** — `eng_init()` boots the entire scientific
+  standard library from an embedded byte image in O(1) `memcpy` time
+  (zero parsing, zero I/O).
+- **Pure in-memory user extensions** — `user_compile_ext` compiles raw `.math`
+  text into host-managed `.mathc` bytes; `user_load_mathc` reloads them in O(1).
+- **AOT `.math` → `.mathc` + C-header compiler** (`mathc`) for build-time baking.
+- **Host extern callbacks** — `eng_register_extern()` binds `@name(...)` calls
+  in `.math` to native C functions (HTTP, storage, hardware, ...).
+- **Pattern-driven lexer** — consuming `$type` regex patterns.
+- **Pratt parser** — operator fixity and precedence are data.
 - **Multiple dispatch** — operators/functions overloaded on operand types.
 - **Generic dynamic vectors** — growable/shrinkable `$vec` of *any* `T`.
-- **Flat C-style structs** — `$vec2`, `$vec3`, nested `$circle`, compile-time field offsets.
-- **Dual value encoding** — 8-byte IEEE-754 **NaN-boxing** (default) or a 12-byte **tagged union**.
-- **UTF-8 aware** — operators and constants like `√`, `π`, `^`, `!` work natively.
+- **Flat C-style structs** — `$vec2`, `$vec3`, `$circle`, `$mat2`, `$complex`.
+- **Rich standard library** — arithmetic/combinatorics/number theory/stats,
+  trigonometry, complex numbers, geometry, algebra (matrices, quadratics,
+  polynomials), units, physics, and chemistry.
+- **Dual value encoding** — 8-byte IEEE-754 **NaN-boxing** (default) or a
+  12-byte **tagged union** (`USE_TAGGED_12B`).
+- **UTF-8 aware** — `√`, `π`, `°`, `i`, `^`, `!` and more work natively.
 - **Hardened builds** — fortify source, stack protector, ASan/UBSan when available.
 
 ## Architecture
 
 ```
 Host Application (Test/main.c)
-     │   Handles all platform file I/O, paths & storage
+     │   Owns all platform file I/O, paths, storage & networking
      │
-     ├──► [math_engine]  Top-Level Wrapper — auto-boots embedded stdlib
+     ├──► [math_engine]  Top-Level Wrapper — auto-boots embedded stdlib,
+     │        │          registers host externs
      │        ├──► [mem_arena]    Isolated memory & 8B/12B Value packing
-     │        ├──► [sym_table]    Dynamic types, structs, modules & overloads
+     │        ├──► [sym_table]    Types, structs, modules, overloads, externs
      │        ├──► [lexer]        Pattern-driven consuming types & syntax tokens
      │        ├──► [parser]       Top-down operator precedence (Pratt) parser
      │        ├──► [ext_loader]   In-memory `.math` compiler & `.mathc` serializer
      │        └──► [evaluator]    Type-dispatched AST evaluator & `@` intrinsics
      │
      └──► [user_loader]  In-memory user extension utility
-              1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc` bytes
-              2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1) `memcpy` time
+              1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc`
+              2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
 ```
 
-`Core/Code/*.c` is the engine; everything under `Test/` is a normal host
-application. The engine never touches files or directories — the host reads
-`.math` text, hands it to the engine, and decides where to persist the returned
-`.mathc` bytes.
+`Core/Code/*.c` is the engine; `Test/` and `Tutorial/` are host-side. The engine
+never touches files or directories — the host reads `.math` text, hands it to
+the engine, and decides where to persist the returned `.mathc` bytes.
 
 ## Repository Layout
 
@@ -60,16 +70,26 @@ makefile
 Core/
   Headers/    math_engine.h  mem_arena.h  sym_table.h  lexer.h
               parser.h  ext_loader.h  evaluator.h  user_loader.h
-              stdlib_precompiled.h   (auto-generated, embedded stdlib image)
+              stdlib_precompiled.h   (auto-generated embedded stdlib image)
   Code/       math_engine.c  mem_arena.c  sym_table.c  lexer.c
               parser.c  ext_loader.c  evaluator.c  user_loader.c
 Library/
-  mathc.c            Standalone AOT `.math` -> `.mathc` + header compiler
-  00_bootstrap.math  10_arith.math  20_trig.math  30_complex.math  40_geom.math
-  stdlib.mathc       Compiled standard library image (generated)
+  mathc.c             Standalone AOT `.math` -> `.mathc` + header compiler
+  00_bootstrap.math   Syntax, lexical types, control flow, `$vec`
+  10_arith.math       Arithmetic, comparisons, number theory, stats
+  20_trig.math        Trig, hyperbolic, exponential & log functions
+  30_complex.math     Postfix `i` operator & complex arithmetic
+  40_geom.math        2D/3D vectors, circle/sphere geometry
+  50_algebra.math     2x2 matrices, quadratics, polynomial algebra
+  60_units.math       SI/Imperial unit conversions & postfix suffixes
+  70_physics.math     Classical, EM, quantum & relativity
+  80_chemistry.math   Stoichiometry, gas laws, pH, kinetics, electrochem
+  stdlib.mathc        Compiled standard library image (generated)
 Test/
-  main.c             Host demo & automated test suite
-  user_physics.math  Sample user extension (structs, funcs, vectors)
+  main.c              Host demo & 82-case automated test suite
+  user_physics.math   Sample user extension (host-backed functions)
+Tutorial/
+  00_Index_and_Overview.md  ...  06_Host_Extern_Callbacks_and_Networking.md
 ```
 
 ## Building
@@ -77,19 +97,13 @@ Test/
 ### With the provided makefile
 
 ```sh
-make build      # debug build (default) via Clang -> DebugBuild/myapp
-make run        # build if needed, then run
-make clean      # remove the selected build dir
+make build                     # debug build (default) via Clang -> DebugBuild/myapp
+make run                       # build if needed, then run
+make clean                     # remove the selected build dir
 
-make build release   # optimized build -> ReleaseBuild/myapp
-make run release
-```
-
-Overrides:
-
-```sh
-make build CC=gcc            # use GCC
-make build USE_TAGGED_12B=1  # 12-byte tagged-union Value
+make build release             # optimized build -> ReleaseBuild/myapp
+make run release USE_TAGGED_12B=1   # 12-byte tagged-union Value
+make build CC=gcc              # override the compiler
 ```
 
 ### With CMake directly
@@ -100,15 +114,14 @@ cmake --build build
 ./build/myapp
 ```
 
-The host reads paths relative to the working directory, so run the test from
-the repository root (the binary looks for `Test/user_physics.math`).
+Run from the repository root (the demo looks for `Test/user_physics.math`).
 
 ### Value encoding
 
 | `USE_TAGGED_12B` | `Value` | Encoding |
 | --- | --- | --- |
 | `0` (default) | 8 bytes | IEEE-754 NaN-boxing |
-| `1` | 12 bytes | Tagged union |
+| `1` | 12 bytes | Packed tagged union |
 
 ```sh
 cmake -S . -B build -DUSE_TAGGED_12B=ON
@@ -122,30 +135,39 @@ the standard library:
 
 ```sh
 make stdlib
-# or directly:
-cmake --build DebugBuild --target stdlib
 ```
 
-`mathc` itself can be used standalone:
+Standalone use of `mathc`:
 
 ```sh
-./DebugBuild/mathc out.mathc out_header.h my_array input1.math input2.math ...
+./DebugBuild/mathc out.mathc out_header.h my_array in1.math in2.math ...
 ```
 
 ## The `.math` Language
 
-### Bootstrap (`00_bootstrap.math`)
+### Modules
 
-Defines the primitives everything depends on: parentheses, commas, member
-access `.`, sequencing `;`, assignment `:=` / `=`, the while-loop operator `??`,
-lazy `if(...)`, the consuming lexical types, and the dynamic `$vec` container.
+Every `.math` file groups declarations into named modules with `[module_name]`
+and declares dependencies with `<[dependency]`. Dependencies control load order
+and the active module bitmask used for O(1) toggling.
 
 ```
+[complex_ext]
+<[arith]
+<[trig]
+```
+
+### Lexical types & delimiters
+
+```
+"(" => @lparen
 $real ~ \d+ ("." \d+)?       => @f64
-$iota ~ \d+ ("." \d+)? "i"   => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
 ```
+
+`$iota` (the imaginary scalar) has no lexical pattern — it is produced by the
+postfix `i` operator (`5i`, `(3 + 4)i`, `sin(x)i`).
 
 ### Operators
 
@@ -156,60 +178,91 @@ $vec  ~                      => @vec_type
 (x:real) "++"         :90 -> real = x + 1         # postfix
 ```
 
-- `:<N` left-associative infix at precedence `N`
-- `:>N` right-associative infix at precedence `N`
-- `:N`  prefix / postfix at precedence `N`
-- Maximal munch resolves overlapping operators (`++`, `+++`).
+- `:<N` left-assoc infix at precedence `N` · `:>N` right-assoc infix
+- `:N` prefix / postfix · maximal munch resolves `++`, `+++`
+- `@name(...)` calls a private C intrinsic (or a host-registered extern)
 
-### Functions & multiple dispatch
+### Functions, dispatch & control flow
 
 ```
 "sin"(x:real)    -> real = @sin(x)
 (a:complex) "+" (b:complex) :<50 -> complex = complex(a.re + b.re, a.im + b.im)
 ```
 
-The same symbol may carry many overloads; the evaluator selects by argument type.
-
-### Structs
+All control flow comes from four bootstrap intrinsics:
 
 ```
-$vec2(x:real, y:real)
-$circle(center:vec2, radius:real)
+( stmt1 ; stmt2 ; final_expr )   # sequencing
+x := value                       # local variable (also '=' for mutation)
+(cond) ?? ( body )               # lazy while loop
+if(cond, then_expr, else_expr)   # lazy conditional
 ```
 
-Fields are read/written via `.`; lvalues support assignment:
-`c.center.x = c.center.x + dx`.
-
-### Dynamic vectors (`$vec` of any `T`)
-
-```
-vec()                         -> vec  = @vnew(0)     # empty
-vec(cap)                      -> vec                 # reserved capacity
-vec(count, init)              -> vec                 # fill
-push(v, item)                 -> vec
-pop(v)                        -> T
-at(v, idx)                    -> T                   # negative idx counts from end
-set(v, idx, val)              -> vec
-len(v) / cap(v)               -> real
-resize(v, new_len) / shrink(v) / clear(v)
-```
-
-Vectors are homogeneous: pushing a `vec2` into a `vec<real>` is rejected at
-runtime with a clear type-mismatch error.
-
-### Factorial implemented *in the language*
+Factorial, implemented *in the language*:
 
 ```
 (n:real) "!" :90 -> real = (
     acc := 1;
-    i   := n;
-    (i > 1) ?? (
-        acc = acc * i;
-        i   = i - 1
+    k   := n;
+    (k > 1) ?? (
+        acc = acc * k;
+        k   = k - 1
     );
     acc
 )
 ```
+
+### Structs & dynamic vectors
+
+```
+$vec2(x:real, y:real)
+$vec3(x:real, y:real, z:real)
+$circle(center:vec2, radius:real)
+$mat2(a:real, b:real, c:real, d:real)
+```
+
+Fields flatten into contiguous `double` slots with compile-time offset
+resolution (`c.center.y`). `$vec` is a homogeneous dynamic array of any `T`:
+`vec()`, `vec(cap)`, `vec(count, init)`, `push`, `pop`, `at` (negative index
+from end), `set`, `len`, `cap`, `resize`, `shrink`, `clear`.
+
+```
+v := vec() ; push(v, 10) ; push(v, 20) ; v          # [10, 20]
+```
+
+### Host externs
+
+Any `@name(...)` that is not a built-in C intrinsic compiles to an
+`AST_EXTERN` node. The host binds it at runtime:
+
+```c
+bool eng_register_extern(Engine *eng, const char *name,
+                         EngExternFn fn, void *user_ctx);
+```
+
+```math
+"fx_rate"(from:str, to:str) -> real = @fx_rate(from, to)
+```
+
+Callbacks receive evaluated `Value` arguments and use helpers such as
+`val_get_f64`, `val_as_cstr`, `val_from_f64`, `val_from_cstr`, and
+`val_from_f64_vec`.
+
+## Standard Library Modules
+
+| Module | File | Contents (selected) |
+| --- | --- | --- |
+| `boot_syntax` | `00_bootstrap` | `(` `)` `,` delimiters |
+| `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec` |
+| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`, vector API |
+| `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, `π`/`pi`/`e`/`phi` |
+| `trig` | `20_trig` | `sin cos tan sec csc cot`, inverses, `sinh cosh tanh` (+inverses), `ln log10 log2 logb exp sqrt cbrt hypot`, `sigmoid` |
+| `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /`, `conj cabs carg cexp_i polar` |
+| `geom_ext` | `40_geom` | `$vec2/$vec3/$circle`, vector arithmetic & `**` dot, `cross2/cross3`, magnitudes/distances, `circle_area`, `sphere_vol` |
+| `algebra` | `50_algebra` | `$mat2`, matrix arithmetic/inverse, `solve_2x2`, `quad_roots`, `quad_croot`, Horner `poly_val`, `poly_deriv/integ/add/mul`, `poly_newton` |
+| `units` | `60_units` | postfix `deg ° arcmin arcsec pct dB dBm`, length/mass/time/speed/pressure/energy/power units, temperature conversions |
+| `physics` | `70_physics` | CODATA constants; mechanics, gravity/orbital, circuits & EM, optics, quantum, relativity |
+| `chemistry` | `80_chemistry` | constants; stoichiometry, ideal gas, kinetic theory, pH/pOH & buffers, kinetics/decay, thermodynamics, Nernst |
 
 ## Usage (C API)
 
@@ -217,30 +270,29 @@ runtime with a clear type-mismatch error.
 #include "math_engine.h"   /* + user_loader.h for user extensions */
 
 Engine eng;
-eng_init(&eng);                    /* auto-boot embedded stdlib, zero parsing */
+if (!eng_init(&eng)) { /* embedded stdlib is now ready */ }
 
 Value v;
-if (eng_eval(&eng, "2 + 3 * 4", &v)) {
+if (eng_eval(&eng, "ke(2 kg, 36 kph)", &v)) {
     char buf[128];
     eng_format_value(&eng, v, buf, sizeof buf);
-    printf("%s\n", buf);           /* 14 */
+    printf("%s\n", buf);           /* 100 */
 }
 
-/* O(1) module toggling */
-eng_set_module(&eng, "trig", false);
+eng_set_module(&eng, "units", false);   /* O(1) toggle */
 ```
 
-Loading a user extension from raw `.math` text and reloading the compiled image:
+Compiling and reloading a user extension:
 
 ```c
 const uint8_t *mathc = NULL;
 size_t mathc_len = 0;
 
-/* Compile raw text, hook it into the engine, get back `.mathc` bytes */
+/* Compile raw `.math` text, hook it in, get back `.mathc` bytes */
 user_compile_ext(&eng, raw_math_text, &mathc, &mathc_len);
-/* ...host saves `mathc`/`mathc_len` somewhere... */
+/* ...host persists `mathc`/`mathc_len`... */
 
-/* Later: load a compiled image from the host in O(1) memcpy time */
+/* Later: load a compiled image in O(1) memcpy time */
 user_load_mathc(&eng, saved_bytes, saved_len);
 ```
 
@@ -248,9 +300,10 @@ Key entry points (`math_engine.h` + `user_loader.h`):
 
 | Function | Purpose |
 | --- | --- |
-| `eng_init` | Init engine and auto-boot the embedded precompiled stdlib (returns `bool`) |
-| `eng_init_blank` | Init a completely blank-slate engine (no types or ops) |
+| `eng_init` | Init engine + auto-boot embedded precompiled stdlib (returns `bool`) |
+| `eng_init_blank` | Init a completely blank-slate engine |
 | `eng_eval` | Parse & evaluate an expression |
+| `eng_register_extern` | Bind `@name(...)` to a host C callback |
 | `eng_set_module` / `eng_is_module_active` | Toggle a module in O(1) |
 | `eng_format_value` | Format any `Value` to a string |
 | `eng_val_type` / `eng_type_name` | Inspect a value's type |
@@ -261,67 +314,66 @@ Key entry points (`math_engine.h` + `user_loader.h`):
 ## The `.mathc` Binary Format
 
 A `.mathc` image is a compact, ABI- and OS-neutral snapshot of the engine's
-permanent tables. It starts with a 40-byte `MathcHeader` (magic `"MTHC"`,
+permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
 version, type/module/symbol/constant counts, arena watermarks, module bitmask)
-followed by the payload (`payload_bytes`). Because the header is fixed-width and
-the payload is copied verbatim, loading is a single `memcpy` — hence O(1) boot.
-
-## Standard Library Modules
-
-Loaded by `eng_init` from the embedded image:
-
-| Module | Contents |
-| --- | --- |
-| `boot_syntax` | `(` `)` `,` grouping/argument delimiters |
-| `boot_types` | `$real`, `$iota`, `$str`, `$vec` consuming types |
-| `boot_control` | `.`, `;`, `:=`, `=`, `??`, `if`, and the `vec`/`push`/`at`/... API |
-| `arith` | `+ - * / % ^`, comparisons, unary ops, word ops, `π`, `e` |
-| `trig` | `sin` `cos` `tan` `ln` `exp` `abs` `hypot`, `gcd`, `abs_diff`, ... |
-| `complex_ext` | `$complex`, overloaded complex arithmetic, `cabs`, `conj` |
-| `geom_ext` | `$vec2`, `$circle`, `+`/`-`/`dot`, `move_circle`, `circle_area` |
-
-User modules (e.g. `[user_physics]`) layer on top by declaring their
-dependencies (`<[arith]`, `<[trig]`, ...).
+followed by the payload. Because the header is fixed-width and the payload is
+copied verbatim, loading is a single `memcpy` — hence O(1) boot. Host-registered
+externs are intentionally *not* serialized; they are re-bound by the host after
+loading.
 
 ## Example Expressions
 
 | Expression | Result | Type |
 | --- | --- | --- |
-| `2 + 3 * 4` | `14` | real |
 | `2 ^ 3 ^ 2` | `512` | real |
 | `√16 + 5!` | `124` | real |
-| `5++ + +++10` | `18` | real |
-| `10 plus 25` | `35` | real |
-| `1 + 1i` | `1 + 1i` | complex |
-| `(1 + 2i) * (3 + 4i)` | `-5 + 10i` | complex |
-| `cabs(3 - 4i)` | `5` | real |
-| `sin(π / 2)` | `1` | real |
-| `ln(e ^ 4)` | `4` | real |
-| `gcd(1071, 462)` | `21` | real |
-| `vec2(5, 7) - vec2(1, 2)` | `vec2(x=4, y=5)` | vec2 |
-| `dot(vec2(3, 4), vec2(2, 1))` | `10` | real |
-| `circle(vec2(1, 2), 5).center.y` | `2` | real |
-| `vec3(1, 2, 3) ** vec3(4, 5, 6)` | `32` | real *(user ext)* |
-| `mech_energy(2, 10, 5)` | `198.0665` | real *(user ext)* |
-| `v := vec() ; push(v, 10) ; push(v, 20) ; push(v, 30) ; v` | `[10, 20, 30]` | vec |
-| `pts := vec() ; push(pts, vec2(1,2)) ; at(pts, -1)` | `vec2(x=1, y=2)` | vec2 |
+| `ncr(10, 3) + npr(5, 2)` | `140` | real |
+| `mod_pow(2, 10, 1000)` | `24` | real |
+| `(3 + 4)i` | `7i` | iota |
+| `((3 + 4)i)i` | `-7` | real |
+| `(-5 + 10i) / (3 + 4i)` | `1 + 2i` | complex |
+| `cross3(vec3(1,0,0), vec3(0,1,0))` | `vec3(x=0, y=0, z=1)` | vec3 |
+| `solve_2x2(2, 3, 8, 5, -1, 3)` | `vec2(x=1, y=2)` | vec2 |
+| `quad_croot(1, 2, 5)` | `-1 + 2i` | complex |
+| `sin(30 deg) + cos(60°)` | `1` | real |
+| `1.5 km + 25000 cm + 500 mm` | `1750.5` | real |
+| `2 atm + 1 bar` | `302650` | real |
+| `ke(2 kg, 36 kph)` | `100` | real |
+| `lorentz_gamma(0.6 * c0)` | `1.25` | real |
+| `ph_from_h(0.001) + poh_from_ph(3)` | `14` | real |
+| `fx_rate("USD", "INR")` | `84` | real *(host extern)* |
+| `50 to_inr` | `4200` | real *(host extern)* |
+
+## Tutorial
+
+A full chapter-by-chapter guide lives in [`Tutorial/`](Tutorial/00_Index_and_Overview.md):
+
+1. Getting Started & Host API
+2. Grammar, Types & Operators
+3. Control Flow, Structs & Vectors
+4. Algebra, Polynomials & Matrices
+5. Units, Physics & Chemistry
+6. Host Extern Callbacks & Networking
+
+## Testing
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
-stdlib, exercises the `user_loader` workflow (compile raw text → `.mathc` →
-reload), prints an architecture report, and runs a 36-case automated suite
-(stdlib + user extension + generic vector) as pass/fail.
+stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
+reload), registers host externs, prints an architecture report, and runs an
+**82-case** automated suite (stdlib + algebra + units + physics + chemistry +
+host externs) as pass/fail. Run it with `make run`.
 
 ## Design Goals
 
 1. **Zero built-ins** — a predictable, minimal, auditable core.
 2. **Data-driven language** — syntax and semantics live in `.math`, not C.
-3. **No engine-side I/O** — the host owns files; the engine owns memory only.
+3. **No engine-side I/O** — the host owns files/network; the engine owns memory.
 4. **Instant boot** — precompiled, embedded, O(1) `memcpy` load.
 5. **Composability** — modules layer via `<[parent]` and toggle O(1).
-6. **Small footprint** — fixed-capacity arenas, compact 8-byte AST nodes.
-7. **Portability** — plain C11 + libm, ABI/OS-neutral binary format.
+6. **Host extensibility** — native callbacks via `@extern` with no core coupling.
+7. **Small footprint** — fixed-capacity arenas, compact 8-byte AST nodes.
+8. **Portability** — plain C11 + libm, ABI/OS-neutral binary format.
 
 ## License
 
-No license file is currently included. Add one before distributing or reusing
-this code.
+Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE).

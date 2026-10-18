@@ -41,7 +41,8 @@ static uint16_t parse_field_step(Parser *P, uint16_t left) {
     MemArena       *mem = P->lex.mem;
     const SymTable *tab = P->lex.tab;
 
-    if (P->lex.cur.kind != TOK_IDENT) {
+    if (P->lex.cur.kind != TOK_IDENT &&
+        !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
         mem_err(mem, "Expected struct field name after member access operator");
         return MEM_NO_IDX;
     }
@@ -108,7 +109,7 @@ static uint16_t parse_nud(Parser *P) {
     const SymTable *tab = P->lex.tab;
     Token t = P->lex.cur;
 
-    /* 1. Consumed Literal Value ($real, $iota, $str) */
+    /* 1. Consumed Literal Value ($real, $str) */
     if (t.kind == TOK_VAL) {
         lex_next(&P->lex);
         uint16_t tid = val_get_type(mem, t.val);
@@ -134,62 +135,102 @@ static uint16_t parse_nud(Parser *P) {
         return inner;
     }
 
-    /* 3. Private C Intrinsic `@add(a, b)`, `@vset(v, i, x)`, etc. (0..3 args) */
+    /* 3. Private C Intrinsic `@add(a, b)` OR Host Extern Callback `@fx_rate(from, to)` */
     if (t.kind == TOK_AT) {
         if (!P->in_ext_body) {
-            mem_err(mem, "Private C intrinsics (@) cannot be called outside extensions");
+            mem_err(mem, "Private '@' intrinsics/externs cannot be called outside extensions");
             return MEM_NO_IDX;
         }
         lex_next(&P->lex);
-        if (P->lex.cur.kind != TOK_IDENT) {
-            mem_err(mem, "Expected intrinsic name after '@'");
+        if (P->lex.cur.kind != TOK_IDENT &&
+            !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
+            mem_err(mem, "Expected intrinsic or extern name after '@'");
             return MEM_NO_IDX;
         }
-        IntrinsicId intr = sym_lookup_intrinsic(P->lex.src + P->lex.cur.off, P->lex.cur.len);
-        if (intr == INTR_NONE) {
-            mem_err(mem, "Unknown C intrinsic '@%.*s'", (int)P->lex.cur.len, P->lex.src + P->lex.cur.off);
-            return MEM_NO_IDX;
-        }
+        const char *iname = P->lex.src + P->lex.cur.off;
+        uint16_t    ilen  = P->lex.cur.len;
+        IntrinsicId intr  = sym_lookup_intrinsic(iname, ilen);
         lex_next(&P->lex);
+
         if (P->lex.cur.kind != TOK_LPAREN) {
-            mem_err(mem, "Expected '(' after intrinsic");
+            mem_err(mem, "Expected '(' after '@%.*s'", (int)ilen, iname);
             return MEM_NO_IDX;
         }
         lex_next(&P->lex);
-        uint16_t arg1 = MEM_NO_IDX;
-        uint16_t arg2 = MEM_NO_IDX;
-        uint16_t arg3 = MEM_NO_IDX;
-        if (P->lex.cur.kind != TOK_RPAREN) {
-            arg1 = parser_parse_expr(P, 0);
-            if (P->lex.cur.kind == TOK_COMMA) {
-                lex_next(&P->lex);
-                arg2 = parser_parse_expr(P, 0);
+
+        /* 3a. Built-in C Intrinsic (`@add`, `@sin`, `@vpush`, etc.) */
+        if (intr != INTR_NONE) {
+            uint16_t arg1 = MEM_NO_IDX;
+            uint16_t arg2 = MEM_NO_IDX;
+            uint16_t arg3 = MEM_NO_IDX;
+            if (P->lex.cur.kind != TOK_RPAREN) {
+                arg1 = parser_parse_expr(P, 0);
                 if (P->lex.cur.kind == TOK_COMMA) {
                     lex_next(&P->lex);
-                    arg3 = parser_parse_expr(P, 0);
+                    arg2 = parser_parse_expr(P, 0);
+                    if (P->lex.cur.kind == TOK_COMMA) {
+                        lex_next(&P->lex);
+                        arg3 = parser_parse_expr(P, 0);
+                    }
+                }
+            }
+            if (P->lex.cur.kind != TOK_RPAREN) {
+                mem_err(mem, "Expected ')' after intrinsic arguments");
+            } else {
+                lex_next(&P->lex);
+            }
+            return mem_alloc_ast(mem, AST_INTRINSIC, (uint8_t)intr, arg3, arg1, arg2);
+        }
+
+        /* 3b. Host Extern Callback (`@fx_rate(from, to)`, etc.): 0..4 args via AST_ARG_LINK */
+        StrSlice ext_slice  = mem_intern_str(mem, iname, ilen);
+        uint16_t ext_sym_id = sym_intern((SymTable *)tab, mem, ext_slice);
+        uint16_t head = MEM_NO_IDX;
+        uint16_t tail = MEM_NO_IDX;
+        uint8_t  argc = 0;
+
+        if (P->lex.cur.kind != TOK_RPAREN) {
+            while (1) {
+                uint16_t arg  = parser_parse_expr(P, 0);
+                uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, arg, MEM_NO_IDX);
+                if (head == MEM_NO_IDX) head = link;
+                else mem_get_ast_mut(mem, tail)->right = link;
+                tail = link;
+                argc++;
+                if (P->lex.cur.kind == TOK_COMMA) {
+                    lex_next(&P->lex);
+                } else {
+                    break;
                 }
             }
         }
         if (P->lex.cur.kind != TOK_RPAREN) {
-            mem_err(mem, "Expected ')' after intrinsic arguments");
+            mem_err(mem, "Expected ')' after arguments to '@%.*s'", (int)ilen, iname);
         } else {
             lex_next(&P->lex);
         }
-        return mem_alloc_ast(mem, AST_INTRINSIC, (uint8_t)intr, arg3, arg1, arg2);
+        return mem_alloc_ast(mem, AST_EXTERN, argc, ext_sym_id, head, MEM_NO_IDX);
     }
 
     /* 4. Prefix Unary Operator (`-x`, `√x`, `++x`, `+++x`) */
     if (t.kind == TOK_OP) {
         int prec = sym_get_active_prec(tab, t.sym_id, FIX_PREFIX);
-        if (prec < 0) {
-            StrSlice s = tab->syms[t.sym_id];
-            mem_err(mem, "Operator '%.*s' has no active prefix definition",
-                    (int)s.len, mem_str_ptr(mem, s));
-            return MEM_NO_IDX;
+        bool is_word_local = lex_is_ident_start((unsigned char)P->lex.src[t.off]) &&
+                             (find_local_slot(P, P->lex.src + t.off, t.len) >= 0 || prec < 0);
+        if (!is_word_local) {
+            if (prec < 0) {
+                StrSlice s = tab->syms[t.sym_id];
+                mem_err(mem, "Operator '%.*s' has no active prefix definition",
+                        (int)s.len, mem_str_ptr(mem, s));
+                return MEM_NO_IDX;
+            }
+            lex_next(&P->lex);
+            uint16_t operand = parser_parse_expr(P, prec);
+            return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, t.sym_id, operand, MEM_NO_IDX);
         }
-        lex_next(&P->lex);
-        uint16_t operand = parser_parse_expr(P, prec);
-        return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, t.sym_id, operand, MEM_NO_IDX);
+        /* Word operator without prefix fixity (e.g. postfix 'i') in a NUD position
+           acts as an identifier (local variable, parameter, constant, or call). */
+        t.kind = TOK_IDENT;
     }
 
     /* 5. Identifier */
@@ -254,7 +295,7 @@ static uint16_t parse_nud(Parser *P) {
         int sym_id = sym_find(tab, mem, id_str, id_len);
         if (sym_id >= 0) {
             for (uint8_t i = 0; i < tab->const_count; ++i) {
-                if (tab->consts[i].sym_id == (uint8_t)sym_id &&
+                if (tab->consts[i].sym_id == (uint16_t)sym_id &&
                     sym_mod_enabled(tab, tab->consts[i].mod_id)) {
                     return mem_alloc_ast(mem, AST_CONST_SYM, 0, (uint16_t)sym_id, MEM_NO_IDX, MEM_NO_IDX);
                 }

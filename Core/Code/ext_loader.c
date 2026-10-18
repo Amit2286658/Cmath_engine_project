@@ -7,6 +7,7 @@
 
 #include "ext_loader.h"
 #include "parser.h"
+#include "evaluator.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -253,7 +254,7 @@ static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
             root->left != MEM_NO_IDX && root->right != MEM_NO_IDX &&
             mem_get_ast(mem, root->left)->kind == AST_SLOT_LOAD && mem_get_ast(mem, root->left)->sub == 0 &&
             mem_get_ast(mem, root->right)->kind == AST_SLOT_LOAD && mem_get_ast(mem, root->right)->sub == 1) {
-            uint8_t target_sym = (uint8_t)root->ref;
+            uint16_t target_sym = root->ref;
             for (uint16_t i = 0; i < tab->overload_count; ++i) {
                 const OpOverload *target = &tab->overloads[i];
                 if (target != ov && target->sym_id == target_sym &&
@@ -318,7 +319,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
 
         if (c == '"') {
             StrSlice sym    = ext_read_quoted(&L);
-            uint8_t  sym_id = sym_intern(tab, mem, sym);
+            uint16_t sym_id = sym_intern(tab, mem, sym);
             ext_skip_ws(&L);
 
             /* Syntax delimiter binding (`"(" => @lparen`, `")" => @rparen`, `"," => @comma`) */
@@ -364,9 +365,17 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
 
                 uint16_t c_pool_idx = 0;
                 Value cval = val_void();
-                if (c_ast != MEM_NO_IDX && mem_get_ast(mem, c_ast)->kind == AST_LIT) {
-                    c_pool_idx = mem_get_ast(mem, c_ast)->ref;
-                    cval = val_make_f64(mem, rtid, mem_read_pool(mem, c_pool_idx));
+                if (c_ast != MEM_NO_IDX) {
+                    if (mem_get_ast(mem, c_ast)->kind == AST_LIT) {
+                        c_pool_idx = mem_get_ast(mem, c_ast)->ref;
+                        cval = val_make_f64(mem, rtid, mem_read_pool(mem, c_pool_idx));
+                    } else {
+                        Value ev = eval_ast(mem, tab, c_ast, 0, (uint8_t)rtid);
+                        double d = val_get_f64(mem, ev);
+                        c_pool_idx = mem_alloc_pool(mem, 1);
+                        mem_write_pool(mem, c_pool_idx, d);
+                        cval = val_make_f64(mem, rtid, d);
+                    }
                 }
                 if (tab->const_count < SYM_MAX_CONSTS) {
                     uint8_t cid = tab->const_count++;
@@ -384,13 +393,13 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
                 mem_err(mem, "Expected '(', ':', or '=>' after symbol in declaration");
                 break;
             }
-            StrSlice pnames[4];
-            uint16_t ptypes[4];
+            StrSlice pnames[8];
+            uint16_t ptypes[8];
             uint8_t  pcount = 0;
 
             while (L.pos < L.len && !mem->has_error) {
                 if (ext_match_char(&L, ')')) break;
-                if (pcount >= 4) { mem_err(mem, "Max 4 parameters supported"); break; }
+                if (pcount >= 8) { mem_err(mem, "Max 8 parameters supported"); break; }
                 pnames[pcount] = ext_read_ident(&L);
                 ext_match_char(&L, ':');
                 StrSlice tn = ext_read_ident(&L);
@@ -435,12 +444,12 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         }
 
         if (c == '(') {
-            StrSlice pnames[4];
-            uint16_t ptypes[4];
+            StrSlice pnames[8];
+            uint16_t ptypes[8];
             if (!ext_parse_one_param(&L, &pnames[0], &ptypes[0])) break;
 
             StrSlice sym    = ext_read_quoted(&L);
-            uint8_t  sym_id = sym_intern(tab, mem, sym);
+            uint16_t sym_id = sym_intern(tab, mem, sym);
             ext_skip_ws(&L);
 
             uint8_t pcount = 1;

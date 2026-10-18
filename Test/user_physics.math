@@ -1,13 +1,15 @@
 # =============================================================================
-# user_physics.math — Sample User-Defined Extension Hooked via `user_loader.h`
+# Test/user_physics.math — User Extension Hooked via In-Memory `user_loader.h`
 # =============================================================================
 # Demonstrates:
-#   1. Defining multiple functions, operators, constants, and structs in one file
-#   2. Calling predefined stdlib functions (`sin`, `hypot`, `if`), operators
-#      (`+`, `-`, `*`, `/`, `^`, `√`), and constants (`π`)
-#   3. Calling earlier user-defined functions (`deg2rad`, `ke`) from later ones
-#   4. Operating on growable/shrinkable dynamic vectors (`$vec`) of both
-#      primitive `$real` values and composite `$vec3` structs!
+#   1. Calling standard library modules (`[arith]`, `[trig]`, `[geom_ext]`,
+#      `[algebra]`, `[units]`, `[physics]`, `[chemistry]`)
+#   2. Wrapping host-registered C callbacks (`eng_register_extern`) for:
+#      - `@fx_rate(from, to)`         : Realtime currency exchange rate
+#      - `@fx_history(from, to, days)`: Vector-returning historical FX series
+#      - `@kv_set(key, val)` / `@kv_get(key)` : Persistent host key-value store
+#      - `@elem_mass(symbol)`         : IUPAC Periodic Table atomic mass lookup
+#   3. Defining custom applied engineering & rocket propulsion functions
 
 [user_physics]
 <[boot_syntax]
@@ -15,68 +17,42 @@
 <[boot_control]
 <[arith]
 <[trig]
+<[geom_ext]
+<[algebra]
+<[units]
+<[physics]
+<[chemistry]
 
-# 1. User-defined 3D Vector Struct ($vec3)
-$vec3(x:real, y:real, z:real)
+# 1. Applied Aerospace & Fluid Engineering Functions
+#    Tsiolkovsky Rocket Equation: dV = Isp * g0 * ln(m0 / mf)
+"rocket_dv"(isp_s:real, m0_kg:real, mf_kg:real) -> real =
+    isp_s * g0 * ln(m0_kg / mf_kg)
 
-# 2. User-defined Physical Constant (Standard Gravity g0 in m/s^2)
-"g0" : real = 9.80665
+#    Acoustic / RF Free-Space Path Loss (linear ratio from distance & wavelength)
+"fspl_ratio"(dist_m:real, lambda_m:real) -> real =
+    ((4 * π * dist_m) / lambda_m) ^ 2
 
-# 3. User-defined Infix Operator `**` for 3D Dot Product (left-assoc, prec 20)
-(a:vec3) "**" (b:vec3) :<20 -> real = a.x * b.x + a.y * b.y + a.z * b.z
+# 2. Host-Backed Realtime Currency Conversion (`@fx_rate`)
+"fx_rate"(from:str, to:str) -> real = @fx_rate(from, to)
+"convert_fx"(amount:real, from:str, to:str) -> real = amount * @fx_rate(from, to)
+(usd:real) "to_inr" :90 -> real = usd * @fx_rate("USD", "INR")
+(eur:real) "to_usd" :90 -> real = eur * @fx_rate("EUR", "USD")
+"vec_sum_fx"(prices_usd:vec, target_ccy:str) -> real =
+    vec_sum(prices_usd) * @fx_rate("USD", target_ccy)
 
-# 4. Multiple User-Defined Functions in the Same File:
+# 3. Host-Backed Vector-Returning Time Series (`@fx_history` -> `$vec`)
+"fx_history"(from:str, to:str, days:real) -> vec = @fx_history(from, to, days)
+"fx_sma"(from:str, to:str, days:real, window:real) -> real =
+    sma(@fx_history(from, to, days), window)
 
-# 4a. Convert degrees to radians using predefined constant `π` from `10_arith.math`
-"deg2rad"(deg:real) -> real = deg * π / 180
+# 4. Host-Backed Persistent Key-Value Store (`@kv_set`, `@kv_get`)
+"save_var"(key:str, val:real) -> real = @kv_set(key, val)
+"load_var"(key:str)           -> real = @kv_get(key)
 
-# 4b. Kinetic energy: K = 0.5 * m * v^2
-"ke"(mass:real, vel:real) -> real = 0.5 * mass * (vel ^ 2)
-
-# 4c. Potential energy: U = m * g0 * h (uses `g0` defined above)
-"pe"(mass:real, height:real) -> real = mass * g0 * height
-
-# 4d. Total mechanical energy: calls BOTH `ke(m, v)` and `pe(m, h)` defined above!
-"mech_energy"(mass:real, vel:real, height:real) -> real =
-    ke(mass, vel) + pe(mass, height)
-
-# 4e. Projectile horizontal range: R = (v^2 * sin(2 * theta)) / g0
-#     Calls user-defined `deg2rad(deg)` AND predefined `sin(x)` from `20_trig.math`!
-"proj_range"(vel:real, angle_deg:real) -> real =
-    (vel ^ 2) * sin(2 * deg2rad(angle_deg)) / g0
-
-# 4f. 3D vector magnitude: calls predefined `hypot(x, y)` from `20_trig.math`!
-"vec3_mag"(v:vec3) -> real = hypot(hypot(v.x, v.y), v.z)
-
-# 4g. 3D Euclidean distance between two `vec3` points (calls `vec3_mag` above)
-"vec3_dist"(a:vec3, b:vec3) -> real =
-    vec3_mag(vec3(b.x - a.x, b.y - a.y, b.z - a.z))
-
-# 4h. Linear interpolation
-"lerp"(a:real, b:real, t:real) -> real = a + (b - a) * t
-
-# 5. User-Defined Functions Operating on Dynamic Vectors (`$vec` of any `T`):
-
-# 5a. Sum all elements of a dynamic `vec<real>` of arbitrary runtime length
-"vec_sum"(v:vec) -> real = (
-    s := 0 ;
-    i := 0 ;
-    n := len(v) ;
-    (i < n) ?? (
-        s = s + at(v, i) ;
-        i = i + 1
-    ) ;
-    s
-)
-
-# 5b. Total 3D trajectory path length across a dynamic `vec<vec3>` of waypoints
-"vec3_path_len"(pts:vec) -> real = (
-    total := 0 ;
-    i := 1 ;
-    n := len(pts) ;
-    (i < n) ?? (
-        total = total + vec3_dist(at(pts, i - 1), at(pts, i)) ;
-        i = i + 1
-    ) ;
-    total
-)
+# 5. Host-Backed Periodic Table Atomic Mass Lookup (`@elem_mass`)
+"elem"(sym:str)          -> real = @elem_mass(sym)
+"molar_mass_h2o"()       -> real = 2 * @elem_mass("H")  + @elem_mass("O")
+"molar_mass_co2"()       -> real = @elem_mass("C")      + 2 * @elem_mass("O")
+"molar_mass_nacl"()      -> real = @elem_mass("Na")     + @elem_mass("Cl")
+"molar_mass_glucose"()   -> real =
+    6 * @elem_mass("C") + 12 * @elem_mass("H") + 6 * @elem_mass("O")

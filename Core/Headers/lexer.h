@@ -32,7 +32,7 @@ typedef struct {
     TokKind  kind;
     uint16_t off;
     uint16_t len;
-    uint8_t  sym_id;
+    uint16_t sym_id;
     Value    val;
 } Token;
 

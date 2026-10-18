@@ -265,10 +265,10 @@ static Value eval_intrinsic(MemArena *mem, const SymTable *tab,
  * ============================================================================ */
 
 static Value dispatch_overload(MemArena *mem, const SymTable *tab,
-                               uint8_t sym_id, OpFixity fixity,
+                               uint16_t sym_id, OpFixity fixity,
                                uint8_t argc, const Value *args) {
-    uint8_t arg_types[4] = { 0, 0, 0, 0 };
-    for (uint8_t i = 0; i < argc && i < 4; ++i) {
+    uint8_t arg_types[8] = { 0 };
+    for (uint8_t i = 0; i < argc && i < 8; ++i) {
         arg_types[i] = (uint8_t)val_get_type(mem, args[i]);
     }
 
@@ -360,7 +360,7 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
         }
 
         case AST_CONST_SYM: {
-            uint8_t sym_id = (uint8_t)n->ref;
+            uint16_t sym_id = n->ref;
             for (uint8_t i = 0; i < tab->const_count; ++i) {
                 if (tab->consts[i].sym_id == sym_id && sym_mod_enabled(tab, tab->consts[i].mod_id)) {
                     return tab->const_vals[tab->consts[i].val_idx];
@@ -389,11 +389,11 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
         case AST_UNARY: {
             Value arg = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
             if (mem->has_error) return val_void();
-            return dispatch_overload(mem, tab, (uint8_t)n->ref, (OpFixity)n->sub, 1, &arg);
+            return dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 1, &arg);
         }
 
         case AST_BINARY: {
-            uint8_t mtag = sym_active_meta_tag(tab, (uint8_t)n->ref, (OpFixity)n->sub);
+            uint8_t mtag = sym_active_meta_tag(tab, n->ref, (OpFixity)n->sub);
 
             if (mtag == INTR_SEQ) {
                 (void)eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
@@ -448,11 +448,11 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
             if (mem->has_error) return val_void();
             args[1] = eval_ast(mem, tab, n->right, frame_base, cur_ret_type);
             if (mem->has_error) return val_void();
-            return dispatch_overload(mem, tab, (uint8_t)n->ref, (OpFixity)n->sub, 2, args);
+            return dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 2, args);
         }
 
         case AST_CALL: {
-            uint8_t mtag = sym_active_meta_tag(tab, (uint8_t)n->ref, FIX_FUNC);
+            uint8_t mtag = sym_active_meta_tag(tab, n->ref, FIX_FUNC);
             if (mtag == INTR_IF && n->sub == 3) {
                 const AstNode *l1 = mem_get_ast(mem, n->left);
                 const AstNode *l2 = mem_get_ast(mem, l1->right);
@@ -466,16 +466,16 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
                 }
             }
 
-            Value args[4];
+            Value args[8];
             uint8_t argc = 0;
             uint16_t cur = n->left;
-            while (cur != MEM_NO_IDX && argc < 4) {
+            while (cur != MEM_NO_IDX && argc < 8) {
                 const AstNode *link = mem_get_ast(mem, cur);
                 args[argc++] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
                 if (mem->has_error) return val_void();
                 cur = link->right;
             }
-            return dispatch_overload(mem, tab, (uint8_t)n->ref, FIX_FUNC, argc, args);
+            return dispatch_overload(mem, tab, n->ref, FIX_FUNC, argc, args);
         }
 
         case AST_INTRINSIC: {
@@ -487,6 +487,35 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
                       ? eval_ast(mem, tab, n->ref, frame_base, cur_ret_type) : val_void();
             if (mem->has_error) return val_void();
             return eval_intrinsic(mem, tab, (IntrinsicId)n->sub, a, b, c, cur_ret_type);
+        }
+
+        case AST_EXTERN: {
+            Value args[8];
+            uint8_t argc = 0;
+            uint16_t cur = n->left;
+            while (cur != MEM_NO_IDX && argc < 8) {
+                const AstNode *link = mem_get_ast(mem, cur);
+                args[argc++] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
+                if (mem->has_error) return val_void();
+                cur = link->right;
+            }
+            const ExternDef *ext = sym_find_extern(tab, mem, n->ref);
+            if (!ext || !ext->fn) {
+                StrSlice s = tab->syms[n->ref];
+                mem_err(mem, "Unregistered host extern '@%.*s'",
+                        (int)s.len, mem_str_ptr(mem, s));
+                return val_void();
+            }
+            Value out = val_void();
+            if (!ext->fn(mem, tab, args, argc, ext->user_ctx, &out)) {
+                if (!mem->has_error) {
+                    StrSlice s = tab->syms[n->ref];
+                    mem_err(mem, "Host extern '@%.*s' failed",
+                            (int)s.len, mem_str_ptr(mem, s));
+                }
+                return val_void();
+            }
+            return out;
         }
 
         case AST_CONSTRUCT: {

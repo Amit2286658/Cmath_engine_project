@@ -1,11 +1,12 @@
 /*
- * sym_table.h — Dynamic Module, Type, Struct, Symbol & Overload Registry Module
+ * sym_table.h — Dynamic Module, Type, Struct, Symbol, Overload & Extern Registry
  *
  * Purpose:
  *   Stores and queries extension modules (with O(1) bitmask toggling),
  *   consuming lexical types, flat C-style structs, dynamic vectors (`$vec`),
  *   generic type wildcards (`T` / `any`), operator/function overloads,
- *   global constants, and private C intrinsic IDs.
+ *   global constants, private C intrinsic IDs, and host-registered extern
+ *   callbacks (`@<extern_name>`).
  */
 
 #ifndef SYM_TABLE_H
@@ -24,10 +25,11 @@ extern "C" {
 #define SYM_MAX_MODULES       32
 #define SYM_MAX_TYPES         32
 #define SYM_MAX_PAT_ELEMS    128
-#define SYM_MAX_FIELDS        64
-#define SYM_MAX_SYMS          96
-#define SYM_MAX_OVERLOADS    160
-#define SYM_MAX_CONSTS        32
+#define SYM_MAX_FIELDS       128
+#define SYM_MAX_SYMS         512
+#define SYM_MAX_OVERLOADS    384
+#define SYM_MAX_CONSTS        64
+#define SYM_MAX_EXTERNS       32
 
 #define SYM_TYPE_ANY       0xFEu   /* Generic `T` / `any` parameter or return   */
 
@@ -123,11 +125,12 @@ typedef enum {
     AST_CALL,
     AST_ARG_LINK,
     AST_INTRINSIC,
-    AST_CONSTRUCT
+    AST_CONSTRUCT,
+    AST_EXTERN      /* Host-registered callback `@<extern_name>(args...)` */
 } AstKind;
 
 /* ============================================================================
- * 3. TYPE, STRUCT, PATTERN & OPERATOR DESCRIPTORS
+ * 3. TYPE, STRUCT, PATTERN, OPERATOR & HOST EXTERN DESCRIPTORS
  * ============================================================================ */
 
 typedef enum {
@@ -178,7 +181,7 @@ typedef enum {
 } OpFixity;
 
 typedef struct {
-    uint8_t  sym_id;
+    uint16_t sym_id;
     uint8_t  mod_id;
     uint8_t  fixity;
     uint8_t  prec;
@@ -186,23 +189,45 @@ typedef struct {
     uint8_t  local_count;
     uint8_t  ret_type;
     uint8_t  meta_tag;       /* 1 = inlined alias, or INTR_LPAREN..INTR_FIELD */
-    uint8_t  param_types[4];
+    uint8_t  param_types[8];
     uint16_t body_ast;
 } OpOverload;
 
 typedef struct {
-    uint8_t  sym_id;
+    uint16_t sym_id;
     uint8_t  mod_id;
     uint8_t  type_id;
     uint8_t  val_idx;
     uint16_t pool_idx;       /* Index into MemArena.f64_pool for ABI-neutral .mathc */
 } ConstDef;
 
+struct SymTable;
+
+/*
+ * Host Extern Callback Signature (`@<name>(arg1, arg2, ...)` in `.math` files):
+ *   - `mem`: engine memory arena (use `val_as_cstr`, `val_get_f64`, `val_from_f64`,
+ *     `val_from_cstr`, `val_from_f64_vec`, or `mem_err`)
+ *   - `tab`: symbol & type registry
+ *   - `args`: array of `argc` evaluated `Value` arguments (0..4)
+ *   - `argc`: number of arguments passed
+ *   - `user_ctx`: opaque pointer provided by the host during registration
+ *   - `out_val`: destination for the returned `Value`
+ */
+typedef bool (*EngExternFn)(MemArena *mem, const struct SymTable *tab,
+                            const Value *args, uint8_t argc,
+                            void *user_ctx, Value *out_val);
+
+typedef struct {
+    char        name[32];    /* Self-contained name (survives .mathc reloads) */
+    EngExternFn fn;
+    void       *user_ctx;
+} ExternDef;
+
 /* ============================================================================
  * 4. SYMBOL & TYPE TABLE CONTEXT
  * ============================================================================ */
 
-typedef struct {
+typedef struct SymTable {
     StrSlice    mod_names[SYM_MAX_MODULES];
     uint8_t     mod_count;
     uint64_t    active_modules;
@@ -217,7 +242,7 @@ typedef struct {
     uint16_t    field_count;
 
     StrSlice    syms[SYM_MAX_SYMS];
-    uint8_t     sym_count;
+    uint16_t    sym_count;
 
     OpOverload  overloads[SYM_MAX_OVERLOADS];
     uint16_t    overload_count;
@@ -225,6 +250,10 @@ typedef struct {
     ConstDef    consts[SYM_MAX_CONSTS];
     Value       const_vals[SYM_MAX_CONSTS];
     uint8_t     const_count;
+
+    /* Host-registered runtime callbacks (not serialized into `.mathc` files) */
+    ExternDef   externs[SYM_MAX_EXTERNS];
+    uint8_t     extern_count;
 } SymTable;
 
 /* ============================================================================
@@ -240,12 +269,12 @@ bool        sym_is_module_active(const SymTable *tab, const MemArena *mem, const
 bool        sym_mod_enabled(const SymTable *tab, uint8_t mod_id);
 
 /* Symbol Interning & Lookup */
-uint8_t     sym_intern(SymTable *tab, MemArena *mem, StrSlice s);
+uint16_t    sym_intern(SymTable *tab, MemArena *mem, StrSlice s);
 int         sym_find(const SymTable *tab, const MemArena *mem, const char *str, uint16_t len);
-bool        sym_has_active_op(const SymTable *tab, uint8_t sym_id);
-uint8_t     sym_get_active_syntax(const SymTable *tab, uint8_t sym_id);
-int         sym_get_active_prec(const SymTable *tab, uint8_t sym_id, OpFixity fixity);
-uint8_t     sym_active_meta_tag(const SymTable *tab, uint8_t sym_id, OpFixity fix_filter);
+bool        sym_has_active_op(const SymTable *tab, uint16_t sym_id);
+uint8_t     sym_get_active_syntax(const SymTable *tab, uint16_t sym_id);
+int         sym_get_active_prec(const SymTable *tab, uint16_t sym_id, OpFixity fixity);
+uint8_t     sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_filter);
 
 /* Type & Flat Struct Queries */
 uint16_t    sym_find_type(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len);
@@ -255,8 +284,11 @@ bool        sym_resolve_field(const SymTable *tab, const MemArena *mem, uint16_t
 const char *sym_type_name(const SymTable *tab, const MemArena *mem, uint16_t type_id,
                           char *buf, size_t cap);
 
-/* Intrinsic Name Lookup */
-IntrinsicId sym_lookup_intrinsic(const char *s, uint16_t len);
+/* Intrinsic Name Lookup & Host Extern Callback Registration */
+IntrinsicId      sym_lookup_intrinsic(const char *s, uint16_t len);
+bool             sym_register_extern(SymTable *tab, MemArena *mem, const char *name,
+                                     EngExternFn fn, void *user_ctx);
+const ExternDef *sym_find_extern(const SymTable *tab, const MemArena *mem, uint16_t sym_id);
 
 #ifdef __cplusplus
 }

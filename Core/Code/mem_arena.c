@@ -385,3 +385,43 @@ Value val_clone_comp(MemArena *mem, Value v, uint16_t flat_size) {
     }
     return val_make_comp(mem, tid, new_idx, flat_size);
 }
+
+Value val_from_f64(MemArena *mem, double d) {
+    return val_make_f64(mem, mem->fast_real_type, d);
+}
+
+Value val_from_cstr(MemArena *mem, const char *cstr) {
+    if (!cstr || mem->str_type_id == 0) return val_void();
+    StrSlice s = mem_intern_str(mem, cstr, (uint16_t)strlen(cstr));
+    return val_make_str(mem, mem->str_type_id, s);
+}
+
+Value val_from_f64_vec(MemArena *mem, const double *vals, uint16_t count) {
+    if (mem->vec_type_id == 0) return val_void();
+    uint16_t hdr_idx = mem_vec_alloc_hdr(mem, mem->fast_real_type, count);
+    if (mem->has_error) return val_void();
+    if (count > 0 && vals != NULL) {
+        if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+        for (uint16_t i = 0; i < count; ++i) {
+            mem_write_pool(mem, data_idx + i, vals[i]);
+        }
+        mem_write_pool(mem, hdr_idx + 1, (double)count);
+    }
+    return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+}
+
+bool val_as_cstr(const MemArena *mem, Value v, char *buf, size_t cap) {
+    if (!buf || cap == 0) return false;
+    buf[0] = '\0';
+    if (mem->str_type_id == 0 || val_get_type(mem, v) != mem->str_type_id) {
+        return false;
+    }
+    StrSlice s = val_get_str(mem, v);
+    size_t copy_len = (s.len < cap - 1) ? s.len : (cap - 1);
+    if (copy_len > 0) {
+        memcpy(buf, mem_str_ptr(mem, s), copy_len);
+    }
+    buf[copy_len] = '\0';
+    return true;
+}

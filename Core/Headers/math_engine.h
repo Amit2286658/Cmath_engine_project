@@ -2,23 +2,20 @@
  * math_engine.h — Top-Level Engine Wrapper (Auto-Boots Precompiled Standard Library)
  *
  * Architecture Overview:
- *   Frontend / Host Application (`main.c`)
- *        │   (Handles all platform-specific file I/O, paths & storage)
+ *   User Program (`main.c`)
  *        │
  *        ├──► [math_engine.h / math_engine.c]  (Top-Level Engine Wrapper)
- *        │       │   Automatically boots precompiled bootstrap & standard `.math`
- *        │       │   modules from embedded `stdlib_precompiled.h` in O(1) `memcpy`
- *        │       │   time with zero filesystem or directory access.
+ *        │       │   Automatically loads precompiled bootstrap & standard `.math`
+ *        │       │   modules (`stdlib_precompiled.h` / `Library/stdlib.mathc`)
+ *        │       │   inside `eng_init()` with zero filesystem or path logic.
  *        │       ├──► [mem_arena.h/.c]   (Isolated Memory Arena & 8B/12B Value Packing)
- *        │       ├──► [sym_table.h/.c]   (Dynamic Types, Flat Structs, Modules & Overloads)
+ *        │       ├──► [sym_table.h/.c]   (Dynamic Types, Structs, Modules, Overloads, Externs)
  *        │       ├──► [lexer.h/.c]       (Pattern-Driven Consuming Types & Syntax Tokens)
  *        │       ├──► [parser.h/.c]      (Top-Down Operator Precedence Pratt Parser)
  *        │       ├──► [ext_loader.h/.c]  (In-Memory `.math` Compiler & `.mathc` Serializer)
  *        │       └──► [evaluator.h/.c]   (Type-Dispatched AST Evaluator & `@` Intrinsics)
  *        │
- *        └──► [user_loader.h / user_loader.c]  (In-Memory User Extension Utility)
- *                1. `user_compile_ext`: raw `.math` text -> hooks `Engine` + returns `.mathc` bytes
- *                2. `user_load_mathc` : `.mathc` bytes   -> hooks `Engine` in O(1) `memcpy` time
+ *        └──► [user_loader.h / user_loader.c]  (In-Memory User `.math` / `.mathc` API)
  */
 
 #ifndef MATH_ENGINE_H
@@ -43,10 +40,9 @@ typedef struct {
 
 /*
  * Initialize the Engine and INTERNALLY load all bootstrap & predefined `.math`
- * modules (`[boot_syntax]`, `[boot_types]`, `[boot_control]`, `[arith_core]`,
- * `[arith_ext]`, `[trig_const]`, `[trig_core]`, `[complex_ext]`, `[geom_ext]`)
- * directly from the embedded `k_stdlib_mathc` image in O(1) `memcpy` time
- * without touching the filesystem.
+ * modules (`[boot_syntax]`, `[boot_types]`, `[boot_control]`, `[arith]`,
+ * `[trig]`, `[complex_ext]`, `[geom_ext]`) from the embedded precompiled
+ * `.mathc` image in O(1) `memcpy` time with zero filesystem access.
  */
 bool        eng_init(Engine *eng);
 
@@ -55,6 +51,15 @@ bool        eng_init(Engine *eng);
  * Used internally by `mathc` or for testing the blank-slate guarantee.
  */
 void        eng_init_blank(Engine *eng);
+
+/*
+ * Register a platform-provided C callback (`fn`) under `@<name>(...)` so `.math`
+ * extensions can safely invoke host services (e.g. realtime currency conversion
+ * over HTTP, hardware sensors, database lookups) without coupling `Core/` to
+ * OS networking or filesystem libraries.
+ */
+bool        eng_register_extern(Engine *eng, const char *name,
+                                EngExternFn fn, void *user_ctx);
 
 /* Enable or disable any loaded module in O(1) via bitmask flip */
 bool        eng_set_module(Engine *eng, const char *mod_name, bool enabled);

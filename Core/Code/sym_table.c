@@ -1,5 +1,5 @@
 /*
- * sym_table.c — Dynamic Module, Type, Struct, Symbol & Overload Registry Implementation
+ * sym_table.c — Dynamic Module, Type, Struct, Symbol, Overload & Extern Implementation
  */
 
 #include "sym_table.h"
@@ -114,21 +114,21 @@ bool sym_mod_enabled(const SymTable *tab, uint8_t mod_id) {
     return (tab->active_modules & (1ULL << mod_id)) != 0;
 }
 
-uint8_t sym_intern(SymTable *tab, MemArena *mem, StrSlice s) {
-    for (uint8_t i = 0; i < tab->sym_count; ++i) {
+uint16_t sym_intern(SymTable *tab, MemArena *mem, StrSlice s) {
+    for (uint16_t i = 0; i < tab->sym_count; ++i) {
         if (mem_slice_eq(mem, tab->syms[i], s)) return i;
     }
     if (tab->sym_count >= SYM_MAX_SYMS) {
         mem_err(mem, "Symbol table overflow");
         return 0;
     }
-    uint8_t id = tab->sym_count++;
+    uint16_t id = tab->sym_count++;
     tab->syms[id] = s;
     return id;
 }
 
 int sym_find(const SymTable *tab, const MemArena *mem, const char *str, uint16_t len) {
-    for (uint8_t i = 0; i < tab->sym_count; ++i) {
+    for (uint16_t i = 0; i < tab->sym_count; ++i) {
         StrSlice s = tab->syms[i];
         if (s.len == len && memcmp(mem_str_ptr(mem, s), str, len) == 0) {
             return (int)i;
@@ -137,7 +137,7 @@ int sym_find(const SymTable *tab, const MemArena *mem, const char *str, uint16_t
     return -1;
 }
 
-bool sym_has_active_op(const SymTable *tab, uint8_t sym_id) {
+bool sym_has_active_op(const SymTable *tab, uint16_t sym_id) {
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
         if (ov->sym_id == sym_id && ov->fixity != FIX_FUNC && ov->fixity != FIX_SYNTAX &&
@@ -148,7 +148,7 @@ bool sym_has_active_op(const SymTable *tab, uint8_t sym_id) {
     return false;
 }
 
-uint8_t sym_get_active_syntax(const SymTable *tab, uint8_t sym_id) {
+uint8_t sym_get_active_syntax(const SymTable *tab, uint16_t sym_id) {
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
         if (ov->sym_id == sym_id && ov->fixity == FIX_SYNTAX &&
@@ -159,7 +159,7 @@ uint8_t sym_get_active_syntax(const SymTable *tab, uint8_t sym_id) {
     return 0;
 }
 
-int sym_get_active_prec(const SymTable *tab, uint8_t sym_id, OpFixity fixity) {
+int sym_get_active_prec(const SymTable *tab, uint16_t sym_id, OpFixity fixity) {
     int best = -1;
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
@@ -170,7 +170,7 @@ int sym_get_active_prec(const SymTable *tab, uint8_t sym_id, OpFixity fixity) {
     return best;
 }
 
-uint8_t sym_active_meta_tag(const SymTable *tab, uint8_t sym_id, OpFixity fix_filter) {
+uint8_t sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_filter) {
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
         if (ov->sym_id == sym_id && sym_mod_enabled(tab, ov->mod_id)) {
@@ -239,4 +239,42 @@ IntrinsicId sym_lookup_intrinsic(const char *s, uint16_t len) {
         }
     }
     return INTR_NONE;
+}
+
+bool sym_register_extern(SymTable *tab, MemArena *mem, const char *name,
+                         EngExternFn fn, void *user_ctx) {
+    if (!tab || !name || !fn) return false;
+    size_t nlen = strlen(name);
+    if (nlen == 0 || nlen >= sizeof(tab->externs[0].name)) {
+        if (mem) mem_err(mem, "Extern name '%s' is empty or exceeds 31 chars", name);
+        return false;
+    }
+    /* Update existing binding if already registered */
+    for (uint8_t i = 0; i < tab->extern_count; ++i) {
+        if (strcmp(tab->externs[i].name, name) == 0) {
+            tab->externs[i].fn       = fn;
+            tab->externs[i].user_ctx = user_ctx;
+            return true;
+        }
+    }
+    if (tab->extern_count >= SYM_MAX_EXTERNS) {
+        if (mem) mem_err(mem, "Host extern table overflow (max %d)", SYM_MAX_EXTERNS);
+        return false;
+    }
+    ExternDef *ed = &tab->externs[tab->extern_count++];
+    memcpy(ed->name, name, nlen + 1);
+    ed->fn       = fn;
+    ed->user_ctx = user_ctx;
+    return true;
+}
+
+const ExternDef *sym_find_extern(const SymTable *tab, const MemArena *mem, uint16_t sym_id) {
+    if (sym_id >= tab->sym_count) return NULL;
+    StrSlice s = tab->syms[sym_id];
+    for (uint8_t i = 0; i < tab->extern_count; ++i) {
+        if (mem_slice_eq_cstr(mem, s, tab->externs[i].name)) {
+            return &tab->externs[i];
+        }
+    }
+    return NULL;
 }

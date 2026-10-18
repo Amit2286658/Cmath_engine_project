@@ -17,9 +17,11 @@
 [boot_types]
 <[boot_syntax]
 
-# 2. Consuming Lexical Types & Dynamic Vector Container (`$vec` of any `T`)
+# 2. Consuming Lexical Types, Scalar Imaginary Type ($iota) & Dynamic Vector ($vec)
+#    Note: `$iota` has no lexical regex pattern here — it is produced by the
+#    postfix `"i"` operator in `30_complex.math` (`5i`, `(3 + 4)i`, `sin(x)i`).
 $real ~ \d+ ("." \d+)?       => @f64
-$iota ~ \d+ ("." \d+)? "i"   => @f64_trim1
+$iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
 

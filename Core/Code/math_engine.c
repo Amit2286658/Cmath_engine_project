@@ -21,6 +21,12 @@ bool eng_init(Engine *eng) {
     return ext_load_mathc_mem(&eng->mem, &eng->sym, k_stdlib_mathc, sizeof(k_stdlib_mathc));
 }
 
+bool eng_register_extern(Engine *eng, const char *name,
+                         EngExternFn fn, void *user_ctx) {
+    if (!eng) return false;
+    return sym_register_extern(&eng->sym, &eng->mem, name, fn, user_ctx);
+}
+
 bool eng_set_module(Engine *eng, const char *mod_name, bool enabled) {
     return sym_set_module(&eng->sym, &eng->mem, mod_name, enabled);
 }

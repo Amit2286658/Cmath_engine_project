@@ -222,7 +222,7 @@ void lex_next(Lexer *lex) {
 
     char c = lex->src[lex->pos];
 
-    /* 1. Private C intrinsic hook '@' (only valid inside .math extension bodies) */
+    /* 1. Private C intrinsic / host extern hook '@' (only valid inside .math bodies) */
     if (c == '@') {
         lex->cur.kind = TOK_AT;
         lex->cur.len  = 1;
@@ -230,13 +230,13 @@ void lex_next(Lexer *lex) {
         return;
     }
 
-    /* 2. Active Consuming Types (Longest Match wins: e.g. `1i` beats `1`, `3.14` beats `.`) */
+    /* 2. Active Consuming Types with non-empty patterns (Longest Match wins) */
     int best_type_len = 0;
     uint16_t best_type_id = MEM_TYPE_VOID;
 
     for (uint16_t tid = 1; tid < tab->type_count; ++tid) {
         const TypeDef *td = &tab->types[tid];
-        if (!td->is_consuming || !sym_mod_enabled(tab, td->mod_id)) continue;
+        if (!td->is_consuming || td->field_count == 0 || !sym_mod_enabled(tab, td->mod_id)) continue;
 
         uint16_t p_start = td->start_idx;
         uint16_t p_end   = p_start + td->field_count;
@@ -259,12 +259,12 @@ void lex_next(Lexer *lex) {
         return;
     }
 
-    /* 3. Active Syntax Delimiters (`(`, `)`, `,`) & Active Operators (`.`, `;`, `:=`, `=`, `??`, `+++`, `+`) */
+    /* 3. Active Syntax Delimiters (`(`, `)`, `,`) & Active Operators (`.`, `;`, `:=`, `=`, `??`, `i`, `+`) */
     int best_sym_len = 0;
-    uint8_t best_sym_id = 0;
+    uint16_t best_sym_id = 0;
     uint8_t best_syntax_tag = 0;
 
-    for (uint8_t sid = 0; sid < tab->sym_count; ++sid) {
+    for (uint16_t sid = 0; sid < tab->sym_count; ++sid) {
         uint8_t syn_tag = sym_get_active_syntax(tab, sid);
         bool    is_op   = sym_has_active_op(tab, sid);
         if (!syn_tag && !is_op) continue;
@@ -311,7 +311,7 @@ void lex_next(Lexer *lex) {
         while (lex->pos < lex->len && lex_is_ident_cont((unsigned char)lex->src[lex->pos])) {
             if ((unsigned char)lex->src[lex->pos] >= 0x80 && lex->pos > start) {
                 bool sym_starts_here = false;
-                for (uint8_t sid = 0; sid < tab->sym_count; ++sid) {
+                for (uint16_t sid = 0; sid < tab->sym_count; ++sid) {
                     if (!sym_has_active_op(tab, sid) && !sym_get_active_syntax(tab, sid)) continue;
                     StrSlice s = tab->syms[sid];
                     if (s.len > 0 && lex->pos + s.len <= lex->len &&

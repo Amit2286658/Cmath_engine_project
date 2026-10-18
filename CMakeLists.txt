@@ -16,8 +16,6 @@ endif()
 
 # Hardening flags that work without needing virtual-address-space tricks --
 # useful on sandboxed environments (proot, etc.) where ASan/Valgrind can't run.
-# _FORTIFY_SOURCE needs at least some optimization to do anything at -O0, it's
-# effectively a no-op there -- hence -Og instead of -O0 in Debug below.
 add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
 add_compile_options(-fstack-protector-strong)
 
@@ -25,12 +23,6 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
-# Debug: debug symbols, light optimization (needed for fortify to take effect),
-# sanitizers if the toolchain supports them.
-# Sanitizers are RUN-tested, not just compiled -- ASan in particular can link
-# successfully but crash at startup on some sandboxed environments (e.g. proot
-# on Android, which some Alpine-in-app setups use), since it needs to reserve
-# large fixed virtual memory regions that such sandboxes don't support.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-g -Og)
 
@@ -108,6 +100,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/20_trig.math"
             "${CMAKE_SOURCE_DIR}/Library/30_complex.math"
             "${CMAKE_SOURCE_DIR}/Library/40_geom.math"
+            "${CMAKE_SOURCE_DIR}/Library/50_algebra.math"
+            "${CMAKE_SOURCE_DIR}/Library/60_units.math"
+            "${CMAKE_SOURCE_DIR}/Library/70_physics.math"
+            "${CMAKE_SOURCE_DIR}/Library/80_chemistry.math"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Recompiling Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"

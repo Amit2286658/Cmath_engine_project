@@ -1,39 +1,41 @@
 # =============================================================================
-# lib/10_arith.math — Core Arithmetic, Comparisons & Multi-Char Operators
+# Library/10_arith.math — Core Arithmetic, Combinatorics, Number Theory & Stats
 # =============================================================================
 
 [arith]
 <[boot_types]
 <[boot_control]
 
-# Basic Left-Associative Infix Arithmetic (:<prec)
+# 1. Basic Left-Associative Infix Arithmetic (:<prec)
 (a:real) "+" (b:real) :<50 -> real = @add(a, b)
 (a:real) "-" (b:real) :<50 -> real = @sub(a, b)
 (a:real) "*" (b:real) :<60 -> real = @mul(a, b)
 (a:real) "/" (b:real) :<60 -> real = @div(a, b)
 (a:real) "%" (b:real) :<60 -> real = @mod(a, b)
 
-# Word-Based Operators Calling `+` and `-` (Inlined at Parse Time!)
+# 2. Word-Based Operators Calling `+` and `-` (Inlined at Parse Time)
 (a:real) "plus"  (b:real) :<45 -> real = a + b
 (a:real) "minus" (b:real) :<45 -> real = a - b
 
-# Right-Associative Infix Exponentiation (:>prec)
+# 3. Right-Associative Infix Exponentiation (:>prec)
 (a:real) "^" (b:real) :>75 -> real = @pow(a, b)
 
-# Comparisons (:<30)
+# 4. Comparisons (:<30) & Logical Connectives (`&&`, `||`)
 (a:real) "==" (b:real) :<30 -> real = @eq(a, b)
 (a:real) "!=" (b:real) :<30 -> real = @ne(a, b)
 (a:real) "<"  (b:real) :<30 -> real = @lt(a, b)
 (a:real) "<=" (b:real) :<30 -> real = @le(a, b)
 (a:real) ">"  (b:real) :<30 -> real = @gt(a, b)
 (a:real) ">=" (b:real) :<30 -> real = @ge(a, b)
+(a:real) "&&" (b:real) :<20 -> real = if(a != 0, if(b != 0, 1, 0), 0)
+(a:real) "||" (b:real) :<15 -> real = if(a != 0, 1, if(b != 0, 1, 0))
 
-# Prefix Unary Operators (`"sym" (x:T) :prec`)
+# 5. Prefix Unary Operators (`"sym" (x:T) :prec`)
 "-"   (x:real) :80 -> real = @neg(x)
 "+"   (x:real) :80 -> real = x
 "√"   (x:real) :80 -> real = @sqrt(x)
 
-# Multi-Character Overlapping Prefix & Postfix Operators (`++`, `+++`, `--`, `---`)
+# 6. Multi-Character Overlapping Prefix & Postfix Operators (`++`, `+++`, `--`, `---`)
 "++"  (x:real) :85 -> real = x + 1
 "+++" (x:real) :85 -> real = x + 2
 "--"  (x:real) :85 -> real = x - 1
@@ -43,18 +45,126 @@
 (x:real) "--"  :90 -> real = x - 1
 (x:real) "---" :90 -> real = x - 2
 
-# Postfix Factorial (`(n:real) "!" :90`)
-# Built purely using `;`, `:=`, `=`, and `??` from `00_bootstrap.math`!
+# 7. Postfix Factorial (`(n:real) "!" :90`)
 (n:real) "!" :90 -> real = (
     acc := 1;
-    i   := n;
-    (i > 1) ?? (
-        acc = acc * i;
-        i   = i - 1
+    k   := n;
+    (k > 1) ?? (
+        acc = acc * k;
+        k   = k - 1
     );
     acc
 )
 
-# Mathematical Constants
-"π" : real = 3.141592653589793
-"e" : real = 2.718281828459045
+# 8. Common Utility & Rounding Functions
+"abs"(x:real)   -> real = @abs(x)
+"floor"(x:real) -> real = @floor(x)
+"ceil"(x:real)  -> real = @ceil(x)
+"round"(x:real) -> real = if(x >= 0, @floor(x + 0.5), @ceil(x - 0.5))
+"trunc"(x:real) -> real = if(x >= 0, @floor(x), @ceil(x))
+"fract"(x:real) -> real = x - @floor(x)
+"sign"(x:real)  -> real = if(x > 0, 1, if(x < 0, -1, 0))
+"min"(a:real, b:real) -> real = if(a < b, a, b)
+"max"(a:real, b:real) -> real = if(a > b, a, b)
+"clamp"(x:real, lo:real, hi:real) -> real = min(max(x, lo), hi)
+"abs_diff"(a:real, b:real) -> real = if(a < b, b - a, a - b)
+
+# 9. Number Theory & Combinatorics (`gcd`, `lcm`, `ncr`, `npr`, `fib`, `is_prime`, `mod_pow`)
+"gcd"(a:real, b:real) -> real = (
+    x := @abs(a);
+    y := @abs(b);
+    (y > 0) ?? (
+        t := x % y;
+        x = y;
+        y = t
+    );
+    x
+)
+
+"lcm"(a:real, b:real) -> real = if(a == 0 || b == 0, 0, @abs(a * b) / gcd(a, b))
+"npr"(n:real, r:real) -> real = if(r < 0 || r > n, 0, (n!) / ((n - r)!))
+"ncr"(n:real, r:real) -> real = if(r < 0 || r > n, 0, (n!) / ((r!) * ((n - r)!)))
+
+"fib"(n:real) -> real = (
+    a := 0;
+    b := 1;
+    k := 0;
+    (k < n) ?? (
+        nxt := a + b;
+        a   = b;
+        b   = nxt;
+        k   = k + 1
+    );
+    a
+)
+
+"is_prime"(n:real) -> real = (
+    res := if(n < 2, 0, 1);
+    d   := 2;
+    (d * d <= n && res == 1) ?? (
+        res = if(n % d == 0, 0, 1);
+        d   = d + 1
+    );
+    res
+)
+
+"mod_pow"(base:real, exp_n:real, m:real) -> real = (
+    res := 1;
+    b   := base % m;
+    e_k := exp_n;
+    (e_k > 0) ?? (
+        res = if(e_k % 2 == 1, (res * b) % m, res);
+        e_k = @floor(e_k / 2);
+        b   = (b * b) % m
+    );
+    res
+)
+
+# 10. Vector Statistics & Time-Series Functions (`vec_sum`, `mean`, `variance`, `stddev`, `sma`)
+"vec_sum"(v:vec) -> real = (
+    s := 0;
+    idx := 0;
+    n := len(v);
+    (idx < n) ?? (
+        s   = s + at(v, idx);
+        idx = idx + 1
+    );
+    s
+)
+
+"mean"(v:vec) -> real = vec_sum(v) / len(v)
+
+"variance"(v:vec) -> real = (
+    mu  := mean(v);
+    acc := 0;
+    idx := 0;
+    n   := len(v);
+    (idx < n) ?? (
+        d   := at(v, idx) - mu;
+        acc = acc + d * d;
+        idx = idx + 1
+    );
+    acc / n
+)
+
+"stddev"(v:vec) -> real = √(variance(v))
+
+# Simple Moving Average over the last `window` elements of `v`
+"sma"(v:vec, window:real) -> real = (
+    n     := len(v);
+    w     := min(window, n);
+    start := n - w;
+    acc   := 0;
+    idx   := start;
+    (idx < n) ?? (
+        acc = acc + at(v, idx);
+        idx = idx + 1
+    );
+    acc / w
+)
+
+# 11. Fundamental Mathematical Constants
+"π"   : real = 3.141592653589793
+"pi"  : real = 3.141592653589793
+"e"   : real = 2.718281828459045
+"phi" : real = 1.618033988749895

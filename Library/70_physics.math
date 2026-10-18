@@ -1,0 +1,76 @@
+# =============================================================================
+# Library/70_physics.math — Classical, Relativistic, Electromagnetism & Quantum
+# =============================================================================
+
+[physics]
+<[arith]
+<[trig]
+<[geom_ext]
+<[units]
+
+# 1. Fundamental CODATA Physical Constants (SI Units)
+"g0"         : real = 9.80665                        # Standard gravity (m/s^2)
+"c0"         : real = 299792458                      # Speed of light in vacuum (m/s)
+"G_grav"     : real = 6.67430 * (10 ^ -11)           # Gravitational constant (m^3 kg^-1 s^-2)
+"h_planck"   : real = 6.62607015 * (10 ^ -34)        # Planck constant (J s)
+"k_B"        : real = 1.380649 * (10 ^ -23)          # Boltzmann constant (J/K)
+"ke_coulomb" : real = 8.9875517923 * (10 ^ 9)        # Coulomb constant 1/(4*pi*eps0) (N m^2/C^2)
+"q_e"        : real = 1.602176634 * (10 ^ -19)       # Elementary charge (C)
+"m_e"        : real = 9.1093837015 * (10 ^ -31)      # Electron mass (kg)
+"m_p"        : real = 1.67262192369 * (10 ^ -27)     # Proton mass (kg)
+"sigma_sb"   : real = 5.670374419 * (10 ^ -8)        # Stefan-Boltzmann constant (W m^-2 K^-4)
+
+# 2. Classical Kinematics, Energy & Oscillations
+"ke"(mass:real, vel:real) -> real = 0.5 * mass * (vel ^ 2)
+"pe"(mass:real, height:real) -> real = mass * g0 * height
+"mech_energy"(mass:real, vel:real, height:real) -> real =
+    ke(mass, vel) + pe(mass, height)
+
+"proj_range"(vel:real, angle_deg:real) -> real =
+    (vel ^ 2) * sin(2 * deg2rad(angle_deg)) / g0
+"proj_max_h"(vel:real, angle_deg:real) -> real =
+    ((vel * sin(deg2rad(angle_deg))) ^ 2) / (2 * g0)
+"proj_time"(vel:real, angle_deg:real) -> real =
+    2 * vel * sin(deg2rad(angle_deg)) / g0
+
+"centripetal_acc"(vel:real, r:real) -> real = (vel ^ 2) / r
+"centripetal_force"(mass:real, vel:real, r:real) -> real = mass * (vel ^ 2) / r
+"hooke_force"(k_spring:real, disp:real) -> real = -k_spring * disp
+"elastic_pe"(k_spring:real, disp:real) -> real = 0.5 * k_spring * (disp ^ 2)
+"pendulum_period"(length_m:real) -> real = 2 * π * √(length_m / g0)
+
+# 3. Gravitation & Orbital Astrophysics
+"grav_force"(m1:real, m2:real, r:real) -> real = G_grav * m1 * m2 / (r ^ 2)
+"grav_pe"(m1:real, m2:real, r:real)    -> real = -G_grav * m1 * m2 / r
+"orbital_vel"(mass_body:real, r:real)  -> real = √(G_grav * mass_body / r)
+"escape_vel"(mass_body:real, r:real)   -> real = √(2 * G_grav * mass_body / r)
+"schwarzschild_r"(mass_body:real)      -> real = 2 * G_grav * mass_body / (c0 ^ 2)
+"kepler_period"(semi_major_a:real, mass_body:real) -> real =
+    2 * π * √((semi_major_a ^ 3) / (G_grav * mass_body))
+
+# 4. Electromagnetism & Circuits
+"coulomb_force"(q1:real, q2:real, r:real) -> real = ke_coulomb * q1 * q2 / (r ^ 2)
+"ohm_v"(current_i:real, res_r:real) -> real = current_i * res_r
+"ohm_i"(volt_v:real, res_r:real)    -> real = volt_v / res_r
+"ohm_r"(volt_v:real, current_i:real)-> real = volt_v / current_i
+"elec_power"(volt_v:real, current_i:real) -> real = volt_v * current_i
+"cap_energy"(cap_c:real, volt_v:real)     -> real = 0.5 * cap_c * (volt_v ^ 2)
+"ind_energy"(ind_l:real, current_i:real)  -> real = 0.5 * ind_l * (current_i ^ 2)
+"res_series"(r1:real, r2:real)   -> real = r1 + r2
+"res_parallel"(r1:real, r2:real) -> real = (r1 * r2) / (r1 + r2)
+"rc_tau"(res_r:real, cap_c:real) -> real = res_r * cap_c
+
+# 5. Waves, Optics, Quantum Mechanics & Special Relativity
+"photon_energy"(freq_hz:real)     -> real = h_planck * freq_hz
+"photon_wavelength"(wavelength_m:real) -> real = h_planck * c0 / wavelength_m
+"de_broglie"(mass:real, vel:real) -> real = h_planck / (mass * vel)
+"snell_angle2"(n1:real, theta1_deg:real, n2:real) -> real =
+    rad2deg(asin(n1 * sin(deg2rad(theta1_deg)) / n2))
+"lens_focal"(do_dist:real, di_dist:real) -> real =
+    (do_dist * di_dist) / (do_dist + di_dist)
+
+"lorentz_gamma"(vel:real) -> real = 1 / √(1 - (vel / c0) ^ 2)
+"rel_energy"(mass:real, vel:real) -> real = lorentz_gamma(vel) * mass * (c0 ^ 2)
+"time_dilation"(t_proper:real, vel:real) -> real = t_proper * lorentz_gamma(vel)
+"length_contraction"(l_proper:real, vel:real) -> real = l_proper / lorentz_gamma(vel)
+"carnot_eff"(t_cold_k:real, t_hot_k:real) -> real = 1 - (t_cold_k / t_hot_k)

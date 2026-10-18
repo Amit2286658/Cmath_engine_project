@@ -25,7 +25,7 @@ extern "C" {
 
 #define MATHC_MAGIC            0x4348544Du  /* "MTHC" in little-endian        */
 #define MATHC_VERSION          1u
-#define MATHC_MAX_IMAGE_BYTES  32768u       /* Max serialized .mathc size     */
+#define MATHC_MAX_IMAGE_BYTES  65536u       /* Max serialized .mathc size     */
 
 typedef struct {
     uint32_t magic;              /* MATHC_MAGIC ("MTHC")                      */
@@ -35,9 +35,9 @@ typedef struct {
     uint8_t  vec_type_id;        /* MemArena.vec_type_id                      */
     uint8_t  mod_count;          /* Active modules in SymTable                */
     uint8_t  type_count;         /* Active types in SymTable                  */
-    uint8_t  sym_count;          /* Active interned symbols in SymTable       */
     uint8_t  const_count;        /* Active constants in SymTable              */
-    uint8_t  reserved[3];        /* Explicit zeroed alignment padding         */
+    uint16_t sym_count;          /* Active interned symbols in SymTable       */
+    uint16_t reserved;           /* Explicit zeroed alignment padding         */
     uint16_t perm_src_len;       /* Active bytes in MemArena.src_buf          */
     uint16_t perm_ast_count;     /* Active AstNodes in MemArena.ast           */
     uint16_t perm_pool_top;      /* Active doubles in MemArena.f64_pool       */

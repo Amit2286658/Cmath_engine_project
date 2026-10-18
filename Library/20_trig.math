@@ -1,36 +1,40 @@
 # =============================================================================
-# lib/20_trig.math — Trigonometric, Transcendental & Number Theory Functions
+# Library/20_trig.math — Trigonometric, Hyperbolic & Transcendental Functions
 # =============================================================================
 
 [trig]
 <[arith]
 
+# 1. Circular Trigonometric Functions (radians)
 "sin"(x:real)   -> real = @sin(x)
 "cos"(x:real)   -> real = @cos(x)
 "tan"(x:real)   -> real = @tan(x)
+"sec"(x:real)   -> real = 1 / @cos(x)
+"csc"(x:real)   -> real = 1 / @sin(x)
+"cot"(x:real)   -> real = @cos(x) / @sin(x)
+
+# 2. Inverse Circular Trigonometric Functions
 "asin"(x:real)  -> real = @asin(x)
 "acos"(x:real)  -> real = @acos(x)
 "atan"(x:real)  -> real = @atan(x)
 "atan2"(y:real, x:real) -> real = @atan2(y, x)
+
+# 3. Hyperbolic & Inverse Hyperbolic Functions
+"sinh"(x:real)  -> real = @sinh(x)
+"cosh"(x:real)  -> real = @cosh(x)
+"tanh"(x:real)  -> real = @tanh(x)
+"asinh"(x:real) -> real = @ln(x + √(x^2 + 1))
+"acosh"(x:real) -> real = @ln(x + √(x^2 - 1))
+"atanh"(x:real) -> real = 0.5 * @ln((1 + x) / (1 - x))
+
+# 4. Exponential, Logarithmic & Root Functions
 "ln"(x:real)    -> real = @ln(x)
 "log10"(x:real) -> real = @log10(x)
+"log2"(x:real)  -> real = @ln(x) / @ln(2)
+"logb"(x:real, base:real) -> real = @ln(x) / @ln(base)
 "exp"(x:real)   -> real = @exp(x)
-"abs"(x:real)   -> real = @abs(x)
-"floor"(x:real) -> real = @floor(x)
-"ceil"(x:real)  -> real = @ceil(x)
+"sqrt"(x:real)  -> real = @sqrt(x)
+"cbrt"(x:real)  -> real = @cbrt(x)
+"root"(x:real, n:real) -> real = x ^ (1 / n)
 "hypot"(a:real, b:real) -> real = √(a^2 + b^2)
-
-# Conditional branch function using `if` from `00_bootstrap.math`
-"abs_diff"(a:real, b:real) -> real = if(a < b, b - a, a - b)
-
-# Multi-instruction Euclidean GCD using `;`, `:=`, `=`, and `??` from `00_bootstrap.math`
-"gcd"(a:real, b:real) -> real = (
-    x := a;
-    y := b;
-    (y > 0) ?? (
-        t := x % y;
-        x = y;
-        y = t
-    );
-    x
-)
+"sigmoid"(x:real) -> real = 1 / (1 + @exp(-x))
