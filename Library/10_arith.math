@@ -1,5 +1,5 @@
 # =============================================================================
-# Library/10_arith.math — Core Arithmetic, Combinatorics, Number Theory & Stats
+# Library/10_arith.math — Core Arithmetic, Logic, Combinatorics, Number Theory & Stats
 # =============================================================================
 
 [arith]
@@ -7,8 +7,8 @@
 <[boot_control]
 
 # 1. Basic Left-Associative Infix Arithmetic (:<prec)
-(a:real) "+" (b:real) :<50 -> real = @add(a, b)
-(a:real) "-" (b:real) :<50 -> real = @sub(a, b)
+(a:real, T) "+" (b:real, T) :<50 -> real, T = @add(a, b)
+(a:real, T) "-" (b:real, T) :<50 -> real, T = @sub(a, b)
 (a:real) "*" (b:real) :<60 -> real = @mul(a, b)
 (a:real) "/" (b:real) :<60 -> real = @div(a, b)
 (a:real) "%" (b:real) :<60 -> real = @mod(a, b)
@@ -20,15 +20,28 @@
 # 3. Right-Associative Infix Exponentiation (:>prec)
 (a:real) "^" (b:real) :>75 -> real = @pow(a, b)
 
-# 4. Comparisons (:<30) & Logical Connectives (`&&`, `||`)
-(a:real) "==" (b:real) :<30 -> real = @eq(a, b)
-(a:real) "!=" (b:real) :<30 -> real = @ne(a, b)
-(a:real) "<"  (b:real) :<30 -> real = @lt(a, b)
-(a:real) "<=" (b:real) :<30 -> real = @le(a, b)
-(a:real) ">"  (b:real) :<30 -> real = @gt(a, b)
-(a:real) ">=" (b:real) :<30 -> real = @ge(a, b)
-(a:real) "&&" (b:real) :<20 -> real = if(a != 0, if(b != 0, 1, 0), 0)
-(a:real) "||" (b:real) :<15 -> real = if(a != 0, 1, if(b != 0, 1, 0))
+# 4. Relational Comparisons (:<30) & Chained Boolean Logic Operators
+#    Note: `&` (:<35) and `|` (:<34) in `00_bootstrap.math` bind tighter than
+#    `==`, `!=`, `<`, `<=`, `>`, `>=` (:<30) so `(x & y == 1 | 2)` distributes
+#    automatically into `((x == 1) | (x == 2)) & ((y == 1) | (y == 2))`!
+(a:real) "=="   (b:real) :<30 -> real = @eq(a, b)
+(a:real) "!="   (b:real) :<30 -> real = @ne(a, b)
+(a:real) "<"    (b:real) :<30 -> real = @lt(a, b)
+(a:real) "<="   (b:real) :<30 -> real = @le(a, b)
+(a:real) ">"    (b:real) :<30 -> real = @gt(a, b)
+(a:real) ">="   (b:real) :<30 -> real = @ge(a, b)
+
+"not"(x:real) :25 -> real = @lnot(x)
+"!"  (x:real) :80 -> real = @lnot(x)
+
+(a:real) "&&"   (b:real) :<20 -> real = @land(a, b)
+(a:real) "and"  (b:real) :<20 -> real = @land(a, b)
+(a:real) "nand" (b:real) :<20 -> real = @lnand(a, b)
+(a:real) "xor"  (b:real) :<18 -> real = @lxor(a, b)
+(a:real) "^^"   (b:real) :<18 -> real = @lxor(a, b)
+(a:real) "||"   (b:real) :<15 -> real = @lor(a, b)
+(a:real) "or"   (b:real) :<15 -> real = @lor(a, b)
+(a:real) "nor"  (b:real) :<15 -> real = @lnor(a, b)
 
 # 5. Prefix Unary Operators (`"sym" (x:T) :prec`)
 "-"   (x:real) :80 -> real = @neg(x)

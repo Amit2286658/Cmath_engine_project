@@ -2,10 +2,10 @@
 
 A lightweight, fast, embeddable **C11 mathematical programming engine** built on
 a *blank-slate* architecture. The C core ships with **zero hardcoded math,
-types, or grammar** — every delimiter, type, operator, function, constant, and
-control structure is compiled from modular `.math` files into a portable
-`.mathc` binary image. Modules can be enabled or disabled in **O(1)** via a
-bitmask flip.
+types, or grammar** — every delimiter, type, operator, function, constant,
+control structure, and unit type group is compiled from modular `.math` files
+into a portable `.mathc` binary image. Modules can be enabled or disabled in
+**O(1)** via a bitmask flip.
 
 The engine core (`Core/`) has **no filesystem, path, or networking
 dependencies**. The host frontend owns all file I/O; the engine compiles
@@ -25,9 +25,26 @@ databases, or sensor reads.
 - **AOT `.math` → `.mathc` + C-header compiler** (`mathc`) for build-time baking.
 - **Host extern callbacks** — `eng_register_extern()` binds `@name(...)` calls
   in `.math` to native C functions (HTTP, storage, hardware, ...).
+- **Rich control flow** — `{ }` scope blocks, `if ... or ... else`, `switch`/
+  `case`, ternary `? :`, `Tag : { ... }` labeled scopes with `jump`/`run`, and
+  `break`/`break(Tag)`.
+- **Expressive assignments** — multi-variable declarations `x, y := 5`,
+  compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and dynamic slot
+  promotion (`x := 5 ; x = x + 5i` → `5 + 5i : complex`).
+- **Distributed boolean logic** — `&& || ! and or not nor xor nand`, plus the
+  comparison shorthand `(x & y == 1 | 2)`.
+- **Orthogonal `(EntityType, UnitType)` tags** — values carry a type *and* a
+  unit group. Unit groups (`distance`, `angle`, `mass`, `speed`, `pressure`,
+  ...) are registered from `.math`, so users can define their own.
+- **Concrete variable locks** — `x : real := 5`, `x : distance := 50m`,
+  `x : real, distance := 50m`, `x, y : real, distance := 50m`.
+- **Generic unit `T`** — same-unit operators/functions preserve the unit
+  (`scale_unit`, `unit_span`); cross-unit operators transform dimensions
+  (`distance / time -> speed`).
 - **Pattern-driven lexer** — consuming `$type` regex patterns.
 - **Pratt parser** — operator fixity and precedence are data.
-- **Multiple dispatch** — operators/functions overloaded on operand types.
+- **Multiple dispatch** — operators/functions overloaded on operand types
+  *and* unit groups.
 - **Generic dynamic vectors** — growable/shrinkable `$vec` of *any* `T`.
 - **Flat C-style structs** — `$vec2`, `$vec3`, `$circle`, `$mat2`, `$complex`.
 - **Rich standard library** — arithmetic/combinatorics/number theory/stats,
@@ -47,15 +64,15 @@ Host Application (Test/main.c)
      ├──► [math_engine]  Top-Level Wrapper — auto-boots embedded stdlib,
      │        │          registers host externs
      │        ├──► [mem_arena]    Isolated memory & 8B/12B Value packing
-     │        ├──► [sym_table]    Types, structs, modules, overloads, externs
+     │        ├──► [sym_table]    Types, structs, modules, overloads, units, externs
      │        ├──► [lexer]        Pattern-driven consuming types & syntax tokens
      │        ├──► [parser]       Top-down operator precedence (Pratt) parser
      │        ├──► [ext_loader]   In-memory `.math` compiler & `.mathc` serializer
      │        └──► [evaluator]    Type-dispatched AST evaluator & `@` intrinsics
      │
      └──► [user_loader]  In-memory user extension utility
-              1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc`
-              2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
+               1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc`
+               2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
 ```
 
 `Core/Code/*.c` is the engine; `Test/` and `Tutorial/` are host-side. The engine
@@ -75,21 +92,21 @@ Core/
               parser.c  ext_loader.c  evaluator.c  user_loader.c
 Library/
   mathc.c             Standalone AOT `.math` -> `.mathc` + header compiler
-  00_bootstrap.math   Syntax, lexical types, control flow, `$vec`
+  00_bootstrap.math   Syntax, lexical types, control flow, scope/booleans, `$vec`
   10_arith.math       Arithmetic, comparisons, number theory, stats
   20_trig.math        Trig, hyperbolic, exponential & log functions
   30_complex.math     Postfix `i` operator & complex arithmetic
   40_geom.math        2D/3D vectors, circle/sphere geometry
   50_algebra.math     2x2 matrices, quadratics, polynomial algebra
-  60_units.math       SI/Imperial unit conversions & postfix suffixes
+  60_units.math       SI/Imperial unit type groups & postfix suffixes
   70_physics.math     Classical, EM, quantum & relativity
   80_chemistry.math   Stoichiometry, gas laws, pH, kinetics, electrochem
   stdlib.mathc        Compiled standard library image (generated)
 Test/
-  main.c              Host demo & 82-case automated test suite
+  main.c              Host demo & 137-case automated test suite
   user_physics.math   Sample user extension (host-backed functions)
 Tutorial/
-  00_Index_and_Overview.md  ...  06_Host_Extern_Callbacks_and_Networking.md
+  00_Index_and_Overview.md  ...  07_Unit_Groups_and_Concrete_Types.md
 ```
 
 ## Building
@@ -161,6 +178,8 @@ and the active module bitmask used for O(1) toggling.
 
 ```
 "(" => @lparen
+"{" => @lbrace
+"}" => @rbrace
 $real ~ \d+ ("." \d+)?       => @f64
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
@@ -189,13 +208,29 @@ postfix `i` operator (`5i`, `(3 + 4)i`, `sin(x)i`).
 (a:complex) "+" (b:complex) :<50 -> complex = complex(a.re + b.re, a.im + b.im)
 ```
 
-All control flow comes from four bootstrap intrinsics:
+All control flow comes from a small set of bootstrap intrinsics:
 
 ```
 ( stmt1 ; stmt2 ; final_expr )   # sequencing
 x := value                       # local variable (also '=' for mutation)
 (cond) ?? ( body )               # lazy while loop
 if(cond, then_expr, else_expr)   # lazy conditional
+```
+
+The `boot_control` module layers a full statement grammar on top:
+
+```
+x = { a := 3 ; b := 4 ; a^2 + b^2 }   # value-returning scope block
+{ x = x + 5 ; 9999 }                  # isolated scope (block value discarded)
+x, y := 5                             # multi-variable declaration
+x += 1 ; x -= 2 ; x *= 3 ; x ^= 2     # compound assignments
+
+if (c1) { b1 } or (c2) { b2 } else { b3 }          # else-if chain
+switch (v) { case 1 : { ... } else : { ... } }     # switch / case (numbers & strings)
+(cond) ? x : y                                     # right-assoc ternary
+
+Tag : { ... jump(Tag) ... }           # labeled scope; jump/run/break(Tag)
+Loop : (cond) ?? { ... break(Loop) }  # labeled while loop
 ```
 
 Factorial, implemented *in the language*:
@@ -210,6 +245,35 @@ Factorial, implemented *in the language*:
     );
     acc
 )
+```
+
+### Unit type groups & concrete locks
+
+Every value carries an orthogonal `(EntityType, UnitType)` tag pair. Unit groups
+are declared in `.math` after the return type — never hardcoded in C:
+
+```
+(x:real) "m"  :95 -> real, distance = x
+(x:real) "km" :95 -> real, distance = x * 1000
+(x:real) "sec":95 -> real, time     = x
+
+(d:real, distance) "/" (t:real, time)  :<60 -> real, speed    = @div(d, t)
+(v:real, speed)    "*" (t:real, time)  :<60 -> real, distance = @mul(v, t)
+
+"scale_unit"(x:real, T, k:real)   -> real, T = x * k            # generic unit T
+"unit_span"(a:real, T, b:real, T) -> real, T = @abs(a - b)      # same-unit T
+```
+
+Functions accept a generic unit `T` (preserved on the result) or a concrete unit
+group (checked at call time). Variables can lock their entity type, unit group,
+or both:
+
+```
+x := 5                          # dynamic entity & unit
+x : real := 5                   # entity locked to real
+x : distance := 50m             # unit locked to distance (entity may promote)
+x : real, distance := 50m       # both locked
+x, y : real, distance := 50m    # multi-variable concrete declaration
 ```
 
 ### Structs & dynamic vectors
@@ -252,15 +316,15 @@ Callbacks receive evaluated `Value` arguments and use helpers such as
 
 | Module | File | Contents (selected) |
 | --- | --- | --- |
-| `boot_syntax` | `00_bootstrap` | `(` `)` `,` delimiters |
+| `boot_syntax` | `00_bootstrap` | `(` `)` `{` `}` `,` delimiters |
 | `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec` |
-| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`, vector API |
+| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical operators, `type_of`/`unit_of`, compound assignments, vector API |
 | `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, `π`/`pi`/`e`/`phi` |
 | `trig` | `20_trig` | `sin cos tan sec csc cot`, inverses, `sinh cosh tanh` (+inverses), `ln log10 log2 logb exp sqrt cbrt hypot`, `sigmoid` |
-| `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /`, `conj cabs carg cexp_i polar` |
+| `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /` (generic over unit `T`), `conj cabs carg cexp_i polar` |
 | `geom_ext` | `40_geom` | `$vec2/$vec3/$circle`, vector arithmetic & `**` dot, `cross2/cross3`, magnitudes/distances, `circle_area`, `sphere_vol` |
 | `algebra` | `50_algebra` | `$mat2`, matrix arithmetic/inverse, `solve_2x2`, `quad_roots`, `quad_croot`, Horner `poly_val`, `poly_deriv/integ/add/mul`, `poly_newton` |
-| `units` | `60_units` | postfix `deg ° arcmin arcsec pct dB dBm`, length/mass/time/speed/pressure/energy/power units, temperature conversions |
+| `units` | `60_units` | postfix `deg ° rad arcmin arcsec pct dB dBm`; length/mass/time/speed/pressure/energy/power unit groups; temperature conversions |
 | `physics` | `70_physics` | CODATA constants; mechanics, gravity/orbital, circuits & EM, optics, quantum, relativity |
 | `chemistry` | `80_chemistry` | constants; stoichiometry, ideal gas, kinetic theory, pH/pOH & buffers, kinetics/decay, thermodynamics, Nernst |
 
@@ -306,7 +370,8 @@ Key entry points (`math_engine.h` + `user_loader.h`):
 | `eng_register_extern` | Bind `@name(...)` to a host C callback |
 | `eng_set_module` / `eng_is_module_active` | Toggle a module in O(1) |
 | `eng_format_value` | Format any `Value` to a string |
-| `eng_val_type` / `eng_type_name` | Inspect a value's type |
+| `eng_val_type` / `eng_type_name` | Inspect a value's entity type |
+| `eng_val_unit` / `eng_unit_name` | Inspect a value's unit type group |
 | `eng_last_error` | Last error message |
 | `user_compile_ext` | Raw `.math` text → hooks engine + returns `.mathc` bytes |
 | `user_load_mathc` | `.mathc` bytes → hooks engine in O(1) |
@@ -332,12 +397,19 @@ loading.
 | `(3 + 4)i` | `7i` | iota |
 | `((3 + 4)i)i` | `-7` | real |
 | `(-5 + 10i) / (3 + 4i)` | `1 + 2i` | complex |
+| `x = { a := 3 ; b := 4 ; a^2 + b^2 } ; x` | `25` | real |
+| `x, y := 5 ; x, y += 3 ; x * 10 + y` | `88` | real |
+| `switch ("Au") { case "Au" : { 79 } else : { 0 } }` | `79` | real |
+| `s := 85 ; (s >= 90) ? 4 : (s >= 80) ? 3 : 2` | `3` | real |
+| `x := 5 ; x = x + 5i ; x` | `5 + 5i` | complex |
 | `cross3(vec3(1,0,0), vec3(0,1,0))` | `vec3(x=0, y=0, z=1)` | vec3 |
 | `solve_2x2(2, 3, 8, 5, -1, 3)` | `vec2(x=1, y=2)` | vec2 |
 | `quad_croot(1, 2, 5)` | `-1 + 2i` | complex |
 | `sin(30 deg) + cos(60°)` | `1` | real |
 | `1.5 km + 25000 cm + 500 mm` | `1750.5` | real |
 | `2 atm + 1 bar` | `302650` | real |
+| `100m / 10sec` | `10` | real *(speed)* |
+| `unit_of(100m / 10sec)` | `"speed"` | str |
 | `ke(2 kg, 36 kph)` | `100` | real |
 | `lorentz_gamma(0.6 * c0)` | `1.25` | real |
 | `ph_from_h(0.001) + poh_from_ph(3)` | `14` | real |
@@ -354,14 +426,16 @@ A full chapter-by-chapter guide lives in [`Tutorial/`](Tutorial/00_Index_and_Ove
 4. Algebra, Polynomials & Matrices
 5. Units, Physics & Chemistry
 6. Host Extern Callbacks & Networking
+7. Unit Groups, Concrete Variable Locks & Generic Unit `T`
 
 ## Testing
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
 stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
-reload), registers host externs, prints an architecture report, and runs an
-**82-case** automated suite (stdlib + algebra + units + physics + chemistry +
-host externs) as pass/fail. Run it with `make run`.
+reload), registers host externs, prints an architecture report, and runs a
+**137-case** automated suite (stdlib + control flow + booleans + multi-var +
+algebra + units + physics + chemistry + host externs), followed by type-safety
+guardrails and O(1) module-toggling checks. Run it with `make run`.
 
 ## Design Goals
 

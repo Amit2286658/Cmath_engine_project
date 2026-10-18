@@ -5,14 +5,22 @@
  *   2. Pure in-memory `user_loader.h` workflow (`user_compile_ext` & `user_load_mathc`)
  *   3. Postfix `"i"` operator (`$iota`) & dimensional unit postfix operators (`deg`, `°`,
  *      `km`, `mph`, `atm`, `kcal`, `eV`, `dB`)
- *   4. Algebraic expressions: 2x2 matrices (`$mat2`), linear systems (`solve_2x2`),
- *      real & complex quadratic roots (`quad_roots`, `quad_croot`), and symbolic/numerical
- *      polynomial algebra (`poly_val`, `poly_deriv`, `poly_add`, `poly_mul`, `poly_newton`)
- *   5. Host Extern Callbacks (`eng_register_extern`):
- *      - `@fx_rate(from, to)`          : Realtime currency conversion
- *      - `@fx_history(from, to, days)` : Vector-returning historical FX series (`$vec`)
- *      - `@kv_set(k, v)` / `@kv_get(k)`: Persistent host key-value store across evals
- *      - `@elem_mass(sym)`             : IUPAC Periodic Table atomic mass lookup
+ *   4. Advanced Control Flow, Scopes, Booleans & Assignments:
+ *      - `{ ... }` local scope blocks (value-returning `x = { ... }`, isolated `{ ... }`,
+ *        and lexical variable isolation/shadowing)
+ *      - Multi-branch `if (c1) { b1 } or (c2) { b2 } else { b3 }` (`"or"` for else-if)
+ *      - `switch (expr) { case v1 : { b1 } ... else : { b_def } }` (numbers & strings)
+ *      - Standard right-associative ternary `cond ? x : y`
+ *      - Colon-tagged scopes/loops `Tag : { ... }` and `Tag : (cond) ?? { ... }` with
+ *        `jump(Tag)`, `run(Tag)`, `break`, and `break(OuterTag)`
+ *      - Logical operators (`&&`, `||`, `!`, `and`, `or`, `not`, `nor`, `xor`, `nand`)
+ *        and distributed comparison shorthand `(x & y == 1 | 2)`
+ *      - Multi-variable declarations (`x, y := 5`) and compound assignments
+ *        (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
+ *      - Dynamic slot promotion (`x := 5 ; x = x + 5i` -> `5 + 5i : complex`)
+ *   5. Algebraic expressions (`$mat2`, `solve_2x2`, `quad_roots`, `quad_croot`, polynomials)
+ *   6. Host Extern Callbacks (`eng_register_extern`: `@fx_rate`, `@fx_history`, `@kv_set`,
+ *      `@kv_get`, `@elem_mass`)
  */
 
 #include "math_engine.h"
@@ -56,7 +64,6 @@ static bool frontend_write_file(const char *path, const uint8_t *data, size_t le
  * 2. HOST EXTERN CALLBACK IMPLEMENTATIONS (`eng_register_extern`)
  * ============================================================================ */
 
-/* 2a. Realtime FX Rate & Historical Series Provider (`@fx_rate`, `@fx_history`) */
 typedef struct {
     const char *ccy;
     double      per_usd;
@@ -116,7 +123,6 @@ static bool host_fx_rate_cb(MemArena *mem, const SymTable *tab,
     return true;
 }
 
-/* Returns a dynamic `$vec` of daily historical exchange rates */
 static bool host_fx_history_cb(MemArena *mem, const SymTable *tab,
                                const Value *args, uint8_t argc,
                                void *user_ctx, Value *out_val) {
@@ -146,7 +152,6 @@ static bool host_fx_history_cb(MemArena *mem, const SymTable *tab,
     }
     double base_rate = to_per_usd / from_per_usd;
     double series[64];
-    /* Generate deterministic daily series ending at `base_rate` (step = 0.5) */
     for (int i = 0; i < days; ++i) {
         series[i] = base_rate - (double)(days - 1 - i) * 0.5;
     }
@@ -154,7 +159,6 @@ static bool host_fx_history_cb(MemArena *mem, const SymTable *tab,
     return !mem->has_error;
 }
 
-/* 2b. Persistent Host Key-Value Store (`@kv_set`, `@kv_get`) */
 typedef struct {
     char   key[32];
     double val;
@@ -229,7 +233,6 @@ static bool host_kv_get_cb(MemArena *mem, const SymTable *tab,
     return false;
 }
 
-/* 2c. IUPAC Periodic Table Atomic Mass Lookup (`@elem_mass`) */
 typedef struct {
     const char *sym;
     double      atomic_mass;
@@ -278,7 +281,7 @@ static void register_all_host_externs(Engine *eng) {
 }
 
 /* ============================================================================
- * 3. AUTOMATED TEST SUITE (75 TESTS ACROSS ALL 11 MODULES & HOST EXTERNS)
+ * 3. AUTOMATED TEST SUITE (114 TESTS ACROSS ALL MODULES, CONTROL FLOW & LOGIC)
  * ============================================================================ */
 
 typedef struct {
@@ -404,7 +407,7 @@ static const TestCase k_tests[] = {
 
     /* J. Host-Registered Extern Callbacks (`@fx_rate`, `@fx_history`, `@kv_set`/`@kv_get`, `@elem_mass`) */
     { "fx_rate(\"USD\", \"INR\")",         "84",   "real", "Host extern '@fx_rate(\"USD\", \"INR\")'" },
-    { "convert_fx(250, \"USD\", \"EUR\")", "230",  "real", "User 'convert_fx(250, \"USD\", \"EUR\")'" },
+    { "convert_fx(250, \"USD\", \"EUR\")", "230",  "real", "User 'convert_fx(250, USD, EUR)'" },
     { "convert_fx(92, \"EUR\", \"INR\")",  "8400", "real", "Cross-currency triangulation EUR -> USD -> INR" },
     { "50 to_inr + (92 to_usd) to_inr",    "12600","real", "Postfix currency ops 'to_inr' and 'to_usd'" },
     { "fx_history(\"USD\", \"INR\", 5)",   "[82, 82.5, 83, 83.5, 84]", "vec",
@@ -416,6 +419,167 @@ static const TestCase k_tests[] = {
       "Host persistent KV store '@kv_set' & '@kv_get' + 'to_inr'" },
     { "molar_mass_h2o() + molar_mass_co2()", "62.024", "real",
       "Host '@elem_mass' Periodic Table: H2O (18.015) + CO2 (44.009)" },
+
+    /* K. Local Scopes `{ ... }`, `if ... or ... else`, `switch`, `? :` Ternary & `Tag : { ... }` */
+    { "x = { a := 3 ; b := 4 ; a^2 + b^2 } ; { x = x + 5 ; 9999 } ; x",
+      "30", "real",
+      "Value-returning 'x = { ... }' + isolated '{ ... ; 9999 }' discarding unused value" },
+    { "x := 10 ; y := { x := 99 ; tmp := 5 ; x + tmp } ; x * 1000 + y",
+      "10104", "real",
+      "Lexical scope shadowing: inner 'x := 99' leaves outer 'x = 10' intact" },
+    { "{}",
+      "<void>", "void",
+      "Empty '{}' local scope block with no return value (<void>)" },
+    { "classify_mach(0.5)",    "\"subsonic\"",   "str",  "if/or/else chain: 1st 'if' branch matched" },
+    { "classify_mach(1.0)",    "\"transonic\"",  "str",  "if/or/else chain: 1st 'or' (else-if) matched" },
+    { "classify_mach(2.5)",    "\"supersonic\"", "str",  "if/or/else chain: 2nd 'or' (else-if) matched" },
+    { "classify_mach(6.0)",    "\"hypersonic\"", "str",  "if/or/else chain: final 'else' branch matched" },
+    { "cnt := 0 ; r := if (0) { cnt = cnt + 100 ; 1 } or (1) { cnt = cnt + 10 ; 2 } or (1) { cnt = cnt + 1000 ; 3 } else { cnt = cnt + 5000 ; 4 } ; r * 100 + cnt",
+      "210", "real",
+      "Single-branch evaluation guarantee: only matching 'or' is evaluated" },
+    { "planet_g(3) + planet_g(4) + planet_g(99)",
+      "13.52765", "real",
+      "switch block on numeric cases (Earth 9.80665 + Mars 3.721 + else 0)" },
+    { "switch (\"Au\") { case \"Ag\", \"Cu\" : { 10 } case \"Au\" : { 79 } else : { 0 } }",
+      "79", "real",
+      "switch block on string cases with multi-value 'case \"Ag\", \"Cu\"'" },
+    { "(10 > 5) ? 42 : 99",
+      "42", "real",
+      "Standard ternary operator 'cond ? x : y'" },
+    { "s := 85 ; (s >= 90) ? 4 : (s >= 80) ? 3 : (s >= 70) ? 2 : 0",
+      "3", "real",
+      "Right-associative chained ternary 'c1 ? v1 : c2 ? v2 : c3 ? v3 : v4'" },
+    { "k := 1 ; (k == 1) ? (k = k + 10) : (k = k + 1000) ; k",
+      "11", "real",
+      "Ternary lazy evaluation (untaken ':' branch is not evaluated)" },
+    { "i := 0 ; x = Loop : { i = i + 1 ; if (i < 5) { jump(Loop) } ; i * 10 } ; x",
+      "50", "real",
+      "Assigned tagged scope 'x = Loop : { ... }' with self-jump" },
+    { "x := 1 ; StepA : { x = x + 2 ; if (x < 10) { jump(StepB) } } ; StepB : { x = x * 2 ; if (x < 20) { jump(StepA) } } ; x",
+      "36", "real",
+      "Jumping forward & backward between 'StepA : { ... }' and 'StepB : { ... }'" },
+    { "x := 5 ; if (x > 0) { jump(Done) } ; x = 999 ; Done : { x = x + 100 } ; x",
+      "105", "real",
+      "Forward 'jump(Done)' skipping intermediate assignment 'x = 999'" },
+    { "collatz_steps(6)",
+      "8", "real",
+      "Tagged scopes 'Tick', 'Loop', 'Finish' with 'run(Tick)', 'Tick()', & 'jump'" },
+
+    /* L. Loop `break` & Tagged `break(Tag)`, Chained/Distributed Booleans,
+          Multi-Variable Declarations `x, y := 5`, Compound `+=`, and Dynamic Complex Promotion */
+    { "s := 0 ; i := 1 ; (i <= 10) ?? { if (i == 5) { break } ; s += i ; i += 1 } ; s",
+      "10", "real",
+      "Unlabeled 'break' exiting while loop at i == 5 (1+2+3+4 = 10)" },
+    { "tot := 0 ; Outer : { i := 1 ; (i <= 5) ?? { j := 1 ; (j <= 5) ?? { if (i == 2 and j == 3) { break(Outer) } ; tot += 10 ; j += 1 } ; i += 1 } ; tot = 9999 } ; tot",
+      "70", "real",
+      "Tagged 'break(Outer)' breaking out of nested inner & outer loops (7 * 10 = 70)" },
+    { "tot := 0 ; i := 1 ; OuterLoop : (i <= 5) ?? { j := 1 ; (j <= 5) ?? { if (i == 2 and j == 2) { break(OuterLoop) } ; tot += 1 ; j += 1 } ; i += 1 } ; tot",
+      "6", "real",
+      "Directly tagged while loop 'OuterLoop : (i <= 5) ?? { ... break(OuterLoop) }'" },
+    { "x := 1 ; y := 9 ; z := 3 ; (x == 1 && y == 2 || z == 3)",
+      "1", "real",
+      "Chained boolean precedence '(x == 1 && y == 2 || z == 3)' -> 1" },
+    { "(1 and not 0) * 100 + (0 nor 0) * 10 + (1 xor 1) + (1 nand 1)",
+      "110", "real",
+      "Word boolean operators: 'and', 'not', 'nor', 'xor', 'nand'" },
+    { "x := 1 ; y := 2 ; (x & y == 1 | 2)",
+      "1", "real",
+      "Distributed comparison '(x & y == 1 | 2)' when x=1, y=2 -> 1 (true)" },
+    { "x := 1 ; y := 3 ; (x & y == 1 | 2)",
+      "0", "real",
+      "Distributed comparison '(x & y == 1 | 2)' when x=1, y=3 -> 0 (false)" },
+    { "x := 2 ; y := 1 ; z := 4 ; ((x & y == 1 | 2) && (z == 3 | 4))",
+      "1", "real",
+      "Parenthesized chained distributed comparisons '((x & y == 1 | 2) && (z == 3 | 4))'" },
+    { "x, y := 5 ; x * 10 + y",
+      "55", "real",
+      "Multi-variable declaration 'x, y := 5' (both x and y initialized to 5)" },
+    { "a, b, c := 7 ; a + b + c",
+      "21", "real",
+      "3-variable declaration 'a, b, c := 7' -> 21" },
+    { "x := 5 ; x += 1 ; x == 6",
+      "1", "real",
+      "Compound addition assignment 'x := 5 ; x += 1 ; x == 6' -> 1" },
+    { "x := 10 ; x += 5 ; x -= 3 ; x *= 2 ; x /= 4 ; x %= 4 ; x ^= 3 ; x",
+      "8", "real",
+      "Chained compound assignments '+=', '-=', '*=', '/=', '%=', '^=' -> 8" },
+    { "x, y := 5 ; x, y += 3 ; x * 10 + y",
+      "88", "real",
+      "Multi-variable compound assignment 'x, y := 5 ; x, y += 3' -> 88" },
+    { "x := 5 ; x = x + 5i ; x",
+      "5 + 5i", "complex",
+      "Dynamic slot promotion: 'x := 5 ; x = x + 5i' promotes x from real to complex" },
+    { "x := 5 ; x += 5i ; x.re * 10 + x.im",
+      "55", "real",
+      "Dynamic promotion via 'x += 5i' + struct field access 'x.re' and 'x.im'" },
+
+    /* M. Concrete Entity Types, Concrete Unit Types, Complex Unit Promotion & Generic Unit `T` */
+    { "x := 5m ; x *= 10m ; x += 10cm ; x",
+      "50.1", "real",
+      "Postfix unit arithmetic: 5m * 10m + 10cm -> 50.1m (5010cm) in SI meters" },
+    { "x := 5m ; x *= 10 ; x += 10cm ; x",
+      "50.1", "real",
+      "Postfix unit scaled by plain 10: 5m * 10 + 10cm -> 50.1m" },
+    { "x := 5m ; x *= 10m ; x += 10cm ; unit_of(x)",
+      "\"distance\"", "str",
+      "Unit tag preserved across *= and += on 5m -> \"distance\"" },
+    { "unit_of(2 + 5)",
+      "\"none\"", "str",
+      "Simple expression '2 + 5' has generic UnitType T bound to \"none\"" },
+    { "x : real := 5 ; x += 10 ; x = 50m ; x",
+      "50", "real",
+      "Concrete 'x : real := 5' allows real operations & unit changes while type stays real" },
+    { "x : real, distance := 50m ; x += 10cm ; x *= 10 ; x",
+      "501", "real",
+      "Concrete 'x : real, distance := 50m' allows like-unit '10cm' and scalar '*= 10'" },
+    { "x : distance := 50m ; x += 50im ; x",
+      "50 + 50i", "complex",
+      "Unit-locked 'x : distance := 50m' + '50im' promotes entity type to complex (50 + 50i)" },
+    { "x : distance := 50m ; x += 50im ; unit_of(x)",
+      "\"distance\"", "str",
+      "Promoted 'x : distance := 50m ; x += 50im' retains concrete unit \"distance\"" },
+    { "x : distance := 50m ; x += 50im ; type_of(x)",
+      "\"complex\"", "str",
+      "Promoted 'x : distance := 50m ; x += 50im' has entity type \"complex\"" },
+    { "x : distance := 50m ; x += 50im ; x += 10cm ; x += 20icm ; x",
+      "50.1 + 50.2i", "complex",
+      "Complex distance variable accumulates both real '10cm' and imaginary '20icm'" },
+    { "x, y : real, distance := 25m ; x += 50cm ; y += 150cm ; x + y",
+      "52", "real",
+      "Multi-variable concrete 'x, y : real, distance := 25m' declaration & addition" },
+    { "100m / 10sec",
+      "10", "real",
+      "Cross-unit operator '(d:real,distance) / (t:real,time) -> real,speed'" },
+    { "unit_of(100m / 10sec)",
+      "\"speed\"", "str",
+      "100m / 10sec produces concrete unit \"speed\"" },
+    { "avg_speed(1.5 km, 50 sec)",
+      "30", "real",
+      "Unit-typed function 'avg_speed(d:real,distance, t:real,time) -> real,speed'" },
+    { "unit_of(avg_speed(1.5 km, 50 sec))",
+      "\"speed\"", "str",
+      "avg_speed(1.5 km, 50 sec) returns unit \"speed\"" },
+    { "scale_unit(50m, 3)",
+      "150", "real",
+      "Generic UnitType T function 'scale_unit(x:real,T, k:real) -> real,T'" },
+    { "unit_of(scale_unit(50m, 3))",
+      "\"distance\"", "str",
+      "Generic UnitType T function preserves input unit \"distance\"" },
+    { "unit_span(100m, 2500cm)",
+      "75", "real",
+      "Generic UnitType T 'unit_span(a:real,T, b:real,T)' on distance (100m, 2500cm)" },
+    { "unit_span(10, 25)",
+      "15", "real",
+      "Generic UnitType T 'unit_span(a:real,T, b:real,T)' on unitless numbers (10, 25)" },
+    /* User-Defined Custom Unit Type Group Tests (`data_size` & `bandwidth`) */
+    { "2 MB + 500 KB", "2609152", "real",
+      "User-defined custom unit group 'data_size' (2 MB + 500 KB in bytes)" },
+    { "(10 MB) / (2 sec)", "5242880", "real",
+      "User-defined cross-group operator: data_size / time -> bandwidth" },
+    { "unit_of((10 MB) / (2 sec))", "\"bandwidth\"", "str",
+      "Introspect custom user unit group via unit_of((10 MB) / (2 sec))" },
+    { "buf : real, data_size := 1 MB ; buf += 512 KB ; buf", "1572864", "real",
+      "Variable locked to custom user unit group 'real, data_size'" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -503,14 +667,12 @@ int main(void) {
     }
     free(raw_math_text);
 
-    /* Frontend saves the returned compiled `.mathc` binary image to its own storage */
     (void)frontend_write_file(mathc_path, compiled_mathc, compiled_mathc_len);
 
     printf("[3] In-Memory User Extension API (`user_loader.h`):\n");
     printf("    - Step A (`user_compile_ext`): Compiled raw text (%zu bytes) -> handed back %zu-byte `.mathc` image\n",
            raw_len, compiled_mathc_len);
 
-    /* Frontend reloads the compiled `.mathc` binary image into a fresh Engine via `user_load_mathc` */
     size_t disk_mathc_len = 0;
     uint8_t *disk_mathc = frontend_read_file(mathc_path, &disk_mathc_len);
     eng_init(&g_eng);
@@ -529,7 +691,7 @@ int main(void) {
     print_architecture_report(&g_eng);
 
     /* 4. Run Automated Expression Test Suite */
-    printf("[4] Running Full Automated Suite (Stdlib + Algebra + Units + Physics + Chemistry + Host Externs):\n");
+    printf("[4] Running Full Automated Suite (Stdlib + Control Flow + Booleans + Multi-Var + Algebra + Units + Physics + Chemistry):\n");
     int passed = 0, total = 0;
     for (int i = 0; k_tests[i].expr != NULL; ++i) {
         total++;
@@ -551,19 +713,69 @@ int main(void) {
     }
     printf("\n    Suite Summary: %d / %d passed.\n\n", passed, total);
 
-    /* 5. Verify Homogeneous Type Safety on Dynamic Vectors (`vec<T>`) */
+    /* 5. Verify Compile-Time Guardrails for Scopes, `if/or/else`, and `vec<T>` */
     bool vec_type_guard = !eng_eval(&g_eng, "v := vec() ; push(v, 10) ; push(v, vec2(1, 2))", &v);
-    printf("[5] Dynamic Vector Type-Safety Verification (pushing 'vec2' into 'vec<real>'):\n");
-    printf("    - Result: %s -> \"%s\"\n\n",
+    printf("[5] Type-Safety & Control-Flow Grammar Guardrails:\n");
+    printf("    - Homogeneous vec<T> guard    : %s -> \"%s\"\n",
            vec_type_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool scope_isolation_guard = !eng_eval(&g_eng, "{ inner_only := 42 } ; inner_only", &v);
+    printf("    - Local '{ ... }' isolation   : %s -> \"%s\"\n",
+           scope_isolation_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool multi_else_guard = !eng_eval(&g_eng, "if (1) { 10 } else { 20 } else { 30 }", &v);
+    printf("    - Duplicate 'else' rejection  : %s -> \"%s\"\n",
+           multi_else_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool else_if_guard = !eng_eval(&g_eng, "if (0) { 10 } else if (1) { 20 }", &v);
+    printf("    - 'else if' (2nd if) rejection: %s -> \"%s\"\n",
+           else_if_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool unlike_unit_guard = !eng_eval(&g_eng, "y := 100cm ; y += 60°", &v);
+    printf("    - 'y := 100cm ; y += 60°'     : %s -> \"%s\"\n",
+           unlike_unit_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool concrete_real_guard = !eng_eval(&g_eng, "x : real := 5 ; x += 5i", &v);
+    printf("    - 'x : real := 5 ; x += 5i'   : %s -> \"%s\"\n",
+           concrete_real_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool concrete_real_dist_unit_guard = !eng_eval(&g_eng, "x : real, distance := 50m ; x += 60°", &v);
+    printf("    - 'x:real,distance += 60°'    : %s -> \"%s\"\n",
+           concrete_real_dist_unit_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool concrete_real_dist_iota_guard = !eng_eval(&g_eng, "x : real, distance := 50m ; x += 50im", &v);
+    printf("    - 'x:real,distance += 50im'   : %s -> \"%s\"\n",
+           concrete_real_dist_iota_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool concrete_dist_unitless_iota_guard = !eng_eval(&g_eng, "x : distance := 50m ; x += 5i", &v);
+    printf("    - 'x : distance := 50m ; +=5i': %s -> \"%s\"\n",
+           concrete_dist_unitless_iota_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool fn_unit_mismatch_guard = !eng_eval(&g_eng, "avg_speed(100m, 60°)", &v);
+    printf("    - 'avg_speed(100m, 60°)'      : %s -> \"%s\"\n",
+           fn_unit_mismatch_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool gen_T_unit_mismatch_guard = !eng_eval(&g_eng, "unit_span(100m, 60°)", &v);
+    printf("    - 'unit_span(100m, 60°)' (T)  : %s -> \"%s\"\n\n",
+           gen_T_unit_mismatch_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
     /* 6. Verify O(1) Module Toggling (`boot_syntax`, `units`, `user_physics`) */
     printf("[6] Dynamic O(1) Module Toggling ('boot_syntax', 'units', 'user_physics'):\n");
     eng_set_module(&g_eng, "boot_syntax", false);
-    bool syn_off = !eng_eval(&g_eng, "(1 + 2)", &v);
-    printf("    - Disable [boot_syntax]  -> eval(\"(1 + 2)\")   : %s (\"%s\")\n",
-           syn_off ? "REJECTED ('(' & ')' disabled!)" : "UNEXPECTED", eng_last_error(&g_eng));
+    bool syn_off = !eng_eval(&g_eng, "{ 1 + 2 }", &v);
+    printf("    - Disable [boot_syntax]  -> eval(\"{ 1 + 2 }\") : %s (\"%s\")\n",
+           syn_off ? "REJECTED ('{' & '}' disabled!)" : "UNEXPECTED", eng_last_error(&g_eng));
     eng_set_module(&g_eng, "boot_syntax", true);
 
     eng_set_module(&g_eng, "units", false);
@@ -579,5 +791,9 @@ int main(void) {
     eng_set_module(&g_eng, "user_physics", true);
 
     return (passed == total && blank_ok && load_mathc_ok && vec_type_guard &&
+            scope_isolation_guard && multi_else_guard && else_if_guard &&
+            unlike_unit_guard && concrete_real_guard && concrete_real_dist_unit_guard &&
+            concrete_real_dist_iota_guard && concrete_dist_unitless_iota_guard &&
+            fn_unit_mismatch_guard && gen_T_unit_mismatch_guard &&
             syn_off && units_off && phys_off) ? 0 : 1;
 }

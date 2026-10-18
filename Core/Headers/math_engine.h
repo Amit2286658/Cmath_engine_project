@@ -9,11 +9,11 @@
  *        │       │   modules (`stdlib_precompiled.h` / `Library/stdlib.mathc`)
  *        │       │   inside `eng_init()` with zero filesystem or path logic.
  *        │       ├──► [mem_arena.h/.c]   (Isolated Memory Arena & 8B/12B Value Packing)
- *        │       ├──► [sym_table.h/.c]   (Dynamic Types, Structs, Modules, Overloads, Externs)
+ *        │       ├──► [sym_table.h/.c]   (Dynamic Types, Units, Structs, Modules, Overloads)
  *        │       ├──► [lexer.h/.c]       (Pattern-Driven Consuming Types & Syntax Tokens)
  *        │       ├──► [parser.h/.c]      (Top-Down Operator Precedence Pratt Parser)
  *        │       ├──► [ext_loader.h/.c]  (In-Memory `.math` Compiler & `.mathc` Serializer)
- *        │       └──► [evaluator.h/.c]   (Type-Dispatched AST Evaluator & `@` Intrinsics)
+ *        │       └──► [evaluator.h/.c]   (Type- & Unit-Dispatched AST Evaluator & `@` Intrinsics)
  *        │
  *        └──► [user_loader.h / user_loader.c]  (In-Memory User `.math` / `.mathc` API)
  */
@@ -41,8 +41,9 @@ typedef struct {
 /*
  * Initialize the Engine and INTERNALLY load all bootstrap & predefined `.math`
  * modules (`[boot_syntax]`, `[boot_types]`, `[boot_control]`, `[arith]`,
- * `[trig]`, `[complex_ext]`, `[geom_ext]`) from the embedded precompiled
- * `.mathc` image in O(1) `memcpy` time with zero filesystem access.
+ * `[trig]`, `[complex_ext]`, `[geom_ext]`, `[algebra]`, `[units]`, `[physics]`,
+ * `[chemistry]`) from the embedded precompiled `.mathc` image in O(1) `memcpy`
+ * time with zero filesystem access.
  */
 bool        eng_init(Engine *eng);
 
@@ -54,9 +55,7 @@ void        eng_init_blank(Engine *eng);
 
 /*
  * Register a platform-provided C callback (`fn`) under `@<name>(...)` so `.math`
- * extensions can safely invoke host services (e.g. realtime currency conversion
- * over HTTP, hardware sensors, database lookups) without coupling `Core/` to
- * OS networking or filesystem libraries.
+ * extensions can safely invoke host services without coupling `Core/` to OS libraries.
  */
 bool        eng_register_extern(Engine *eng, const char *name,
                                 EngExternFn fn, void *user_ctx);
@@ -71,9 +70,11 @@ bool        eng_eval(Engine *eng, const char *expr, Value *out_val);
 /* Format any Value (primitive, string, vector, or nested struct) to a C string buffer */
 void        eng_format_value(const Engine *eng, Value val, char *buf, size_t buf_cap);
 
-/* Inspect Value & Engine error state */
+/* Inspect Value Entity Type, Unit Type & Engine error state */
 uint16_t    eng_val_type(const Engine *eng, Value v);
+uint8_t     eng_val_unit(const Engine *eng, Value v);
 const char *eng_type_name(const Engine *eng, uint16_t type_id, char *buf, size_t cap);
+const char *eng_unit_name(const Engine *eng, uint8_t unit_id, char *buf, size_t cap);
 const char *eng_last_error(const Engine *eng);
 
 #ifdef __cplusplus

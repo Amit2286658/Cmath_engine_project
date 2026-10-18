@@ -259,7 +259,7 @@ void lex_next(Lexer *lex) {
         return;
     }
 
-    /* 3. Active Syntax Delimiters (`(`, `)`, `,`) & Active Operators (`.`, `;`, `:=`, `=`, `??`, `i`, `+`) */
+    /* 3. Active Syntax Delimiters (`(`, `)`, `{`, `}`, `,`) & Active Operators (`.`, `;`, `:=`, `=`, `?`, `:`, `??`, `i`, `+`) */
     int best_sym_len = 0;
     uint16_t best_sym_id = 0;
     uint8_t best_syntax_tag = 0;
@@ -297,6 +297,12 @@ void lex_next(Lexer *lex) {
         } else if (best_syntax_tag == INTR_RPAREN) {
             if (lex->paren_depth > 0) lex->paren_depth--;
             lex->cur.kind = TOK_RPAREN;
+        } else if (best_syntax_tag == INTR_LBRACE) {
+            lex->paren_depth++;
+            lex->cur.kind = TOK_LBRACE;
+        } else if (best_syntax_tag == INTR_RBRACE) {
+            if (lex->paren_depth > 0) lex->paren_depth--;
+            lex->cur.kind = TOK_RBRACE;
         } else if (best_syntax_tag == INTR_COMMA) {
             lex->cur.kind = TOK_COMMA;
         } else {

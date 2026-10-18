@@ -13,6 +13,9 @@
 
 void mem_init(MemArena *mem) {
     memset(mem, 0, sizeof(*mem));
+    for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
+        mem->label_ast[i] = MEM_NO_IDX;
+    }
 }
 
 void mem_err(MemArena *mem, const char *fmt, ...) {
@@ -36,10 +39,15 @@ void mem_snapshot_perm(MemArena *mem) {
 }
 
 void mem_rewind_scratch(MemArena *mem) {
-    mem->src_len   = mem->perm_src_len;
-    mem->ast_count = mem->perm_ast_count;
-    mem->pool_top  = mem->perm_pool_top;
-    mem->sp        = 0;
+    mem->src_len        = mem->perm_src_len;
+    mem->ast_count      = mem->perm_ast_count;
+    mem->pool_top       = mem->perm_pool_top;
+    mem->sp             = 0;
+    mem->jump_active    = 0;
+    mem->jump_target_id = 0;
+    for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
+        mem->label_ast[i] = MEM_NO_IDX;
+    }
 }
 
 /* ============================================================================
@@ -103,13 +111,6 @@ void mem_write_pool(MemArena *mem, uint16_t idx, double val) {
     }
 }
 
-/*
- * Dynamic Vector 4-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+3]`:
- *   [0] = elem_type_id (0 = untyped/auto-inferred on first push, >0 = type ID T)
- *   [1] = len          (current number of active elements T)
- *   [2] = cap          (allocated capacity in elements T)
- *   [3] = data_idx     (start index in `f64_pool` of `cap * stride` doubles, or 0)
- */
 uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap) {
     uint16_t hdr_idx = mem_alloc_pool(mem, MEM_VEC_HDR_SLOTS);
     if (mem->has_error) return 0;
@@ -126,7 +127,6 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
     uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
     uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
 
-    /* Case 1: First payload allocation (lazy buffer allocation once stride is known) */
     if (data_idx == 0) {
         uint16_t target_cap = (cap >= min_cap) ? cap : min_cap;
         if (target_cap < 4) target_cap = 4;
@@ -144,7 +144,6 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
     if (new_cap < min_cap) new_cap = min_cap;
     uint16_t extra_slots = (uint16_t)((new_cap - cap) * stride);
 
-    /* Case 2: In-place tail expansion if this vector's buffer sits at `pool_top` */
     if ((uint16_t)(data_idx + cap * stride) == mem->pool_top) {
         uint16_t ext_idx = mem_alloc_pool(mem, extra_slots);
         if (mem->has_error) return false;
@@ -153,7 +152,6 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
         return true;
     }
 
-    /* Case 3: Reallocate contiguous payload block and copy active `len * stride` slots */
     uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(new_cap * stride));
     if (mem->has_error) return false;
     uint16_t copy_slots = (uint16_t)(len * stride);
@@ -177,7 +175,6 @@ void mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride) {
     uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
 
     if (cap <= len) return;
-    /* Reclaim tail slots in `f64_pool` if the vector's payload is at the top of the pool */
     if (data_idx != 0 && (uint16_t)(data_idx + cap * stride) == mem->pool_top) {
         mem->pool_top = (uint16_t)(data_idx + len * stride);
     }
@@ -217,6 +214,10 @@ uint16_t mem_push_frame(MemArena *mem, uint8_t slot_count) {
         mem_err(mem, "Call stack overflow (max %d slots)", MEM_MAX_CALL_STACK);
         return base;
     }
+    if (slot_count > 0) {
+        memset(&mem->slot_locked_type[base], 0, slot_count);
+        memset(&mem->slot_locked_unit[base], 0, slot_count);
+    }
     mem->sp += slot_count;
     return base;
 }
@@ -245,13 +246,17 @@ Value val_void(void) {
     return v;
 }
 
-Value val_make_f64(MemArena *mem, uint16_t type_id, double d) {
+Value val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d) {
     (void)mem;
     Value v;
     v.type_id = type_id;
-    v.flags   = 0;
+    v.flags   = unit_id;
     v.as.f64  = d;
     return v;
+}
+
+Value val_make_f64(MemArena *mem, uint16_t type_id, double d) {
+    return val_make_f64_unit(mem, type_id, MEM_UNIT_NONE, d);
 }
 
 double val_get_f64(const MemArena *mem, Value v) {
@@ -294,12 +299,24 @@ uint16_t val_get_type(const MemArena *mem, Value v) {
     return v.type_id;
 }
 
+uint8_t val_get_unit(const MemArena *mem, Value v) {
+    (void)mem;
+    return (uint8_t)(v.flags & 0xFFu);
+}
+
+Value val_with_unit(MemArena *mem, Value v, uint8_t unit_id) {
+    (void)mem;
+    v.flags = unit_id;
+    return v;
+}
+
 #else /* 8-BYTE IEEE-754 NAN-BOXING */
 
 #define NANBOX_PREFIX     0xFFF8000000000000ULL
 #define NANBOX_MASK       0xFFF8000000000000ULL
 #define NANBOX_TAG_SHIFT  48
 #define NANBOX_TYPE_SHIFT 32
+#define NANBOX_UNIT_SHIFT 40
 
 #define NB_TAG_VOID       0xFFF8ULL
 #define NB_TAG_POOL       0xFFF9ULL
@@ -324,13 +341,20 @@ Value val_void(void) {
     return (NB_TAG_VOID << NANBOX_TAG_SHIFT);
 }
 
-Value val_make_f64(MemArena *mem, uint16_t type_id, double d) {
-    if (type_id == mem->fast_real_type && type_id != 0) {
+Value val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d) {
+    if (type_id == mem->fast_real_type && type_id != 0 && unit_id == MEM_UNIT_NONE) {
         return f64_to_bits(d);
     }
     uint16_t idx = mem_alloc_pool(mem, 1);
     mem_write_pool(mem, idx, d);
-    return (NB_TAG_POOL << NANBOX_TAG_SHIFT) | ((uint64_t)type_id << NANBOX_TYPE_SHIFT) | idx;
+    return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
+         | ((uint64_t)unit_id << NANBOX_UNIT_SHIFT)
+         | ((uint64_t)(type_id & 0xFFu) << NANBOX_TYPE_SHIFT)
+         | (uint64_t)idx;
+}
+
+Value val_make_f64(MemArena *mem, uint16_t type_id, double d) {
+    return val_make_f64_unit(mem, type_id, MEM_UNIT_NONE, d);
 }
 
 double val_get_f64(const MemArena *mem, Value v) {
@@ -345,7 +369,9 @@ double val_get_f64(const MemArena *mem, Value v) {
 Value val_make_str(MemArena *mem, uint16_t type_id, StrSlice s) {
     (void)mem;
     uint32_t payload = ((uint32_t)s.off << 16) | (uint32_t)s.len;
-    return (NB_TAG_STR << NANBOX_TAG_SHIFT) | ((uint64_t)type_id << NANBOX_TYPE_SHIFT) | payload;
+    return (NB_TAG_STR << NANBOX_TAG_SHIFT)
+         | ((uint64_t)(type_id & 0xFFu) << NANBOX_TYPE_SHIFT)
+         | payload;
 }
 
 StrSlice val_get_str(const MemArena *mem, Value v) {
@@ -358,7 +384,9 @@ StrSlice val_get_str(const MemArena *mem, Value v) {
 Value val_make_comp(MemArena *mem, uint16_t type_id, uint16_t pool_idx, uint16_t flat_size) {
     (void)mem;
     uint32_t payload = ((uint32_t)flat_size << 16) | (uint32_t)pool_idx;
-    return (NB_TAG_POOL << NANBOX_TAG_SHIFT) | ((uint64_t)type_id << NANBOX_TYPE_SHIFT) | payload;
+    return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
+         | ((uint64_t)(type_id & 0xFFu) << NANBOX_TYPE_SHIFT)
+         | payload;
 }
 
 uint16_t val_get_pool_idx(Value v) {
@@ -371,19 +399,46 @@ uint16_t val_get_type(const MemArena *mem, Value v) {
         return mem->fast_real_type;
     }
     if (top == NB_TAG_VOID) return MEM_TYPE_VOID;
-    return (uint16_t)((v >> NANBOX_TYPE_SHIFT) & 0xFFFFu);
+    return (uint16_t)((v >> NANBOX_TYPE_SHIFT) & 0xFFu);
+}
+
+uint8_t val_get_unit(const MemArena *mem, Value v) {
+    (void)mem;
+    uint16_t top = (uint16_t)(v >> NANBOX_TAG_SHIFT);
+    if (top <= NB_TAG_VOID) {
+        return MEM_UNIT_NONE;
+    }
+    return (uint8_t)((v >> NANBOX_UNIT_SHIFT) & 0xFFu);
+}
+
+Value val_with_unit(MemArena *mem, Value v, uint8_t unit_id) {
+    uint16_t top = (uint16_t)(v >> NANBOX_TAG_SHIFT);
+    if (top == NB_TAG_VOID) return v;
+    if (top < NB_TAG_VOID) {
+        if (unit_id == MEM_UNIT_NONE) return v;
+        return val_make_f64_unit(mem, mem->fast_real_type, unit_id, bits_to_f64(v));
+    }
+    uint16_t tid = (uint16_t)((v >> NANBOX_TYPE_SHIFT) & 0xFFu);
+    if (unit_id == MEM_UNIT_NONE && tid == mem->fast_real_type && tid != 0 &&
+        ((v >> 16) & 0xFFFFu) == 0) {
+        return f64_to_bits(val_get_f64(mem, v));
+    }
+    v &= ~(0xFFULL << NANBOX_UNIT_SHIFT);
+    v |= ((uint64_t)unit_id << NANBOX_UNIT_SHIFT);
+    return v;
 }
 
 #endif /* USE_TAGGED_12B */
 
 Value val_clone_comp(MemArena *mem, Value v, uint16_t flat_size) {
-    uint16_t tid = val_get_type(mem, v);
+    uint16_t tid  = val_get_type(mem, v);
+    uint8_t  unit = val_get_unit(mem, v);
     uint16_t old_idx = val_get_pool_idx(v);
     uint16_t new_idx = mem_alloc_pool(mem, flat_size);
     for (uint16_t i = 0; i < flat_size; ++i) {
         mem_write_pool(mem, new_idx + i, mem_read_pool(mem, old_idx + i));
     }
-    return val_make_comp(mem, tid, new_idx, flat_size);
+    return val_with_unit(mem, val_make_comp(mem, tid, new_idx, flat_size), unit);
 }
 
 Value val_from_f64(MemArena *mem, double d) {

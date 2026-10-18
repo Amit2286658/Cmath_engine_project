@@ -53,8 +53,12 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
         mem_err(&eng->mem, "Unexpected trailing token '%.*s'",
                 (int)P.lex.cur.len, P.lex.src + P.lex.cur.off);
     }
-    if (eng->mem.has_error || root == MEM_NO_IDX) {
+    if (!parser_check_labels(&P) || eng->mem.has_error || root == MEM_NO_IDX) {
         return false;
+    }
+
+    for (uint8_t i = 0; i < P.label_count && i < MEM_MAX_LABELS; ++i) {
+        eng->mem.label_ast[i] = P.labels[i].body_ast;
     }
 
     uint16_t frame_base = 0;
@@ -66,6 +70,10 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
     }
 
     Value res = eval_ast(&eng->mem, &eng->sym, root, frame_base, 0);
+    if (eng->mem.jump_active && !eng->mem.has_error) {
+        eng->mem.jump_active = 0;
+        mem_err(&eng->mem, "Unhandled jump to scope tag outside active sequence");
+    }
     if (P.local_count > 0) {
         mem_pop_frame(&eng->mem, frame_base);
     }
@@ -78,8 +86,16 @@ uint16_t eng_val_type(const Engine *eng, Value v) {
     return val_get_type(&eng->mem, v);
 }
 
+uint8_t eng_val_unit(const Engine *eng, Value v) {
+    return val_get_unit(&eng->mem, v);
+}
+
 const char *eng_type_name(const Engine *eng, uint16_t type_id, char *buf, size_t cap) {
     return sym_type_name(&eng->sym, &eng->mem, type_id, buf, cap);
+}
+
+const char *eng_unit_name(const Engine *eng, uint8_t unit_id, char *buf, size_t cap) {
+    return sym_unit_name(&eng->sym, &eng->mem, unit_id, buf, cap);
 }
 
 const char *eng_last_error(const Engine *eng) {
@@ -90,7 +106,8 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
                              char *buf, size_t cap);
 
 static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
-    uint16_t elem_tid = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
     uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 1);
     uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 3);
     uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)

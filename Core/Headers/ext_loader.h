@@ -37,7 +37,8 @@ typedef struct {
     uint8_t  type_count;         /* Active types in SymTable                  */
     uint8_t  const_count;        /* Active constants in SymTable              */
     uint16_t sym_count;          /* Active interned symbols in SymTable       */
-    uint16_t reserved;           /* Explicit zeroed alignment padding         */
+    uint8_t  unit_count;         /* Active unit dimensions in SymTable        */
+    uint8_t  reserved;           /* Explicit zeroed alignment padding         */
     uint16_t perm_src_len;       /* Active bytes in MemArena.src_buf          */
     uint16_t perm_ast_count;     /* Active AstNodes in MemArena.ast           */
     uint16_t perm_pool_top;      /* Active doubles in MemArena.f64_pool       */

@@ -4,7 +4,8 @@
  * Purpose:
  *   Encapsulates ALL memory allocation, string interning, float/struct/vector
  *   pools, AST node storage, call stack frames, scratch watermarks, and Value
- *   bit packing (8-byte IEEE-754 NaN-boxing vs. 12-byte Tagged Union).
+ *   bit packing (8-byte IEEE-754 NaN-boxing vs. 12-byte Tagged Union), including
+ *   orthogonal Entity Type (`type_id`) and Unit Type (`unit_id`) tags.
  *
  *   To customize memory sizes, switch to a heap/slab/embedded SRAM allocator,
  *   or change Value encoding in the future, you ONLY edit `mem_arena.h` and
@@ -34,10 +35,19 @@ extern "C" {
 #define MEM_MAX_AST_NODES   4096   /* 8-byte AST nodes (32 KB)                   */
 #define MEM_MAX_F64_POOL    2048   /* Flat double pool for literals/structs/vecs */
 #define MEM_MAX_CALL_STACK   256   /* Evaluation & local variable stack slots    */
+#define MEM_MAX_LABELS        16   /* Max tagged scopes (`Tag : { ... }`)        */
 
 #define MEM_NO_IDX        0xFFFFu  /* Null 16-bit index sentinel                 */
-#define MEM_TYPE_VOID          0u  /* Invalid / void type ID                     */
+#define MEM_TYPE_VOID          0u  /* Invalid / void entity type ID              */
+#define MEM_UNIT_NONE          0u  /* Dimensionless / no unit tag                */
 #define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
+
+typedef enum {
+    JUMP_NONE       = 0,
+    JUMP_GOTO       = 1,  /* `jump(Tag)` — transfer PC to `Tag`                 */
+    JUMP_BREAK_ANON = 2,  /* `break`     — exit innermost loop or tagged scope  */
+    JUMP_BREAK_TAG  = 3   /* `break(Tag)`— exit enclosing `Tag` loop/scope      */
+} JumpKind;
 
 /* ============================================================================
  * 2. PRIMITIVE STORAGE TYPES (`StrSlice`, `Value`, `AstNode`)
@@ -51,7 +61,7 @@ typedef struct {
 
 #if USE_TAGGED_12B
 
-/* 12-Byte Packed Tagged Union */
+/* 12-Byte Packed Tagged Union (`type_id` = entity type, `flags` = unit_id) */
 typedef struct __attribute__((packed, aligned(4))) {
     uint16_t type_id;
     uint16_t flags;
@@ -67,7 +77,7 @@ _Static_assert(sizeof(Value) == 12, "12-byte Tagged Union Value must be 12 bytes
 
 #else
 
-/* 8-Byte IEEE-754 NaN-Boxed Value */
+/* 8-Byte IEEE-754 NaN-Boxed Value (bits 32..39 = type_id, bits 40..47 = unit_id) */
 typedef uint64_t Value;
 
 _Static_assert(sizeof(Value) == 8, "8-byte NaN-Boxed Value must be 8 bytes");
@@ -105,14 +115,21 @@ typedef struct {
     uint16_t    pool_top;
     uint16_t    perm_pool_top;
 
-    /* Call & Local Variable Stack */
+    /* Call & Local Variable Stack + Optional Concrete Type/Unit Slot Locks */
     Value       stack[MEM_MAX_CALL_STACK];
+    uint8_t     slot_locked_type[MEM_MAX_CALL_STACK];
+    uint8_t     slot_locked_unit[MEM_MAX_CALL_STACK];
     uint16_t    sp;
 
     /* Special Bootstrap Type IDs */
     uint8_t     fast_real_type;
     uint8_t     str_type_id;
     uint8_t     vec_type_id;
+
+    /* Tagged Scope (`Tag : { ... }`) Jump, Break & Reuse Runtime State */
+    uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_BREAK_TAG)       */
+    uint8_t     jump_target_id;
+    uint16_t    label_ast[MEM_MAX_LABELS];
 
     /* Error state */
     bool        has_error;
@@ -160,17 +177,20 @@ Value    mem_get_slot(const MemArena *mem, uint16_t frame_base, uint8_t slot);
 void     mem_set_slot(MemArena *mem, uint16_t frame_base, uint8_t slot, Value v);
 
 /* ============================================================================
- * 5. VALUE CONSTRUCTION & INSPECTION API
+ * 5. VALUE CONSTRUCTION & INSPECTION API (ENTITY TYPE + UNIT TYPE)
  * ============================================================================ */
 
 Value    val_void(void);
 Value    val_make_f64(MemArena *mem, uint16_t type_id, double d);
+Value    val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d);
 double   val_get_f64(const MemArena *mem, Value v);
 Value    val_make_str(MemArena *mem, uint16_t type_id, StrSlice s);
 StrSlice val_get_str(const MemArena *mem, Value v);
 Value    val_make_comp(MemArena *mem, uint16_t type_id, uint16_t pool_idx, uint16_t flat_size);
 uint16_t val_get_pool_idx(Value v);
 uint16_t val_get_type(const MemArena *mem, Value v);
+uint8_t  val_get_unit(const MemArena *mem, Value v);
+Value    val_with_unit(MemArena *mem, Value v, uint8_t unit_id);
 Value    val_clone_comp(MemArena *mem, Value v, uint16_t flat_size);
 
 /* Host Callback Convenience Helpers */

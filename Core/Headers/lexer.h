@@ -3,8 +3,8 @@
  *
  * Purpose:
  *   Tokenizes input UTF-8 streams using ONLY active consuming `$type` patterns,
- *   active `[boot_syntax]` delimiters (`@lparen`, `@rparen`, `@comma`), and
- *   active operator symbols registered in `SymTable`.
+ *   active `[boot_syntax]` delimiters (`@lparen`, `@rparen`, `@lbrace`, `@rbrace`,
+ *   `@comma`), and active operator symbols registered in `SymTable`.
  */
 
 #ifndef LEXER_H
@@ -24,6 +24,8 @@ typedef enum {
     TOK_IDENT,      /* Identifier (function, constant, local variable, struct field) */
     TOK_LPAREN,     /* Matched by an active `@lparen` syntax symbol in SymTable      */
     TOK_RPAREN,     /* Matched by an active `@rparen` syntax symbol in SymTable      */
+    TOK_LBRACE,     /* Matched by an active `@lbrace` syntax symbol in SymTable      */
+    TOK_RBRACE,     /* Matched by an active `@rbrace` syntax symbol in SymTable      */
     TOK_COMMA,      /* Matched by an active `@comma`  syntax symbol in SymTable      */
     TOK_AT          /* @ (private C intrinsic hook, valid only in .math definitions) */
 } TokKind;

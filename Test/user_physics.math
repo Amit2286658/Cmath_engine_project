@@ -4,12 +4,13 @@
 # Demonstrates:
 #   1. Calling standard library modules (`[arith]`, `[trig]`, `[geom_ext]`,
 #      `[algebra]`, `[units]`, `[physics]`, `[chemistry]`)
-#   2. Wrapping host-registered C callbacks (`eng_register_extern`) for:
+#   2. Multi-branch `if ... or ... else`, `switch ... case ... else`,
+#      local `{ ... }` scopes, ternary `? :`, `break(Tag)`, and `Tag : { ... }`
+#   3. Wrapping host-registered C callbacks (`eng_register_extern`) for:
 #      - `@fx_rate(from, to)`         : Realtime currency exchange rate
 #      - `@fx_history(from, to, days)`: Vector-returning historical FX series
 #      - `@kv_set(key, val)` / `@kv_get(key)` : Persistent host key-value store
 #      - `@elem_mass(symbol)`         : IUPAC Periodic Table atomic mass lookup
-#   3. Defining custom applied engineering & rocket propulsion functions
 
 [user_physics]
 <[boot_syntax]
@@ -32,7 +33,50 @@
 "fspl_ratio"(dist_m:real, lambda_m:real) -> real =
     ((4 * π * dist_m) / lambda_m) ^ 2
 
-# 2. Host-Backed Realtime Currency Conversion (`@fx_rate`)
+# 2. Multi-Branch `if ... or ... else` & `switch` Demonstrations
+#    Uses `"or"` for else-if conditions!
+"classify_mach"(m:real) -> str = {
+    if (m < 0.8) {
+        "subsonic"
+    } or (m < 1.2) {
+        "transonic"
+    } or (m < 5.0) {
+        "supersonic"
+    } else {
+        "hypersonic"
+    }
+}
+
+"planet_g"(id:real) -> real = switch (id) {
+    case 1 : { 3.7 }
+    case 2 : { 8.87 }
+    case 3 : { 9.80665 }
+    case 4 : { 3.721 }
+    else   : { 0 }
+}
+
+# 3. Tagged Scopes (`Tag : { ... }`) with `jump(Tag)` & Inline Reuse (`run(Tag)` / `Tag()`)
+"collatz_steps"(n:real) -> real = {
+    steps := 0 ;
+    jump(Loop) ;
+    Tick : { steps += 1 } ;
+    Loop : {
+        if (n <= 1) {
+            jump(Finish)
+        } or ((n % 2) == 0) {
+            n /= 2 ;
+            run(Tick) ;
+            jump(Loop)
+        } else {
+            n = 3 * n + 1 ;
+            Tick() ;
+            jump(Loop)
+        }
+    } ;
+    Finish : { steps }
+}
+
+# 4. Host-Backed Realtime Currency Conversion (`@fx_rate`)
 "fx_rate"(from:str, to:str) -> real = @fx_rate(from, to)
 "convert_fx"(amount:real, from:str, to:str) -> real = amount * @fx_rate(from, to)
 (usd:real) "to_inr" :90 -> real = usd * @fx_rate("USD", "INR")
@@ -40,19 +84,46 @@
 "vec_sum_fx"(prices_usd:vec, target_ccy:str) -> real =
     vec_sum(prices_usd) * @fx_rate("USD", target_ccy)
 
-# 3. Host-Backed Vector-Returning Time Series (`@fx_history` -> `$vec`)
+# 5. Host-Backed Vector-Returning Time Series (`@fx_history` -> `$vec`)
 "fx_history"(from:str, to:str, days:real) -> vec = @fx_history(from, to, days)
 "fx_sma"(from:str, to:str, days:real, window:real) -> real =
     sma(@fx_history(from, to, days), window)
 
-# 4. Host-Backed Persistent Key-Value Store (`@kv_set`, `@kv_get`)
+# 6. Host-Backed Persistent Key-Value Store (`@kv_set`, `@kv_get`)
 "save_var"(key:str, val:real) -> real = @kv_set(key, val)
 "load_var"(key:str)           -> real = @kv_get(key)
 
-# 5. Host-Backed Periodic Table Atomic Mass Lookup (`@elem_mass`)
+# 7. Host-Backed Periodic Table Atomic Mass Lookup (`@elem_mass`)
 "elem"(sym:str)          -> real = @elem_mass(sym)
 "molar_mass_h2o"()       -> real = 2 * @elem_mass("H")  + @elem_mass("O")
 "molar_mass_co2"()       -> real = @elem_mass("C")      + 2 * @elem_mass("O")
 "molar_mass_nacl"()      -> real = @elem_mass("Na")     + @elem_mass("Cl")
 "molar_mass_glucose"()   -> real =
     6 * @elem_mass("C") + 12 * @elem_mass("H") + 6 * @elem_mass("O")
+
+# 8. Unit-Typed Operators & Functions + Generic Unit `T`
+#    - Specific unit-typed infix operators on `(real, distance)`
+(x:real, distance) "+" (y:real, distance) :<50 -> real, distance = @add(x, y)
+(x:real, distance) "-" (y:real, distance) :<50 -> real, distance = @sub(x, y)
+
+#    - Cross-dimension infix operators (`distance / time -> speed`, `speed * time -> distance`)
+(d:real, distance) "/" (t:real, time)  :<60 -> real, speed    = @div(d, t)
+(v:real, speed)    "*" (t:real, time)  :<60 -> real, distance = @mul(v, t)
+
+#    - Unit-typed function `avg_speed(d:real, distance, t:real, time) -> real, speed`
+"avg_speed"(d:real, distance, t:real, time) -> real, speed = d / t
+
+#    - Generic UnitType `T` functions (`scale_unit`, `unit_span`)
+"scale_unit"(x:real, T, k:real)   -> real, T = x * k
+"unit_span"(a:real, T, b:real, T) -> real, T = @abs(a - b)
+
+# 9. User-Defined Custom Unit Type Groups (`data_size` & `bandwidth`)
+#    Demonstrates that unit groups are NOT hardcoded in C — any user `.math`
+#    extension can create its own unit groups and cross-group operators!
+(x:real) "B"  :95 -> real, data_size = x
+(x:real) "KB" :95 -> real, data_size = x * 1024
+(x:real) "MB" :95 -> real, data_size = x * (1024 ^ 2)
+(x:real) "GB" :95 -> real, data_size = x * (1024 ^ 3)
+
+(sz:real, data_size) "/" (t:real, time)      :<60 -> real, bandwidth = @div(sz, t)
+(bw:real, bandwidth) "*" (t:real, time)      :<60 -> real, data_size = @mul(bw, t)

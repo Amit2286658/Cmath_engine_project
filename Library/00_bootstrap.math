@@ -1,16 +1,20 @@
 # =============================================================================
 # lib/00_bootstrap.math — Minimal Bootstrap Subset Hooked First by the C Core
 # =============================================================================
-# Without this file, the engine does not know what parentheses `(` `)`, commas
-# `,`, struct member access `.`, numbers, strings, dynamic vectors `$vec`,
-# semicolons `;`, variable assignments `:=` / `=`, loops `??`, or `if` are.
+# Without this file, the engine does not know what parentheses `(` `)`, local
+# scope braces `{` `}`, commas `,`, struct member access `.`, numbers, strings,
+# dynamic vectors `$vec`, semicolons `;`, variable assignments `:=` / `=` / `+=`,
+# ternary `? :`, loops `??`, `if`/`or`/`else`, `switch`/`case`, `break`, or
+# tagged scope jumps `jump(Tag)` / `run(Tag)` are.
 # The C core loads this file first so subsequent `.math` files can use them.
 
 [boot_syntax]
 
-# 1. Expression Grouping & Argument Delimiters (`=> @lparen / @rparen / @comma`)
+# 1. Expression Grouping, Local Scope Braces & Argument Delimiters
 "(" => @lparen
 ")" => @rparen
+"{" => @lbrace
+"}" => @rbrace
 "," => @comma
 
 
@@ -34,22 +38,55 @@ $vec  ~                      => @vec_type
 (s:real) "." (f:real) :<95 -> real = @field(s, f)
 
 # 4. Multi-Instruction Sequencing `;` (Left-associative infix, precedence 1)
-#    Allows any parenthesized expression `( stmt1 ; stmt2 ; final_expr )`
+#    Allows any `( stmt1 ; stmt2 ; final_expr )` or `{ stmt1 ; stmt2 ; final_expr }`
 #    to act as a multi-instruction block!
 (a:real) ";" (b:real) :<1 -> real = @seq(a, b)
 
-# 5. Local Variable & Struct Field Assignment (`:=` and `=`, right-assoc prec 5)
+# 5. Local Variable, Multi-Variable (`x, y := 5`) & Compound Assignment Operators
+#    (`:=`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, right-associative prec 5)
+#    Variables declared with `:=` inside `{ ... }` are lexically scoped to `{ ... }`!
 (target:real) ":=" (val:real) :>5 -> real = @store(target, val)
 (target:real) "="  (val:real) :>5 -> real = @store(target, val)
+(target:real) "+=" (val:real) :>5 -> real = @store(target, @add(target, val))
+(target:real) "-=" (val:real) :>5 -> real = @store(target, @sub(target, val))
+(target:real) "*=" (val:real) :>5 -> real = @store(target, @mul(target, val))
+(target:real) "/=" (val:real) :>5 -> real = @store(target, @div(target, val))
+(target:real) "%=" (val:real) :>5 -> real = @store(target, @mod(target, val))
+(target:real) "^=" (val:real) :>5 -> real = @store(target, @pow(target, val))
 
 # 6. Lazy While Loop Operator `??` (Left-associative infix, precedence 3)
-#    Usage: `(cond) ?? ( stmt1 ; stmt2 )`
+#    Usage: `(cond) ?? { stmt1 ; stmt2 }` or `Outer : (cond) ?? { ... break(Outer) }`
 (cond:real) "??" (body:real) :<3 -> real = @while(cond, body)
 
-# 7. Lazy Conditional Branch Function `if(cond, then_expr, else_expr)`
-"if"(cond:real, then_val:real, else_val:real) -> real = @if(cond, then_val, else_val)
+# 7. Standard Right-Associative Ternary Operator `cond ? x : y` (precedence 10)
+#    Also binds `:` for `Tag : { scope }` and `switch` case labels!
+(cond:real) "?" (branches:real) :>10 -> real = @ternary(cond, branches)
+(a:real)    ":" (b:real)        :>10 -> real = @colon(a, b)
 
-# 8. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`)
+# 8. Distributed Comparison Combinators `&` and `|` (precedences 35 & 34, above `==` at 30)
+#    Enables shorthand `(x & y == 1 | 2)` -> `((x == 1) | (x == 2)) & ((y == 1) | (y == 2))`!
+(a:real) "&" (b:real) :<35 -> real = @cand(a, b)
+(a:real) "|" (b:real) :<34 -> real = @cor(a, b)
+
+# 9. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `break`, `jump` & `run`
+#    - `if (c1) { b1 } or (c2) { b2 } or (c3) { b3 } else { b4 }`
+#      (also supports legacy 3-argument `if(cond, then_val, else_val)`)
+#    - `switch (val) { case v1 : { b1 } case v2 : { b2 } else : { b_def } }`
+#    - `break` / `break(Tag)` (break out of innermost or tagged outer loop/scope)
+#    - `Tag : { scope }`, `jump(Tag)` (backward/forward jump), `run(Tag)` (inline reuse)
+"if"(cond:real, then_val:real, else_val:real) -> real = @if(cond, then_val, else_val)
+"or"(cond:real, body:real)                    -> real = @or_branch(cond, body)
+"then"(cond:real, body:real)                  -> real = @or_branch(cond, body)
+"else"(body:real)                             -> real = @else_branch(body)
+"default"(body:real)                          -> real = @else_branch(body)
+"switch"(val:real, body:real)                 -> real = @switch_block(val, body)
+"case"(val:real, body:real)                   -> real = @case_branch(val, body)
+"jump"(tag:real)                              -> real = @jump_tag(tag)
+"run"(tag:real)                               -> real = @run_tag(tag)
+"break"()                                     -> real = @break_loop(0)
+"break"(tag:real)                             -> real = @break_loop(tag)
+
+# 10. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`)
 "vec"()                       -> vec  = @vnew(0)
 "vec"(cap:real)               -> vec  = @vnew(cap)
 "vec"(count:real, init:T)     -> vec  = @vfill(count, init)
@@ -62,3 +99,7 @@ $vec  ~                      => @vec_type
 "resize"(v:vec, new_len:real) -> vec  = @vresize(v, new_len)
 "shrink"(v:vec)               -> vec  = @vshrink(v)
 "clear"(v:vec)                -> vec  = @vclear(v)
+
+# 11. Runtime Entity Type & Unit Type Introspection (`type_of(x)`, `unit_of(x)`)
+"type_of"(x:T) -> str = @type_name(x)
+"unit_of"(x:T) -> str = @unit_name(x)
