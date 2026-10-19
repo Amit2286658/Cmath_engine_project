@@ -101,9 +101,12 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/30_complex.math"
             "${CMAKE_SOURCE_DIR}/Library/40_geom.math"
             "${CMAKE_SOURCE_DIR}/Library/50_algebra.math"
+            "${CMAKE_SOURCE_DIR}/Library/55_calculus.math"
             "${CMAKE_SOURCE_DIR}/Library/60_units.math"
+            "${CMAKE_SOURCE_DIR}/Library/65_conversions.math"
             "${CMAKE_SOURCE_DIR}/Library/70_physics.math"
             "${CMAKE_SOURCE_DIR}/Library/80_chemistry.math"
+            "${CMAKE_SOURCE_DIR}/Library/90_biology.math"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Recompiling Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"

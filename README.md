@@ -41,6 +41,22 @@ databases, or sensor reads.
 - **Generic unit `T`** — same-unit operators/functions preserve the unit
   (`scale_unit`, `unit_span`); cross-unit operators transform dimensions
   (`distance / time -> speed`).
+- **Same-unit conversions** — the universal infix operator `(2.5 km) in (1 m)`,
+  unit-checked postfix operators (`to_m`, `to_rad`, `to_psi`, ...), and pairwise
+  functions (`km_to_m`, `deg_to_rad`, ...).
+- **Strict boolean `!` & approximate equality `~`** — `!` flips only boolean
+  conditions (`!(x == 5)`, distributed `(x == !(1 | 2))`); `~` tests closeness
+  (`5.001 ~ 5`).
+- **Array & tensor literals** — C-style `v[i]` subscripting for vectors/structs,
+  and a dedicated `$mat` N-dimensional matrix/tensor type with `[...]` literals,
+  `M[r, c]` indexing, matrix arithmetic, `det`/`trace`/`transpose`/`inv`/`mat_rank`.
+- **Calculus** — derivatives (`diff`, `diff2`, `diff_n`), definite integrals
+  (`integrate`/`ntg`), two-sided & one-sided limits (`lim`, `lim_left`,
+  `lim_right`), discrete `sigma`/`prod`, Taylor series, arc length, and solids of
+  revolution.
+- **Broad curriculum** — commercial/general arithmetic (percentages, interest,
+  EMI, work & time, progressions), high-school physics, chemistry, and
+  quantitative biology.
 - **Pattern-driven lexer** — consuming `$type` regex patterns.
 - **Pratt parser** — operator fixity and precedence are data.
 - **Multiple dispatch** — operators/functions overloaded on operand types
@@ -49,7 +65,7 @@ databases, or sensor reads.
 - **Flat C-style structs** — `$vec2`, `$vec3`, `$circle`, `$mat2`, `$complex`.
 - **Rich standard library** — arithmetic/combinatorics/number theory/stats,
   trigonometry, complex numbers, geometry, algebra (matrices, quadratics,
-  polynomials), units, physics, and chemistry.
+  polynomials), calculus, units & conversions, physics, chemistry, and biology.
 - **Dual value encoding** — 8-byte IEEE-754 **NaN-boxing** (default) or a
   12-byte **tagged union** (`USE_TAGGED_12B`).
 - **UTF-8 aware** — `√`, `π`, `°`, `i`, `^`, `!` and more work natively.
@@ -92,21 +108,25 @@ Core/
               parser.c  ext_loader.c  evaluator.c  user_loader.c
 Library/
   mathc.c             Standalone AOT `.math` -> `.mathc` + header compiler
-  00_bootstrap.math   Syntax, lexical types, control flow, scope/booleans, `$vec`
-  10_arith.math       Arithmetic, comparisons, number theory, stats
+  00_bootstrap.math   Syntax, lexical types, control flow, scopes/booleans,
+                      `$vec`, `$mat`, expression-based calculus, `!`/`~`
+  10_arith.math       Arithmetic, comparisons, number theory, stats, commercial
   20_trig.math        Trig, hyperbolic, exponential & log functions
   30_complex.math     Postfix `i` operator & complex arithmetic
   40_geom.math        2D/3D vectors, circle/sphere geometry
-  50_algebra.math     2x2 matrices, quadratics, polynomial algebra
+  50_algebra.math     2x2 & multidim matrices, quadratics, polynomial algebra
+  55_calculus.math    Differential/integral calculus, Taylor, solids of rev.
   60_units.math       SI/Imperial unit type groups & postfix suffixes
-  70_physics.math     Classical, EM, quantum & relativity
+  65_conversions.math Same-unit conversions (`in`, `to_*`, `<u1>_to_<u2>`)
+  70_physics.math     Mechanics, EM, waves, thermo, modern physics
   80_chemistry.math   Stoichiometry, gas laws, pH, kinetics, electrochem
+  90_biology.math     Genetics, molecular biology, physiology, ecology
   stdlib.mathc        Compiled standard library image (generated)
 Test/
-  main.c              Host demo & 137-case automated test suite
+  main.c              Host demo & 215-case automated test suite
   user_physics.math   Sample user extension (host-backed functions)
 Tutorial/
-  00_Index_and_Overview.md  ...  07_Unit_Groups_and_Concrete_Types.md
+  00_Index_and_Overview.md  ...  09_Calculus_Arith_and_Sciences.md
 ```
 
 ## Building
@@ -180,9 +200,12 @@ and the active module bitmask used for O(1) toggling.
 "(" => @lparen
 "{" => @lbrace
 "}" => @rbrace
+"[" => @lbrack
+"]" => @rbrack
 $real ~ \d+ ("." \d+)?       => @f64
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
+$mat  ~                      => @mat_type
 ```
 
 `$iota` (the imaginary scalar) has no lexical pattern — it is produced by the
@@ -231,6 +254,39 @@ switch (v) { case 1 : { ... } else : { ... } }     # switch / case (numbers & st
 
 Tag : { ... jump(Tag) ... }           # labeled scope; jump/run/break(Tag)
 Loop : (cond) ?? { ... break(Loop) }  # labeled while loop
+```
+
+Expression-based calculus constructs are also bootstrap intrinsics:
+
+```
+diff(x, expr, x0)          # derivative of expr at x = x0 (5-point stencil)
+diff2(x, expr, x0)         # second derivative
+diff_n(x, expr, x0, order) # nth derivative
+integrate(x, expr, a, b)   # definite integral (composite Simpson)
+lim(x, expr, x0)           # two-sided limit (Richardson extrapolation)
+lim_left / lim_right       # one-sided limits
+sigma(k, expr, lo, hi)     # discrete summation
+prod(k, expr, lo, hi)      # discrete product
+```
+
+### Array subscripting & multidimensional matrices
+
+Vectors and structs support C-style `v[i]` subscripting for reading and in-place
+mutation (`=`, `+=`, `-=`, `*=`, `/=`), including negative indices on `$vec`:
+
+```
+v := vec3(2, 4, 6) ; v[0] = 10 ; v[1] += 5 ; v[2] *= 3 ; v   # vec3(x=10, y=9, z=18)
+a := vec(3, 10) ; a[-1] = 30                                 # negative index from end
+```
+
+`$mat` is a dedicated 1D–4D matrix/tensor type built from `[...]` literals
+(nested or semicolon row-separated):
+
+```
+M := [[1, 2, 3], [4, 5, 6]]     # or [1, 2, 3 ; 4, 5, 6]
+M[0, 1] = 9 ; M[1][0] += 10     # multi-index & chained read/write
+T := [[[1,2],[3,4]], [[5,6],[7,8]]] ; T[1, 0, 1]
+A * B ; det(M) ; trace(M) ; transpose(M) ; inv(M) ; mat_rank(M)
 ```
 
 Factorial, implemented *in the language*:
@@ -316,17 +372,20 @@ Callbacks receive evaluated `Value` arguments and use helpers such as
 
 | Module | File | Contents (selected) |
 | --- | --- | --- |
-| `boot_syntax` | `00_bootstrap` | `(` `)` `{` `}` `,` delimiters |
-| `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec` |
-| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical operators, `type_of`/`unit_of`, compound assignments, vector API |
-| `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, `π`/`pi`/`e`/`phi` |
+| `boot_syntax` | `00_bootstrap` | `(` `)` `{` `}` `[` `]` `,` delimiters |
+| `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec`, `$mat` |
+| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical & distributed operators, `!`/`~`, array `v[i]`, calculus constructs, `type_of`/`unit_of`, compound assignments, vector API |
+| `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, percentages/interest/EMI/work-time/progressions, `π`/`pi`/`e`/`phi` |
 | `trig` | `20_trig` | `sin cos tan sec csc cot`, inverses, `sinh cosh tanh` (+inverses), `ln log10 log2 logb exp sqrt cbrt hypot`, `sigmoid` |
 | `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /` (generic over unit `T`), `conj cabs carg cexp_i polar` |
 | `geom_ext` | `40_geom` | `$vec2/$vec3/$circle`, vector arithmetic & `**` dot, `cross2/cross3`, magnitudes/distances, `circle_area`, `sphere_vol` |
-| `algebra` | `50_algebra` | `$mat2`, matrix arithmetic/inverse, `solve_2x2`, `quad_roots`, `quad_croot`, Horner `poly_val`, `poly_deriv/integ/add/mul`, `poly_newton` |
+| `algebra` | `50_algebra` | `$mat2`, `$mat` multidim matrices (arithmetic, `det`/`trace`/`transpose`/`inv`, `mat_zeros`/`mat_eye`/`mat_rank`/`mat_shape`), `solve_2x2`, `quad_roots`, `quad_croot`, Horner `poly_val`, `poly_deriv/integ/add/mul`, `poly_newton` |
+| `calculus` | `55_calculus` | symbolic polynomial calculus (`poly_diff`, `poly_def_integ`, `poly_newton_root`), tangent/normal lines, curvature, arc length, solids of revolution, `trapz_vec`/`simpson_vec`, `taylor_exp/sin/cos` |
 | `units` | `60_units` | postfix `deg ° rad arcmin arcsec pct dB dBm`; length/mass/time/speed/pressure/energy/power unit groups; temperature conversions |
-| `physics` | `70_physics` | CODATA constants; mechanics, gravity/orbital, circuits & EM, optics, quantum, relativity |
-| `chemistry` | `80_chemistry` | constants; stoichiometry, ideal gas, kinetic theory, pH/pOH & buffers, kinetics/decay, thermodynamics, Nernst |
+| `conversions` | `65_conversions` | universal `in` operator, `to_<unit>` postfix conversions, pairwise `<u1>_to_<u2>` functions for distance/angle/mass/time/speed/pressure/energy/power |
+| `physics` | `70_physics` | CODATA constants; mechanics & SUVAT, gravity/orbital, circuits & EM, waves/optics, thermodynamics, quantum & relativity |
+| `chemistry` | `80_chemistry` | constants; stoichiometry, gas laws, colligative properties, pH/pOH & buffers, kinetics/decay, electrochemistry & solid state |
+| `biology` | `90_biology` | Hardy-Weinberg genetics, molecular biology & PCR, enzyme kinetics & Q10, plant water relations, microscopy, human physiology, ecology & diversity indices |
 
 ## Usage (C API)
 
@@ -410,9 +469,21 @@ loading.
 | `2 atm + 1 bar` | `302650` | real |
 | `100m / 10sec` | `10` | real *(speed)* |
 | `unit_of(100m / 10sec)` | `"speed"` | str |
+| `(2.5 km) in (1 m)` | `2500` | real |
+| `(180 deg) to_rad` | `3.141592654` | real |
+| `vec3(2,4,6)[1] += 5` | `9` | real |
+| `det([4, 7 ; 2, 6])` | `10` | real |
+| `inv([4, 7 ; 2, 6]) * [10, 10]` | `[-1, 2]` | mat |
+| `diff(x, x^3 + 2*x, 3)` | `29` | real |
+| `integrate(x, 3 * (x^2), 0, 2)` | `8` | real |
+| `lim(x, sin(x) / x, 0)` | `1` | real |
+| `sigma(k, k^2, 1, 5)` | `55` | real |
+| `5.001 ~ 5` | `1` | real |
 | `ke(2 kg, 36 kph)` | `100` | real |
 | `lorentz_gamma(0.6 * c0)` | `1.25` | real |
 | `ph_from_h(0.001) + poh_from_ph(3)` | `14` | real |
+| `pcr_copies(10)` | `1024` | real |
+| `michaelis_menten(100, 5, 5)` | `50` | real |
 | `fx_rate("USD", "INR")` | `84` | real *(host extern)* |
 | `50 to_inr` | `4200` | real *(host extern)* |
 
@@ -427,15 +498,18 @@ A full chapter-by-chapter guide lives in [`Tutorial/`](Tutorial/00_Index_and_Ove
 5. Units, Physics & Chemistry
 6. Host Extern Callbacks & Networking
 7. Unit Groups, Concrete Variable Locks & Generic Unit `T`
+8. Conversions, Array Indexing & Multidimensional Matrices
+9. Calculus, Commercial Arithmetic & Quantitative Sciences
 
 ## Testing
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
 stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
 reload), registers host externs, prints an architecture report, and runs a
-**137-case** automated suite (stdlib + control flow + booleans + multi-var +
-algebra + units + physics + chemistry + host externs), followed by type-safety
-guardrails and O(1) module-toggling checks. Run it with `make run`.
+**215-case** automated suite (stdlib + control flow + booleans + multi-var +
+concrete units + array/matrix + calculus + conversions + algebra + physics +
+chemistry + biology + host externs), followed by type-safety guardrails and O(1)
+module-toggling checks. Run it with `make run`.
 
 ## Design Goals
 

@@ -360,7 +360,7 @@ static bool is_rel_comparison_op(const MemArena *mem, const SymTable *tab, uint1
             sym_mod_enabled(tab, ov->mod_id) && ov->body_ast != MEM_NO_IDX) {
             const AstNode *root = mem_get_ast(mem, ov->body_ast);
             if (root->kind == AST_INTRINSIC &&
-                root->sub >= INTR_EQ && root->sub <= INTR_GE) {
+                root->sub >= INTR_EQ && root->sub <= INTR_APPROX) {
                 return true;
             }
         }
@@ -381,6 +381,19 @@ static uint8_t ast_cand_cor_meta(const MemArena *mem, const SymTable *tab,
     return 0;
 }
 
+static bool ast_cnot_meta(const MemArena *mem, const SymTable *tab,
+                          uint16_t idx, uint16_t *out_sym) {
+    if (idx == MEM_NO_IDX) return false;
+    const AstNode *n = mem_get_ast(mem, idx);
+    if (n->kind != AST_UNARY || n->sub != (uint8_t)FIX_PREFIX) return false;
+    uint8_t m = sym_active_meta_tag(tab, n->ref, FIX_PREFIX);
+    if (m == INTR_CNOT) {
+        if (out_sym) *out_sym = n->ref;
+        return true;
+    }
+    return false;
+}
+
 static uint16_t build_distributed_comp(Parser *P, OpFixity fix, uint16_t comp_sym,
                                        uint16_t left, uint16_t right) {
     MemArena       *mem = P->lex.mem;
@@ -394,12 +407,22 @@ static uint16_t build_distributed_comp(Parser *P, OpFixity fix, uint16_t comp_sy
         uint16_t c2 = build_distributed_comp(P, fix, comp_sym, lr, right);
         return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT, comb_sym, c1, c2);
     }
+    if (ast_cnot_meta(mem, tab, left, &comb_sym)) {
+        uint16_t inner = mem_get_ast(mem, left)->left;
+        uint16_t c1 = build_distributed_comp(P, fix, comp_sym, inner, right);
+        return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, comb_sym, c1, MEM_NO_IDX);
+    }
     if (ast_cand_cor_meta(mem, tab, right, &comb_sym) != 0) {
         uint16_t rl = mem_get_ast(mem, right)->left;
         uint16_t rr = mem_get_ast(mem, right)->right;
         uint16_t c1 = build_distributed_comp(P, fix, comp_sym, left, rl);
         uint16_t c2 = build_distributed_comp(P, fix, comp_sym, left, rr);
         return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT, comb_sym, c1, c2);
+    }
+    if (ast_cnot_meta(mem, tab, right, &comb_sym)) {
+        uint16_t inner = mem_get_ast(mem, right)->left;
+        uint16_t c1 = build_distributed_comp(P, fix, comp_sym, left, inner);
+        return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, comb_sym, c1, MEM_NO_IDX);
     }
     return mem_alloc_ast(mem, AST_BINARY, (uint8_t)fix, comp_sym, left, right);
 }
@@ -472,6 +495,167 @@ static uint16_t parse_field_step(Parser *P, uint16_t left) {
 
     return mem_alloc_ast(mem, AST_FIELD_LOAD, (uint8_t)ftype, prev_off + foff, base_ast, base_slot);
 }
+
+/* ============================================================================
+ * 2b. MULTIDIMENSIONAL MATRIX LITERAL `[...]` & C-STYLE SUBSCRIPTING `v[i]`
+ * ============================================================================ */
+
+static bool cur_is_seq_semicolon(const Parser *P) {
+    if (P->lex.cur.kind != TOK_OP) return false;
+    return sym_active_meta_tag(P->lex.tab, P->lex.cur.sym_id, FIX_INFIX_LEFT) == INTR_SEQ;
+}
+
+/*
+ * Parse `[1, 2, 3]`, nested `[[1, 2], [3, 4]]` / `[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]`,
+ * or semicolon row-separated `[1, 2, 3 ; 4, 5, 6]` into `AST_MAT_LIT`.
+ */
+static uint16_t parse_mat_literal(Parser *P) {
+    MemArena *mem = P->lex.mem;
+    lex_next(&P->lex); /* consume '[' */
+
+    uint8_t saved_ternary = P->in_ternary_then;
+    P->in_ternary_then = 0;
+
+    if (P->lex.cur.kind == TOK_RBRACK) {
+        P->in_ternary_then = saved_ternary;
+        lex_next(&P->lex);
+        return mem_alloc_ast(mem, AST_MAT_LIT, 0, 0, MEM_NO_IDX, MEM_NO_IDX);
+    }
+
+    uint16_t row0_head = MEM_NO_IDX;
+    uint16_t row0_tail = MEM_NO_IDX;
+    uint8_t  row0_cnt  = 0;
+
+    while (!mem->has_error) {
+        uint16_t item = parser_parse_expr(P, 2); /* min_prec=2 stops before ';' (prec 1) */
+        if (mem->has_error || item == MEM_NO_IDX) {
+            P->in_ternary_then = saved_ternary;
+            return MEM_NO_IDX;
+        }
+        uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, item, MEM_NO_IDX);
+        if (row0_head == MEM_NO_IDX) row0_head = link;
+        else mem_get_ast_mut(mem, row0_tail)->right = link;
+        row0_tail = link;
+        row0_cnt++;
+
+        if (P->lex.cur.kind == TOK_COMMA) {
+            lex_next(&P->lex);
+            if (P->lex.cur.kind == TOK_RBRACK) break;
+        } else {
+            break;
+        }
+    }
+
+    /* Check for MATLAB-style `;` row separator (`[1, 2 ; 3, 4]`) */
+    if (cur_is_seq_semicolon(P)) {
+        uint16_t r0_ast    = mem_alloc_ast(mem, AST_MAT_LIT, row0_cnt, 0, row0_head, MEM_NO_IDX);
+        uint16_t rows_head = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, r0_ast, MEM_NO_IDX);
+        uint16_t rows_tail = rows_head;
+        uint8_t  rows_cnt  = 1;
+
+        while (!mem->has_error && cur_is_seq_semicolon(P)) {
+            lex_next(&P->lex); /* consume ';' */
+            if (P->lex.cur.kind == TOK_RBRACK) break;
+
+            uint16_t rk_head = MEM_NO_IDX;
+            uint16_t rk_tail = MEM_NO_IDX;
+            uint8_t  rk_cnt  = 0;
+            while (!mem->has_error) {
+                uint16_t item = parser_parse_expr(P, 2);
+                if (mem->has_error || item == MEM_NO_IDX) {
+                    P->in_ternary_then = saved_ternary;
+                    return MEM_NO_IDX;
+                }
+                uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, item, MEM_NO_IDX);
+                if (rk_head == MEM_NO_IDX) rk_head = link;
+                else mem_get_ast_mut(mem, rk_tail)->right = link;
+                rk_tail = link;
+                rk_cnt++;
+
+                if (P->lex.cur.kind == TOK_COMMA) {
+                    lex_next(&P->lex);
+                } else {
+                    break;
+                }
+            }
+            uint16_t rk_ast  = mem_alloc_ast(mem, AST_MAT_LIT, rk_cnt, 0, rk_head, MEM_NO_IDX);
+            uint16_t rk_link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, rk_ast, MEM_NO_IDX);
+            mem_get_ast_mut(mem, rows_tail)->right = rk_link;
+            rows_tail = rk_link;
+            rows_cnt++;
+        }
+
+        P->in_ternary_then = saved_ternary;
+        if (P->lex.cur.kind != TOK_RBRACK) {
+            mem_err(mem, "Expected closing ']' after matrix literal");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+        return mem_alloc_ast(mem, AST_MAT_LIT, rows_cnt, 0, rows_head, MEM_NO_IDX);
+    }
+
+    P->in_ternary_then = saved_ternary;
+    if (P->lex.cur.kind != TOK_RBRACK) {
+        mem_err(mem, "Expected closing ']' after matrix literal");
+        return MEM_NO_IDX;
+    }
+    lex_next(&P->lex);
+    return mem_alloc_ast(mem, AST_MAT_LIT, row0_cnt, 0, row0_head, MEM_NO_IDX);
+}
+
+/*
+ * Parse C-style subscript `left[i]` or multi-index `left[r, c, d]` into `AST_INDEX`.
+ */
+static uint16_t parse_index_step(Parser *P, uint16_t left) {
+    MemArena *mem = P->lex.mem;
+    lex_next(&P->lex); /* consume '[' */
+
+    uint8_t saved_ternary = P->in_ternary_then;
+    P->in_ternary_then = 0;
+
+    if (P->lex.cur.kind == TOK_RBRACK) {
+        P->in_ternary_then = saved_ternary;
+        mem_err(mem, "Empty subscript '[]' is not allowed");
+        return MEM_NO_IDX;
+    }
+
+    uint16_t idx_head = MEM_NO_IDX;
+    uint16_t idx_tail = MEM_NO_IDX;
+    uint8_t  argc     = 0;
+
+    while (!mem->has_error) {
+        if (argc >= 4) {
+            P->in_ternary_then = saved_ternary;
+            mem_err(mem, "Maximum 4 subscript indices supported");
+            return MEM_NO_IDX;
+        }
+        uint16_t idx_expr = parser_parse_expr(P, 2);
+        if (mem->has_error || idx_expr == MEM_NO_IDX) {
+            P->in_ternary_then = saved_ternary;
+            return MEM_NO_IDX;
+        }
+        uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, idx_expr, MEM_NO_IDX);
+        if (idx_head == MEM_NO_IDX) idx_head = link;
+        else mem_get_ast_mut(mem, idx_tail)->right = link;
+        idx_tail = link;
+        argc++;
+
+        if (P->lex.cur.kind == TOK_COMMA) {
+            lex_next(&P->lex);
+        } else {
+            break;
+        }
+    }
+
+    P->in_ternary_then = saved_ternary;
+    if (P->lex.cur.kind != TOK_RBRACK) {
+        mem_err(mem, "Expected closing ']' after subscript index");
+        return MEM_NO_IDX;
+    }
+    lex_next(&P->lex);
+    return mem_alloc_ast(mem, AST_INDEX, argc, 0, left, idx_head);
+}
+
 
 /* ============================================================================
  * 3. LEXICAL SCOPE BLOCKS `{ ... }`, `if/or/else`, AND `switch` BLOCKS
@@ -898,6 +1082,11 @@ static uint16_t parse_nud(Parser *P) {
         return parse_scope_block(P);
     }
 
+    /* 3b. Multidimensional Matrix Literal `[1, 2, 3]`, `[[1, 2], [3, 4]]`, or `[1, 2 ; 3, 4]` */
+    if (t.kind == TOK_LBRACK) {
+        return parse_mat_literal(P);
+    }
+
     /* 4. Private C Intrinsic `@add(a, b)` OR Host Extern Callback `@fx_rate(from, to)` */
     if (t.kind == TOK_AT) {
         if (!P->in_ext_body) {
@@ -1160,7 +1349,22 @@ static uint16_t parse_nud(Parser *P) {
 
             if (P->lex.cur.kind != TOK_RPAREN) {
                 while (1) {
-                    uint16_t arg = parser_parse_expr(P, 0);
+                    uint16_t arg = MEM_NO_IDX;
+                    if (argc == 0 && fn_meta >= INTR_CALC_DIFF && fn_meta <= INTR_CALC_PROD) {
+                        if (P->lex.cur.kind != TOK_IDENT &&
+                            !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
+                            mem_err(mem, "First argument to '%.*s' must be a variable identifier (e.g. x)",
+                                    (int)id_len, id_str);
+                            return MEM_NO_IDX;
+                        }
+                        const char *vname = P->lex.src + P->lex.cur.off;
+                        uint16_t    vlen  = P->lex.cur.len;
+                        int vslot = parser_add_local(P, vname, vlen, mem->fast_real_type);
+                        lex_next(&P->lex);
+                        arg = mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)vslot, 0, 0, 0);
+                    } else {
+                        arg = parser_parse_expr(P, 0);
+                    }
                     uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, arg, MEM_NO_IDX);
                     if (head == MEM_NO_IDX) head = link;
                     else mem_get_ast_mut(mem, tail)->right = link;
@@ -1225,6 +1429,11 @@ uint16_t parser_parse_expr(Parser *P, int min_prec) {
     if (mem->has_error || left == MEM_NO_IDX) return MEM_NO_IDX;
 
     while (!mem->has_error) {
+        if (P->lex.cur.kind == TOK_LBRACK && 95 >= min_prec) {
+            left = parse_index_step(P, left);
+            P->last_was_block = false;
+            continue;
+        }
         if (P->lex.cur.kind == TOK_OP) {
             Token t = P->lex.cur;
 
@@ -1285,7 +1494,7 @@ uint16_t parser_parse_expr(Parser *P, int min_prec) {
                 }
                 if (mtag == INTR_SEQ &&
                     (P->lex.cur.kind == TOK_RPAREN || P->lex.cur.kind == TOK_RBRACE ||
-                     P->lex.cur.kind == TOK_EOF)) {
+                     P->lex.cur.kind == TOK_RBRACK || P->lex.cur.kind == TOK_EOF)) {
                     break;
                 }
 
@@ -1307,6 +1516,7 @@ uint16_t parser_parse_expr(Parser *P, int min_prec) {
             P->lex.cur.kind != TOK_EOF &&
             P->lex.cur.kind != TOK_RPAREN &&
             P->lex.cur.kind != TOK_RBRACE &&
+            P->lex.cur.kind != TOK_RBRACK &&
             P->lex.cur.kind != TOK_COMMA &&
             P->lex.cur.kind != TOK_OP) {
             uint8_t kw = token_func_meta(P, P->lex.cur);

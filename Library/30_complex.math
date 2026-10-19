@@ -50,3 +50,8 @@ $complex(re:real, im:real)
 "carg"(z:complex)      -> real       = atan2(z.im, z.re)
 "cexp_i"(theta:real)   -> complex    = complex(cos(theta), sin(theta))
 "polar"(r:real, T, theta:real) -> complex, T = complex(r * cos(theta), r * sin(theta))
+
+# Equality and Approximate Equality (`~`) for complex numbers
+(a:complex, T) "==" (b:complex, T) :<30 -> real = (a.re == b.re) && (a.im == b.im)
+(a:complex, T) "!=" (b:complex, T) :<30 -> real = (a.re != b.re) || (a.im != b.im)
+(a:complex, T) "~"  (b:complex, T) :<30 -> real = (a.re ~ b.re) && (a.im ~ b.im)

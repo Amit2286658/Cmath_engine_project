@@ -162,6 +162,12 @@ static void ext_parse_type_decl(ExtLoader *L) {
             if (mem->vec_type_id == 0) {
                 mem->vec_type_id = (uint8_t)tid;
             }
+        } else if (td->parser_intr == INTR_MAT_TYPE) {
+            td->is_consuming = 0;
+            td->flat_size    = MEM_MAT_HDR_SLOTS;
+            if (mem->mat_type_id == 0) {
+                mem->mat_type_id = (uint8_t)tid;
+            }
         }
     } else if (ext_match_char(L, '(')) {
         td->is_consuming = 0;
@@ -414,6 +420,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
                 IntrinsicId intr = sym_lookup_intrinsic(mem_str_ptr(mem, iname), iname.len);
                 if (intr != INTR_LPAREN && intr != INTR_RPAREN &&
                     intr != INTR_LBRACE && intr != INTR_RBRACE &&
+                    intr != INTR_LBRACK && intr != INTR_RBRACK &&
                     intr != INTR_COMMA) {
                     mem_err(mem, "Unknown syntax delimiter intrinsic '@%.*s'",
                             (int)iname.len, mem_str_ptr(mem, iname));
@@ -646,6 +653,7 @@ static void fill_mathc_header(const MemArena *mem, const SymTable *tab, MathcHea
     hdr->fast_real_type = mem->fast_real_type;
     hdr->str_type_id    = mem->str_type_id;
     hdr->vec_type_id    = mem->vec_type_id;
+    hdr->mat_type_id    = mem->mat_type_id;
     hdr->mod_count      = tab->mod_count;
     hdr->type_count     = tab->type_count;
     hdr->unit_count     = tab->unit_count;
@@ -772,6 +780,7 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     mem->fast_real_type = hdr.fast_real_type;
     mem->str_type_id    = hdr.str_type_id;
     mem->vec_type_id    = hdr.vec_type_id;
+    mem->mat_type_id    = hdr.mat_type_id;
     mem->src_len        = hdr.perm_src_len;
     mem->ast_count      = hdr.perm_ast_count;
     mem->pool_top       = hdr.perm_pool_top;

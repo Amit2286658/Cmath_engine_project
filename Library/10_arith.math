@@ -1,5 +1,5 @@
 # =============================================================================
-# Library/10_arith.math — Core Arithmetic, Logic, Combinatorics, Number Theory & Stats
+# Library/10_arith.math — Core & Commercial Arithmetic, Logic, Sequences & Stats
 # =============================================================================
 
 [arith]
@@ -20,19 +20,19 @@
 # 3. Right-Associative Infix Exponentiation (:>prec)
 (a:real) "^" (b:real) :>75 -> real = @pow(a, b)
 
-# 4. Relational Comparisons (:<30) & Chained Boolean Logic Operators
-#    Note: `&` (:<35) and `|` (:<34) in `00_bootstrap.math` bind tighter than
-#    `==`, `!=`, `<`, `<=`, `>`, `>=` (:<30) so `(x & y == 1 | 2)` distributes
-#    automatically into `((x == 1) | (x == 2)) & ((y == 1) | (y == 2))`!
-(a:real) "=="   (b:real) :<30 -> real = @eq(a, b)
-(a:real) "!="   (b:real) :<30 -> real = @ne(a, b)
-(a:real) "<"    (b:real) :<30 -> real = @lt(a, b)
-(a:real) "<="   (b:real) :<30 -> real = @le(a, b)
-(a:real) ">"    (b:real) :<30 -> real = @gt(a, b)
-(a:real) ">="   (b:real) :<30 -> real = @ge(a, b)
+# 4. Relational Comparisons, Approximate Equality `~` (:<30) & Chained Boolean Logic
+#    - `~` returns true (`1`) when `|a - b| <= 0.001` (at least 3 decimal places close:
+#      `5.001 ~ 5` is `1`, `5.000001 ~ 5` is `1`, `5.01 ~ 5` is `0`).
+#    - Prefix `!` (in `00_bootstrap.math`) flips boolean conditions (`!(x == 5)`).
+(a:real)    "==" (b:real)    :<30 -> real = @eq(a, b)
+(a:real)    "!=" (b:real)    :<30 -> real = @ne(a, b)
+(a:real)    "<"  (b:real)    :<30 -> real = @lt(a, b)
+(a:real)    "<=" (b:real)    :<30 -> real = @le(a, b)
+(a:real)    ">"  (b:real)    :<30 -> real = @gt(a, b)
+(a:real)    ">=" (b:real)    :<30 -> real = @ge(a, b)
+(a:real, T) "~"  (b:real, T) :<30 -> real = @approx(a, b)
 
 "not"(x:real) :25 -> real = @lnot(x)
-"!"  (x:real) :80 -> real = @lnot(x)
 
 (a:real) "&&"   (b:real) :<20 -> real = @land(a, b)
 (a:real) "and"  (b:real) :<20 -> real = @land(a, b)
@@ -69,7 +69,7 @@
     acc
 )
 
-# 8. Common Utility & Rounding Functions
+# 8. Common Utility, Rounding & Boolean Predicate Functions
 "abs"(x:real)   -> real = @abs(x)
 "floor"(x:real) -> real = @floor(x)
 "ceil"(x:real)  -> real = @ceil(x)
@@ -81,6 +81,9 @@
 "max"(a:real, b:real) -> real = if(a > b, a, b)
 "clamp"(x:real, lo:real, hi:real) -> real = min(max(x, lo), hi)
 "abs_diff"(a:real, b:real) -> real = if(a < b, b - a, a - b)
+"is_even"(n:real) -> real = (n % 2 == 0)
+"is_odd"(n:real)  -> real = (n % 2 != 0)
+"is_close"(a:real, b:real, tol:real) -> real = (@abs(a - b) <= tol)
 
 # 9. Number Theory & Combinatorics (`gcd`, `lcm`, `ncr`, `npr`, `fib`, `is_prime`, `mod_pow`)
 "gcd"(a:real, b:real) -> real = (
@@ -133,7 +136,83 @@
     res
 )
 
-# 10. Vector Statistics & Time-Series Functions (`vec_sum`, `mean`, `variance`, `stddev`, `sma`)
+# 10. Percentages, Profit & Loss, Markup & Discounts
+"pct_of"(part:real, whole:real)          -> real = (part / whole) * 100
+"pct_val"(pct:real, total:real)          -> real = (pct / 100) * total
+"pct_change"(old_v:real, new_v:real)     -> real = ((new_v - old_v) / old_v) * 100
+"pct_inc"(val:real, pct:real)            -> real = val * (1 + pct / 100)
+"pct_dec"(val:real, pct:real)            -> real = val * (1 - pct / 100)
+"pct_error"(measured:real, exact:real)   -> real = (@abs(measured - exact) / @abs(exact)) * 100
+"successive_pct"(p1:real, p2:real)       -> real = p1 + p2 + (p1 * p2) / 100
+
+"profit"(cp:real, sp:real)               -> real = sp - cp
+"loss"(cp:real, sp:real)                 -> real = cp - sp
+"profit_pct"(cp:real, sp:real)           -> real = ((sp - cp) / cp) * 100
+"loss_pct"(cp:real, sp:real)             -> real = ((cp - sp) / cp) * 100
+"sp_from_profit_pct"(cp:real, p_pct:real)-> real = cp * (1 + p_pct / 100)
+"sp_from_loss_pct"(cp:real, l_pct:real)  -> real = cp * (1 - l_pct / 100)
+"cp_from_profit_pct"(sp:real, p_pct:real)-> real = sp / (1 + p_pct / 100)
+"cp_from_loss_pct"(sp:real, l_pct:real)  -> real = sp / (1 - l_pct / 100)
+"discount_amt"(marked_p:real, d_pct:real)-> real = marked_p * (d_pct / 100)
+"sp_after_discount"(marked_p:real, d_pct:real) -> real = marked_p * (1 - d_pct / 100)
+"successive_discount"(d1:real, d2:real)  -> real = d1 + d2 - (d1 * d2) / 100
+
+# 11. Simple & Compound Interest, Depreciation & Loan EMI
+"simple_interest"(p:real, r_pct:real, t_yr:real) -> real = (p * r_pct * t_yr) / 100
+"si_amount"(p:real, r_pct:real, t_yr:real)       -> real = p + simple_interest(p, r_pct, t_yr)
+"compound_amount"(p:real, r_pct:real, t_yr:real) -> real = p * ((1 + r_pct / 100) ^ t_yr)
+"compound_interest"(p:real, r_pct:real, t_yr:real) -> real = compound_amount(p, r_pct, t_yr) - p
+"ci_amount_n"(p:real, r_pct:real, t_yr:real, n_per_yr:real) -> real =
+    p * ((1 + (r_pct / 100) / n_per_yr) ^ (n_per_yr * t_yr))
+"ci_si_diff_2yr"(p:real, r_pct:real)             -> real = p * ((r_pct / 100) ^ 2)
+"depreciated_val"(p0:real, r_pct:real, t_yr:real)-> real = p0 * ((1 - r_pct / 100) ^ t_yr)
+"emi"(principal:real, annual_rate_pct:real, months:real) -> real = (
+    r_m := (annual_rate_pct / 12) / 100;
+    f   := (1 + r_m) ^ months;
+    (principal * r_m * f) / (f - 1)
+)
+
+# 12. Work & Time, Pipes & Cisterns, and Chain Rule (`M1*D1/W1 = M2*D2/W2`)
+"work_rate"(days:real)                           -> real = 1 / days
+"work_together_2"(d1:real, d2:real)              -> real = (d1 * d2) / (d1 + d2)
+"work_together_3"(d1:real, d2:real, d3:real)     -> real =
+    (d1 * d2 * d3) / (d1 * d2 + d2 * d3 + d3 * d1)
+"work_other_person"(d_both:real, d_one:real)     -> real = (d_both * d_one) / (d_one - d_both)
+"work_rem_after"(d_total:real, days_worked:real) -> real = 1 - (days_worked / d_total)
+"pipe_fill_with_leak"(t_fill:real, t_empty:real) -> real = (t_fill * t_empty) / (t_empty - t_fill)
+"man_days_solve"(m1:real, d1:real, w1:real, m2:real, w2:real) -> real =
+    (m1 * d1 * w2) / (w1 * m2)
+
+# 13. Progressions (AP / GP / HP), Means, Proportions, Mixtures & Speed/Boats
+"ap_nth"(a:real, d:real, n:real) -> real = a + (n - 1) * d
+"ap_sum"(a:real, d:real, n:real) -> real = (n / 2) * (2 * a + (n - 1) * d)
+"gp_nth"(a:real, r:real, n:real) -> real = a * (r ^ (n - 1))
+"gp_sum"(a:real, r:real, n:real) -> real = if(r == 1, a * n, a * ((r ^ n) - 1) / (r - 1))
+"gp_inf_sum"(a:real, r:real)     -> real = a / (1 - r)
+"hp_nth"(a:real, d:real, n:real) -> real = 1 / (a + (n - 1) * d)
+
+"arith_mean"(a:real, b:real)     -> real = (a + b) / 2
+"geom_mean"(a:real, b:real)      -> real = √(a * b)
+"harm_mean"(a:real, b:real)      -> real = (2 * a * b) / (a + b)
+"fourth_proportional"(a:real, b:real, c:real) -> real = (b * c) / a
+"third_proportional"(a:real, b:real)          -> real = (b * b) / a
+"mean_proportional"(a:real, b:real)           -> real = √(a * b)
+"alligation_ratio"(cheaper:real, dearer:real, mean_p:real) -> real =
+    (dearer - mean_p) / (mean_p - cheaper)
+
+"avg_speed_2"(s1:real, s2:real)               -> real = (2 * s1 * s2) / (s1 + s2)
+"rel_speed_same"(s1:real, s2:real)            -> real = @abs(s1 - s2)
+"rel_speed_opp"(s1:real, s2:real)             -> real = s1 + s2
+"boat_downstream"(u_boat:real, v_stream:real) -> real = u_boat + v_stream
+"boat_upstream"(u_boat:real, v_stream:real)   -> real = u_boat - v_stream
+"boat_still_speed"(d_spd:real, u_spd:real)    -> real = (d_spd + u_spd) / 2
+"stream_speed"(d_spd:real, u_spd:real)        -> real = (d_spd - u_spd) / 2
+
+"sum_n"(n:real)      -> real = n * (n + 1) / 2
+"sum_sq_n"(n:real)   -> real = n * (n + 1) * (2 * n + 1) / 6
+"sum_cube_n"(n:real) -> real = (n * (n + 1) / 2) ^ 2
+
+# 14. Vector Statistics & Time-Series Functions (`vec_sum`, `mean`, `variance`, `stddev`, `sma`)
 "vec_sum"(v:vec) -> real = (
     s := 0;
     idx := 0;
@@ -162,7 +241,6 @@
 
 "stddev"(v:vec) -> real = √(variance(v))
 
-# Simple Moving Average over the last `window` elements of `v`
 "sma"(v:vec, window:real) -> real = (
     n     := len(v);
     w     := min(window, n);
@@ -176,7 +254,7 @@
     acc / w
 )
 
-# 11. Fundamental Mathematical Constants
+# 15. Fundamental Mathematical Constants
 "π"   : real = 3.141592653589793
 "pi"  : real = 3.141592653589793
 "e"   : real = 2.718281828459045

@@ -26,6 +26,8 @@ typedef enum {
     TOK_RPAREN,     /* Matched by an active `@rparen` syntax symbol in SymTable      */
     TOK_LBRACE,     /* Matched by an active `@lbrace` syntax symbol in SymTable      */
     TOK_RBRACE,     /* Matched by an active `@rbrace` syntax symbol in SymTable      */
+    TOK_LBRACK,     /* Matched by an active `@lbrack` syntax symbol `[` in SymTable  */
+    TOK_RBRACK,     /* Matched by an active `@rbrack` syntax symbol `]` in SymTable  */
     TOK_COMMA,      /* Matched by an active `@comma`  syntax symbol in SymTable      */
     TOK_AT          /* @ (private C intrinsic hook, valid only in .math definitions) */
 } TokKind;

@@ -1,0 +1,147 @@
+# =============================================================================
+# Library/90_biology.math — High School & Quantitative Biology Numerical Suite
+# =============================================================================
+
+[biology]
+<[arith]
+<[trig]
+<[chemistry]
+
+# 1. Population Genetics (Hardy-Weinberg Equilibrium `p + q = 1`, `p^2 + 2pq + q^2 = 1`)
+"hw_q_from_p"(p_dom:real)        -> real = 1 - p_dom
+"hw_p_from_q2"(q2_rec_freq:real) -> real = 1 - √(q2_rec_freq)
+"hw_homo_dom"(p_dom:real)        -> real = p_dom ^ 2
+"hw_hetero"(p_dom:real)          -> real = 2 * p_dom * (1 - p_dom)
+"hw_homo_rec"(p_dom:real)        -> real = (1 - p_dom) ^ 2
+"hw_carrier_count"(q2_rec_freq:real, pop_size:real) -> real = (
+    q_val := √(q2_rec_freq);
+    p_val := 1 - q_val;
+    2 * p_val * q_val * pop_size
+)
+"recomb_freq"(recombinants:real, total_offspring:real) -> real =
+    (recombinants / total_offspring) * 100
+"chi_sq_term"(observed:real, expected:real) -> real =
+    ((observed - expected) ^ 2) / expected
+
+# 2. Molecular Biology & Biotechnology (Chargaff Rules, DNA Helix, Translation & PCR)
+"chargaff_g_from_a"(a_pct:real)    -> real = 50 - a_pct
+"chargaff_c_from_t"(t_pct:real)    -> real = 50 - t_pct
+"dna_length_nm"(base_pairs:real)   -> real = base_pairs * 0.34
+"dna_turns"(base_pairs:real)       -> real = base_pairs / 10
+"dna_weight_da"(base_pairs:real)   -> real = base_pairs * 650
+"codons_for_protein"(amino_acids:real)     -> real = amino_acids + 1
+"mrna_bases_for_protein"(amino_acids:real) -> real = 3 * (amino_acids + 1)
+"pcr_copies"(n_cycles:real)        -> real = 2 ^ n_cycles
+"pcr_yield_from"(n0_templates:real, n_cycles:real) -> real =
+    n0_templates * (2 ^ n_cycles)
+"res_digest_linear"(cut_sites:real)   -> real = cut_sites + 1
+"res_digest_circular"(cut_sites:real) -> real = cut_sites
+
+# 3. Biochemistry, Enzyme Kinetics (Michaelis-Menten) & Bioenergetics
+"michaelis_menten"(vmax:real, km:real, substrate_s:real) -> real =
+    (vmax * substrate_s) / (km + substrate_s)
+"competitive_inh_v"(vmax:real, km:real, substrate_s:real, inh_i:real, ki:real) -> real =
+    (vmax * substrate_s) / (km * (1 + inh_i / ki) + substrate_s)
+"noncomp_inh_v"(vmax:real, km:real, substrate_s:real, inh_i:real, ki:real) -> real =
+    ((vmax / (1 + inh_i / ki)) * substrate_s) / (km + substrate_s)
+"enzyme_catalytic_eff"(kcat:real, km:real) -> real = kcat / km
+
+"q10_rate"(r1:real, t1_c:real, t2_c:real, q10_coeff:real) -> real =
+    r1 * (q10_coeff ^ ((t2_c - t1_c) / 10))
+"q10_from_rates"(r1:real, r2:real, t1_c:real, t2_c:real) -> real =
+    (r2 / r1) ^ (10 / (t2_c - t1_c))
+"respiratory_quotient"(co2_produced:real, o2_consumed:real) -> real =
+    co2_produced / o2_consumed
+"aerobic_atp_yield"(glucose_moles:real) -> real = 38 * glucose_moles
+
+# 4. Plant Physiology & Water Potential (`Psi_w = Psi_s + Psi_p`, `DPD = OP - TP`)
+"water_potential"(psi_s:real, psi_p:real) -> real = psi_s + psi_p
+"solute_potential"(i_ion:real, molarity_c:real, temp_k:real) -> real =
+    -i_ion * molarity_c * 0.0831 * temp_k
+"diffusion_pressure_deficit"(osmotic_p:real, turgor_p:real) -> real =
+    osmotic_p - turgor_p
+"stomatal_index"(stomata_s:real, epidermal_e:real) -> real =
+    (stomata_s / (stomata_s + epidermal_e)) * 100
+
+# 5. Cell Biology, Microscopy & Morphometrics
+"total_magnification"(ocular_mag:real, objective_mag:real) -> real =
+    ocular_mag * objective_mag
+"actual_specimen_size"(image_size:real, magnification:real)-> real =
+    image_size / magnification
+"fov_diameter"(fov_low:real, mag_low:real, mag_high:real)  -> real =
+    (fov_low * mag_low) / mag_high
+"mitotic_index"(dividing_cells:real, total_cells:real)     -> real =
+    (dividing_cells / total_cells) * 100
+"cell_surface_sphere"(r:real) -> real = 4 * π * (r ^ 2)
+"cell_volume_sphere"(r:real)  -> real = (4 / 3) * π * (r ^ 3)
+"sa_to_vol_sphere"(r:real)    -> real = 3 / r
+
+# 6. Human Physiology (Cardiovascular, Respiratory, Renal & Biometrics)
+"stroke_volume"(edv_ml:real, esv_ml:real) -> real = edv_ml - esv_ml
+"ejection_fraction"(edv_ml:real, esv_ml:real) -> real =
+    ((edv_ml - esv_ml) / edv_ml) * 100
+"cardiac_output"(hr_bpm:real, stroke_vol_ml:real) -> real =
+    (hr_bpm * stroke_vol_ml) / 1000
+"pulse_pressure"(systolic_p:real, diastolic_p:real) -> real =
+    systolic_p - diastolic_p
+"mean_arterial_pressure"(systolic_p:real, diastolic_p:real) -> real =
+    diastolic_p + (systolic_p - diastolic_p) / 3
+
+"minute_ventilation"(tidal_vol_ml:real, resp_rate_bpm:real) -> real =
+    tidal_vol_ml * resp_rate_bpm
+"alveolar_ventilation"(tidal_vol_ml:real, dead_space_ml:real, resp_rate_bpm:real) -> real =
+    (tidal_vol_ml - dead_space_ml) * resp_rate_bpm
+"vital_capacity"(tv_ml:real, irv_ml:real, erv_ml:real) -> real =
+    tv_ml + irv_ml + erv_ml
+"total_lung_capacity"(vc_ml:real, rv_ml:real) -> real = vc_ml + rv_ml
+
+"net_filtration_pressure"(ghp:real, bcops:real, chp:real) -> real =
+    ghp - (bcops + chp)
+"renal_clearance"(urine_conc_u:real, urine_flow_v:real, plasma_conc_p:real) -> real =
+    (urine_conc_u * urine_flow_v) / plasma_conc_p
+"bmi_calc"(mass_kg:real, height_m:real) -> real = mass_kg / (height_m ^ 2)
+
+# 7. Ecology, Population Growth, Mark-Recapture & Biodiversity Indices
+"pop_exp_growth"(n0:real, r_intrinsic:real, time_t:real) -> real =
+    n0 * exp(r_intrinsic * time_t)
+"pop_doubling_time"(r_intrinsic:real) -> real = ln(2) / r_intrinsic
+"pop_logistic_dNdt"(r_intrinsic:real, n_cur:real, k_carrying:real) -> real =
+    r_intrinsic * n_cur * ((k_carrying - n_cur) / k_carrying)
+"pop_logistic_nt"(n0:real, k_carrying:real, r_intrinsic:real, time_t:real) -> real =
+    k_carrying / (1 + ((k_carrying - n0) / n0) * exp(-r_intrinsic * time_t))
+"lincoln_petersen_pop"(marked_m1:real, total_catch_c:real, recaptured_m2:real) -> real =
+    (marked_m1 * total_catch_c) / recaptured_m2
+"trophic_energy_at"(base_energy:real, trophic_steps:real) -> real =
+    base_energy * (0.1 ^ trophic_steps)
+"net_primary_prod"(gpp:real, respiration_r:real) -> real = gpp - respiration_r
+
+# Simpson Index of Diversity `1 - sum(n_i*(n_i-1)) / (N*(N-1))`
+"simpson_diversity_vec"(counts:vec) -> real = (
+    tot   := vec_sum(counts);
+    numer := 0;
+    idx   := 0;
+    m     := len(counts);
+    (idx < m) ?? {
+        ni    := counts[idx];
+        numer += ni * (ni - 1);
+        idx   += 1
+    };
+    1 - (numer / (tot * (tot - 1)))
+)
+
+# Shannon-Wiener Diversity Index `H = -sum((n_i/N) * ln(n_i/N))`
+"shannon_diversity_vec"(counts:vec) -> real = (
+    tot := vec_sum(counts);
+    h   := 0;
+    idx := 0;
+    m   := len(counts);
+    (idx < m) ?? {
+        ni := counts[idx];
+        if (ni > 0) {
+            pi := ni / tot;
+            h  -= pi * ln(pi)
+        };
+        idx += 1
+    };
+    h
+)

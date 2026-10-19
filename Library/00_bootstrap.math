@@ -4,8 +4,8 @@
 # Without this file, the engine does not know what parentheses `(` `)`, local
 # scope braces `{` `}`, commas `,`, struct member access `.`, numbers, strings,
 # dynamic vectors `$vec`, semicolons `;`, variable assignments `:=` / `=` / `+=`,
-# ternary `? :`, loops `??`, `if`/`or`/`else`, `switch`/`case`, `break`, or
-# tagged scope jumps `jump(Tag)` / `run(Tag)` are.
+# ternary `? :`, loops `??`, `if`/`or`/`else`, `switch`/`case`, `break`,
+# tagged scope jumps `jump(Tag)` / `run(Tag)`, or calculus constructs are.
 # The C core loads this file first so subsequent `.math` files can use them.
 
 [boot_syntax]
@@ -15,6 +15,8 @@
 ")" => @rparen
 "{" => @lbrace
 "}" => @rbrace
+"[" => @lbrack
+"]" => @rbrack
 "," => @comma
 
 
@@ -28,6 +30,7 @@ $real ~ \d+ ("." \d+)?       => @f64
 $iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
+$mat  ~                      => @mat_type
 
 
 [boot_control]
@@ -63,17 +66,15 @@ $vec  ~                      => @vec_type
 (cond:real) "?" (branches:real) :>10 -> real = @ternary(cond, branches)
 (a:real)    ":" (b:real)        :>10 -> real = @colon(a, b)
 
-# 8. Distributed Comparison Combinators `&` and `|` (precedences 35 & 34, above `==` at 30)
-#    Enables shorthand `(x & y == 1 | 2)` -> `((x == 1) | (x == 2)) & ((y == 1) | (y == 2))`!
+# 8. Strict Boolean-Condition Prefix NOT `!` (prec 80) & Distributed Combinators `&` and `|`
+#    - Prefix `!` ONLY flips a boolean condition (`!(x == 5)`, `!(5.01 ~ 5)`, `(x == !(1 | 2))`);
+#      it is undefined for non-boolean values (`!5` is rejected as an error).
+#    - `&` (prec 35) and `|` (prec 34) distribute over comparisons (`(x & y == 1 | 2)`).
+"!" (a:real)          :80  -> real = @cnot(a)
 (a:real) "&" (b:real) :<35 -> real = @cand(a, b)
 (a:real) "|" (b:real) :<34 -> real = @cor(a, b)
 
 # 9. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `break`, `jump` & `run`
-#    - `if (c1) { b1 } or (c2) { b2 } or (c3) { b3 } else { b4 }`
-#      (also supports legacy 3-argument `if(cond, then_val, else_val)`)
-#    - `switch (val) { case v1 : { b1 } case v2 : { b2 } else : { b_def } }`
-#    - `break` / `break(Tag)` (break out of innermost or tagged outer loop/scope)
-#    - `Tag : { scope }`, `jump(Tag)` (backward/forward jump), `run(Tag)` (inline reuse)
 "if"(cond:real, then_val:real, else_val:real) -> real = @if(cond, then_val, else_val)
 "or"(cond:real, body:real)                    -> real = @or_branch(cond, body)
 "then"(cond:real, body:real)                  -> real = @or_branch(cond, body)
@@ -86,7 +87,20 @@ $vec  ~                      => @vec_type
 "break"()                                     -> real = @break_loop(0)
 "break"(tag:real)                             -> real = @break_loop(tag)
 
-# 10. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`)
+# 10. Expression-Based High School Calculus Constructs (Differentiation, Integration, Limits, Sums)
+"diff"(var_x:real, expr:real, x0:real)                         -> real = @calc_diff(var_x, expr, x0)
+"diff2"(var_x:real, expr:real, x0:real)                        -> real = @calc_diff2(var_x, expr, x0)
+"diff_n"(var_x:real, expr:real, x0:real, order:real)           -> real = @calc_diffn(var_x, expr, x0)
+"integrate"(var_x:real, expr:real, a:real, b:real)             -> real = @calc_integ(var_x, expr, a)
+"integrate"(var_x:real, expr:real, a:real, b:real, steps:real) -> real = @calc_integ(var_x, expr, a)
+"ntg"(var_x:real, expr:real, a:real, b:real)                   -> real = @calc_integ(var_x, expr, a)
+"lim"(var_x:real, expr:real, x0:real)                          -> real = @calc_lim(var_x, expr, x0)
+"lim_left"(var_x:real, expr:real, x0:real)                     -> real = @calc_lim_l(var_x, expr, x0)
+"lim_right"(var_x:real, expr:real, x0:real)                    -> real = @calc_lim_r(var_x, expr, x0)
+"sigma"(var_k:real, expr:real, lo:real, hi:real)               -> real = @calc_sigma(var_k, expr, lo)
+"prod"(var_k:real, expr:real, lo:real, hi:real)                -> real = @calc_prod(var_k, expr, lo)
+
+# 11. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`)
 "vec"()                       -> vec  = @vnew(0)
 "vec"(cap:real)               -> vec  = @vnew(cap)
 "vec"(count:real, init:T)     -> vec  = @vfill(count, init)
@@ -100,6 +114,6 @@ $vec  ~                      => @vec_type
 "shrink"(v:vec)               -> vec  = @vshrink(v)
 "clear"(v:vec)                -> vec  = @vclear(v)
 
-# 11. Runtime Entity Type & Unit Type Introspection (`type_of(x)`, `unit_of(x)`)
+# 12. Runtime Entity Type & Unit Type Introspection (`type_of(x)`, `unit_of(x)`)
 "type_of"(x:T) -> str = @type_name(x)
 "unit_of"(x:T) -> str = @unit_name(x)

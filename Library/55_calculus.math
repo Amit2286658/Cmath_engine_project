@@ -1,0 +1,154 @@
+# =============================================================================
+# Library/55_calculus.math — High School Differential & Integral Calculus Suite
+# =============================================================================
+# Works alongside the expression-based calculus constructs in `00_bootstrap.math`:
+#   - `diff(x, expr, x0)`            : First derivative d/dx(expr) at x = x0
+#   - `diff2(x, expr, x0)`           : Second derivative d^2/dx^2(expr) at x = x0
+#   - `diff_n(x, expr, x0, order)`   : Nth derivative at x = x0 (orders 1..4)
+#   - `integrate(x, expr, a, b)`     : Definite integral from a to b (Simpson rule)
+#   - `ntg(x, expr, a, b)`           : Alias for definite integral from a to b
+#   - `lim(x, expr, x0)`             : Two-sided limit as x -> x0
+#   - `lim_left(x, expr, x0)`        : Left-hand limit as x -> x0^-
+#   - `lim_right(x, expr, x0)`       : Right-hand limit as x -> x0^+
+#   - `sigma(k, expr, lo, hi)`       : Discrete summation from k = lo to hi
+#   - `prod(k, expr, lo, hi)`        : Discrete product from k = lo to hi
+#
+# In addition, `[calculus]` provides exact symbolic polynomial calculus on
+# coefficient vectors `c` (`c[0] + c[1]*x + c[2]*x^2 + ...`), tangent/normal
+# geometry, curvature, Newton-Raphson root finding, arc length, solids of
+# revolution, tabulated quadrature (`trapz_vec`, `simpson_vec`), and Taylor series.
+
+[calculus]
+<[arith]
+<[trig]
+<[algebra]
+
+# 1. Symbolic Polynomial Evaluation, Differentiation & Integration
+#    Polynomial `c` is a `$vec` of ascending coefficients: `c[0] + c[1]*x + c[2]*x^2 + ...`
+"poly_eval"(c:vec, x:real) -> real = (
+    n   := len(c);
+    acc := 0;
+    k   := n - 1;
+    (k >= 0) ?? (
+        acc = acc * x + c[k];
+        k   = k - 1
+    );
+    acc
+)
+
+# Symbolic derivative coefficient vector: d/dx (c0 + c1*x + c2*x^2 + ...) = [c1, 2*c2, 3*c3, ...]
+"poly_diff"(c:vec) -> vec = (
+    n   := len(c);
+    out := vec();
+    if (n <= 1) {
+        push(out, 0)
+    } else {
+        k := 1;
+        (k < n) ?? {
+            push(out, k * c[k]);
+            k += 1
+        }
+    };
+    out
+)
+
+"poly_diff_at"(c:vec, x0:real) -> real = (
+    dc := poly_diff(c);
+    poly_eval(dc, x0)
+)
+
+"poly_diff2_at"(c:vec, x0:real) -> real = (
+    d2c := poly_diff(poly_diff(c));
+    poly_eval(d2c, x0)
+)
+
+# Note: `poly_integ(c:vec, c_const:real) -> vec` is inherited from [algebra]
+
+# Exact definite integral of polynomial `c` over [a, b] via Fundamental Theorem of Calculus
+"poly_def_integ"(c:vec, a:real, b:real) -> real = (
+    ic := poly_integ(c, 0);
+    poly_eval(ic, b) - poly_eval(ic, a)
+)
+
+# 2. Tangent Lines, Normal Lines, Curvature & Critical Points
+"tangent_slope"(c:vec, x0:real) -> real = poly_diff_at(c, x0)
+"normal_slope"(c:vec, x0:real)  -> real = -1 / poly_diff_at(c, x0)
+
+"tangent_y"(c:vec, x0:real, x:real) -> real =
+    poly_eval(c, x0) + poly_diff_at(c, x0) * (x - x0)
+
+"normal_y"(c:vec, x0:real, x:real) -> real =
+    poly_eval(c, x0) + (-1 / poly_diff_at(c, x0)) * (x - x0)
+
+"poly_curvature"(c:vec, x0:real) -> real = (
+    dy  := poly_diff_at(c, x0);
+    d2y := poly_diff2_at(c, x0);
+    @abs(d2y) / ((1 + dy * dy) ^ 1.5)
+)
+
+# Stationary / vertex point x* = -b/(2a) and extremum value of quadratic a*x^2 + b*x + c
+"quad_critical_x"(a:real, b:real, c_term:real) -> real = -b / (2 * a) + 0 * c_term
+"quad_extremum_y"(a:real, b:real, c_term:real) -> real = c_term - (b * b) / (4 * a)
+
+# Newton-Raphson root solver on polynomial `c` starting from `x_init`
+"poly_newton_root"(c:vec, x_init:real) -> real = (
+    xr   := x_init;
+    iter := 0;
+    (iter < 35) ?? {
+        fx  := poly_eval(c, xr);
+        dfx := poly_diff_at(c, xr);
+        if (@abs(fx) <= (10 ^ -12)) { break };
+        xr   = xr - fx / dfx;
+        iter += 1
+    };
+    xr
+)
+
+# 3. Integral Calculus Applications (Mean Value, Arc Length, Solids of Revolution)
+"poly_avg_val"(c:vec, a:real, b:real) -> real =
+    poly_def_integ(c, a, b) / (b - a)
+
+"poly_arc_length"(c:vec, a:real, b:real) -> real =
+    integrate(t_var, √(1 + (poly_diff_at(c, t_var) ^ 2)), a, b)
+
+# Volume of solid of revolution around x-axis (Disk Method: V = pi * int_a^b [f(x)]^2 dx)
+"poly_vol_disk"(c:vec, a:real, b:real) -> real =
+    π * integrate(t_var, poly_eval(c, t_var) ^ 2, a, b)
+
+# Volume of solid of revolution around y-axis (Shell Method: V = 2*pi * int_a^b x*|f(x)| dx)
+"poly_vol_shell"(c:vec, a:real, b:real) -> real =
+    2 * π * integrate(t_var, t_var * @abs(poly_eval(c, t_var)), a, b)
+
+# 4. Numerical Quadrature on Tabulated Data Vectors (`trapz_vec`, `simpson_vec`)
+"trapz_vec"(y:vec, dx:real) -> real = (
+    n   := len(y);
+    acc := 0.5 * (y[0] + y[n - 1]);
+    k   := 1;
+    (k < n - 1) ?? {
+        acc += y[k];
+        k   += 1
+    };
+    acc * dx
+)
+
+"simpson_vec"(y:vec, dx:real) -> real = (
+    n   := len(y);
+    acc := y[0] + y[n - 1];
+    k   := 1;
+    (k < n - 1) ?? {
+        w   := (k % 2 == 1) ? 4 : 2;
+        acc += w * y[k];
+        k   += 1
+    };
+    (dx / 3) * acc
+)
+
+# 5. Maclaurin / Taylor Series Partial Sums (`taylor_exp`, `taylor_sin`, `taylor_cos`)
+"taylor_exp"(x:real, n_terms:real) -> real =
+    sigma(k_idx, (x ^ k_idx) / (k_idx!), 0, n_terms - 1)
+
+"taylor_sin"(x:real, n_terms:real) -> real =
+    sigma(k_idx, ((-1) ^ k_idx) * (x ^ (2 * k_idx + 1)) / ((2 * k_idx + 1)!), 0, n_terms - 1)
+
+"taylor_cos"(x:real, n_terms:real) -> real =
+    sigma(k_idx, ((-1) ^ k_idx) * (x ^ (2 * k_idx)) / ((2 * k_idx)!), 0, n_terms - 1)

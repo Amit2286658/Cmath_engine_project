@@ -580,6 +580,175 @@ static const TestCase k_tests[] = {
       "Introspect custom user unit group via unit_of((10 MB) / (2 sec))" },
     { "buf : real, data_size := 1 MB ; buf += 512 KB ; buf", "1572864", "real",
       "Variable locked to custom user unit group 'real, data_size'" },
+    /* 11. Strict Boolean-Condition Prefix '!' & Approximate Equality '~' Operator Tests */
+    { "x := 5 ; !(x == 5) * 10 + !(x == 4)", "1", "real",
+      "Prefix '!' flips boolean conditions: !(x == 5) is 0, !(x == 4) is 1" },
+    { "x := 3 ; (x == !(1 | 2))", "1", "real",
+      "Distributed '!' in comparison: (x == !(1 | 2)) -> !((x==1) | (x==2)) = 1" },
+    { "x := 2 ; (x == !(1 | 2))", "0", "real",
+      "Distributed '!' in comparison when x=2 -> 0 (false)" },
+    { "x := 1 ; y := 3 ; (x & !y == 1 | 2)", "1", "real",
+      "Combined distributed '&', '|', and '!': (x & !y == 1 | 2) -> 1" },
+    { "x := 4 ; (x == !4)", "0", "real",
+      "Single distributed '!': (x == !4) -> !(x == 4) = 0" },
+    { "!is_prime(100) * 10 + !is_even(5)", "11", "real",
+      "Prefix '!' on boolean predicate functions !is_prime(100) and !is_even(5)" },
+    { "5.001 ~ 5", "1", "real",
+      "Approximate operator '~': 5.001 ~ 5 is true (|diff| = 0.001 <= 0.001)" },
+    { "5.000001 ~ 5", "1", "real",
+      "Approximate operator '~': 5.000001 ~ 5 is true (|diff| = 1e-6 <= 0.001)" },
+    { "4.999 ~ 5", "1", "real",
+      "Approximate operator '~': 4.999 ~ 5 is true (|diff| = 0.001 <= 0.001)" },
+    { "5.01 ~ 5", "0", "real",
+      "Approximate operator '~': 5.01 ~ 5 is false (|diff| = 0.01 > 0.001)" },
+    { "5.002 ~ 5", "0", "real",
+      "Approximate operator '~': 5.002 ~ 5 is false (|diff| = 0.002 > 0.001)" },
+    { "!(5.01 ~ 5)", "1", "real",
+      "Prefix '!' flipping approximate condition: !(5.01 ~ 5) -> 1 (true)" },
+
+    /* 12. Standard Same-Unit-Type Conversions (`Library/65_conversions.math`) */
+    { "(2.5 km) to_m", "2500", "real",
+      "Postfix same-unit conversion: (2.5 km) to_m -> 2500" },
+    { "(1.5 m) to_nm", "1500000000", "real",
+      "Postfix same-unit conversion: (1.5 m) to_nm -> 1.5e+09" },
+    { "(180 deg) to_rad", "3.141592654", "real",
+      "Postfix angle conversion: (180 deg) to_rad -> pi" },
+    { "(π rad) to_deg", "180", "real",
+      "Postfix angle conversion: (pi rad) to_deg -> 180" },
+    { "(2.5 km) in (1 m)", "2500", "real",
+      "Universal infix 'in' same-unit conversion: (2.5 km) in (1 m) -> 2500" },
+    { "(1.5 m) in (1 nm)", "1500000000", "real",
+      "Universal infix 'in' same-unit conversion: (1.5 m) in (1 nm) -> 1.5e+09" },
+    { "km_to_m(3.2) + m_to_cm(0.8)", "3280", "real",
+      "Pairwise same-unit conversion functions km_to_m(3.2) + m_to_cm(0.8)" },
+    { "rad_to_deg(deg_to_rad(135))", "135", "real",
+      "Round-trip angle conversion rad_to_deg(deg_to_rad(135)) -> 135" },
+    { "(2 hr) to_sec + (5000 ms) to_sec", "7205", "real",
+      "Postfix time conversions: (2 hr) to_sec + (5000 ms) to_sec -> 7205" },
+
+    /* 13. C-Style Array Notation `v[i]` for Vectors (`$vec2`, `$vec3`, Structs, `$vec`) */
+    { "v := vec2(10, 20) ; v[0] * 100 + v[1]", "1020", "real",
+      "C-style array indexing on $vec2: v[0]=v.x, v[1]=v.y" },
+    { "v := vec3(2, 4, 6) ; v[0] = 10 ; v[1] += 5 ; v[2] *= 3 ; v", "vec3(x=10, y=9, z=18)", "vec3",
+      "C-style array mutation & compound assignment on $vec3: v[0]=10, v[1]+=5, v[2]*=3" },
+    { "c := circle(vec2(3, 7), 5) ; c[0][1] = 99 ; c[1] += 10 ; c", "circle(center=vec2(x=3, y=99), radius=15)", "circle",
+      "Chained C-style array indexing on nested struct $circle: c[0][1] = 99" },
+    { "a := vec(3, 10) ; a[0] = 5 ; a[1] += 7 ; a[-1] = 30 ; a[0] + a[1] + a[2]", "52", "real",
+      "C-style array read/write/compound/negative index on dynamic $vec (5 + 17 + 30)" },
+    { "pts := vec() ; push(pts, vec2(1, 2)) ; push(pts, vec2(3, 4)) ; pts[1][0] += 10 ; pts[1]", "vec2(x=13, y=4)", "vec2",
+      "Chained C-style indexing pts[1][0] += 10 on dynamic vec<vec2>" },
+
+    /* 14. Separate Multidimensional Matrix Data Type (`$mat`) Using `[...]` */
+    { "M := [[1, 2, 3], [4, 5, 6]] ; M", "[[1, 2, 3], [4, 5, 6]]", "mat",
+      "2D multidimensional matrix literal [[1, 2, 3], [4, 5, 6]] -> $mat" },
+    { "M := [1, 2, 3 ; 4, 5, 6] ; M", "[[1, 2, 3], [4, 5, 6]]", "mat",
+      "2D semicolon row-separated matrix literal [1, 2, 3 ; 4, 5, 6] -> $mat" },
+    { "M := [10, 20 ; 30, 40] ; M[0, 1] + M[1][0]", "50", "real",
+      "Matrix indexing via both multi-index M[0, 1] and chained M[1][0]" },
+    { "M := [[1, 2], [3, 4]] ; M[0, 1] = 9 ; M[1][0] += 10 ; M", "[[1, 9], [13, 4]]", "mat",
+      "In-place matrix element mutation via M[0, 1] = 9 and M[1][0] += 10" },
+    { "A := [1, 2 ; 3, 4] ; B := [2, 0 ; 1, 2] ; A * B", "[[4, 4], [10, 8]]", "mat",
+      "2D matrix multiplication A * B on $mat" },
+    { "M := [4, 7 ; 2, 6] ; det(M) * 100 + trace(M)", "1010", "real",
+      "det(M) and trace(M) on $mat (det=10, trace=10)" },
+    { "M := [4, 7 ; 2, 6] ; inv(M) * [10, 10]", "[-1, 2]", "mat",
+      "Gauss-Jordan matrix inverse inv(M) * 1D vector [10, 10] -> [-1, 2]" },
+    { "M := [1, 2, 3 ; 4, 5, 6] ; transpose(M)", "[[1, 4], [2, 5], [3, 6]]", "mat",
+      "Matrix transpose of 2x3 $mat -> 3x2 $mat" },
+    { "T := [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] ; T[1][0][1] += 10 ; T[1, 0, 1] + mat_rank(T)", "19", "real",
+      "3D tensor $mat indexing, mutation T[1][0][1] += 10 (16), and mat_rank(T)=3 -> 19" },
+    { "M := [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] ; mat_shape(M)", "[2, 2, 2]", "vec",
+      "3D tensor shape introspection mat_shape(M) -> [2, 2, 2]" },
+
+    /* 15. High School Calculus Suite (`00_bootstrap.math` & `55_calculus.math`) */
+    { "diff(x, x^3 + 2*x, 3)", "29", "real",
+      "First derivative d/dx(x^3 + 2x) at x = 3 -> 29" },
+    { "diff2(x, x^4, 2)", "48", "real",
+      "Second derivative d^2/dx^2(x^4) at x = 2 -> 48" },
+    { "diff_n(x, x^4, 2, 3)", "48", "real",
+      "Third derivative d^3/dx^3(x^4) at x = 2 -> 48" },
+    { "integrate(x, 3 * (x^2), 0, 2)", "8", "real",
+      "Definite integral int_0^2 3x^2 dx -> 8" },
+    { "ntg(x, sin(x), 0, π) ~ 2", "1", "real",
+      "Definite integral int_0^pi sin(x) dx ~ 2" },
+    { "lim(x, sin(x) / x, 0)", "1", "real",
+      "Removable singularity limit: lim_{x->0} sin(x)/x -> 1" },
+    { "lim(x, (x^2 - 4) / (x - 2), 2)", "4", "real",
+      "Algebraic limit: lim_{x->2} (x^2 - 4)/(x - 2) -> 4" },
+    { "lim_right(x, abs(x) / x, 0) * 10 + lim_left(x, abs(x) / x, 0)", "9", "real",
+      "One-sided limits at 0 for |x|/x: right (+1)*10 + left (-1) = 9" },
+    { "sigma(k, k^2, 1, 5)", "55", "real",
+      "Discrete summation sigma_{k=1..5} k^2 -> 55" },
+    { "prod(k, k, 1, 5)", "120", "real",
+      "Discrete product prod_{k=1..5} k -> 120" },
+    { "c := vec() ; push(c, 1) ; push(c, -3) ; push(c, 2) ; poly_def_integ(c, 0, 3)", "7.5", "real",
+      "Exact polynomial definite integral int_0^3 (1 - 3x + 2x^2) dx -> 7.5" },
+    { "c := vec() ; push(c, 0) ; push(c, 0) ; push(c, 1) ; tangent_slope(c, 3) * 10 + normal_slope(c, 3) * -6", "61", "real",
+      "Tangent slope (6) & normal slope (-1/6) of y = x^2 at x = 3" },
+    { "taylor_exp(1, 12) ~ e", "1", "real",
+      "Maclaurin series taylor_exp(1, 12) ~ e" },
+
+    /* 16. Expanded Commercial & General Arithmetic (`10_arith.math`) */
+    { "pct_of(45, 180) + pct_val(15, 200)", "55", "real",
+      "Percentages: pct_of(45, 180)=25% + pct_val(15, 200)=30 -> 55" },
+    { "pct_inc(500, 20) + pct_dec(500, 20)", "1000", "real",
+      "Percentage increase (600) + decrease (400) -> 1000" },
+    { "profit_pct(400, 500) + successive_discount(20, 10)", "53", "real",
+      "Profit % (25%) + successive discount (28%) -> 53" },
+    { "simple_interest(1000, 10, 2) + compound_interest(1000, 10, 2)", "410", "real",
+      "Simple interest (200) + compound interest (210) -> 410" },
+    { "ci_si_diff_2yr(5000, 10)", "50", "real",
+      "2-year CI - SI difference on 5000 at 10% -> 50" },
+    { "work_together_2(6, 12) + work_together_3(6, 12, 4)", "6", "real",
+      "Work & time: 2-person (4 days) + 3-person (2 days) -> 6" },
+    { "pipe_fill_with_leak(4, 12) + man_days_solve(10, 6, 1, 15, 2)", "14", "real",
+      "Pipe cistern with leak (6 hr) + chain rule man-days (8 days) -> 14" },
+    { "ap_sum(2, 3, 10) + gp_sum(2, 3, 4)", "235", "real",
+      "Arithmetic progression sum (155) + geometric progression sum (80) -> 235" },
+    { "arith_mean(4, 16) + geom_mean(4, 16) + harm_mean(4, 16)", "24.4", "real",
+      "AM (10) + GM (8) + HM (6.4) of 4 and 16 -> 24.4" },
+    { "avg_speed_2(40, 60) + boat_still_speed(15, 9) + stream_speed(15, 9)", "63", "real",
+      "Harmonic average speed (48) + boat in still water (12) + stream (3) -> 63" },
+
+    /* 17. Expanded High School Physics, Chemistry & Quantitative Biology */
+    { "suvat_v(10, 2, 5) + suvat_s(10, 2, 5) + suvat_nth_sec(10, 2, 5)", "114", "real",
+      "SUVAT kinematics: v(20) + s(75) + s_5th(19) -> 114" },
+    { "elastic_v1(2, 10, 2, 0) + elastic_v2(2, 10, 2, 0)", "10", "real",
+      "1D elastic collision velocity exchange -> 0 + 10 = 10" },
+    { "shm_vel(2, 5, 3) + abs(shm_acc(2, 3))", "20", "real",
+      "SHM velocity (8) + acceleration magnitude (12) -> 20" },
+    { "mirror_image_v(10, 30) + lens_power_dioptre(0.25)", "19", "real",
+      "Ray optics mirror image distance (15) + lens power (4 D) -> 19" },
+    { "rlc_impedance(30, 60, 20) + transformer_v2(220, 100, 50)", "160", "real",
+      "AC RLC impedance (50 ohm) + step-down transformer (110 V) -> 160" },
+    { "bohr_energy_ev(2, 1)", "-3.4", "real",
+      "Bohr hydrogen n=2 energy level -> -3.4 eV" },
+    { "percent_yield(42, 50) + normality_from_molarity(1.5, 2)", "87", "real",
+      "Chemistry % yield (84%) + normality (3 N) -> 87" },
+    { "boyle_p2(2, 6, 3) + charles_v2(10, 300, 450)", "19", "real",
+      "Boyle P2 (4) + Charles V2 (15) -> 19" },
+    { "bp_elevation(2, 0.52, 1.5) + fp_depression(2, 1.86, 1.5)", "7.14", "real",
+      "Colligative boiling elevation (1.56) + freezing depression (5.58) -> 7.14" },
+    { "weak_acid_ph(10 ^ -5, 0.1) + pka_from_ka(10 ^ -5)", "8", "real",
+      "Weak acid pH (3) + pKa (5) -> 8" },
+    { "cell_emf(0.34, -0.76)", "1.1", "real",
+      "Electrochemical Daniell cell EMF (0.34 - (-0.76)) -> 1.1 V" },
+    { "hw_homo_dom(0.6) + hw_hetero(0.6) + hw_homo_rec(0.6)", "1", "real",
+      "Hardy-Weinberg equilibrium p^2 + 2pq + q^2 = 1" },
+    { "hw_carrier_count(0.04, 1000)", "320", "real",
+      "Hardy-Weinberg heterozygous carriers (q^2=0.04, N=1000) -> 320" },
+    { "chargaff_g_from_a(20) + dna_turns(100) + pcr_copies(10)", "1064", "real",
+      "Chargaff %G (30) + B-DNA helical turns (10) + PCR 2^10 (1024) -> 1064" },
+    { "michaelis_menten(100, 5, 5) + q10_rate(10, 20, 30, 2)", "70", "real",
+      "Michaelis-Menten v0 at S=Km (50) + Q10 rate (20) -> 70" },
+    { "water_potential(-8, 3) + diffusion_pressure_deficit(12, 5)", "2", "real",
+      "Plant physiology water potential (-5) + DPD (7) -> 2" },
+    { "total_magnification(10, 40) + mitotic_index(18, 200)", "409", "real",
+      "Microscopy magnification (400x) + mitotic index (9%) -> 409" },
+    { "(cardiac_output(72, 70) + mean_arterial_pressure(120, 80)) ~ 98.3733", "1", "real",
+      "Cardiac output (5.04 L/min) + MAP (93.3333 mmHg) ~ 98.3733" },
+    { "lincoln_petersen_pop(40, 60, 12) + trophic_energy_at(10000, 2)", "300", "real",
+      "Mark-recapture population (200) + 10% trophic energy law (100) -> 300" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -766,8 +935,28 @@ int main(void) {
            eng_last_error(&g_eng));
 
     bool gen_T_unit_mismatch_guard = !eng_eval(&g_eng, "unit_span(100m, 60°)", &v);
-    printf("    - 'unit_span(100m, 60°)' (T)  : %s -> \"%s\"\n\n",
+    printf("    - 'unit_span(100m, 60°)' (T)  : %s -> \"%s\"\n",
            gen_T_unit_mismatch_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool conv_unit_mismatch_guard = !eng_eval(&g_eng, "(100m) in (1 deg)", &v);
+    printf("    - '(100m) in (1 deg)'         : %s -> \"%s\"\n",
+           conv_unit_mismatch_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool jagged_mat_guard = !eng_eval(&g_eng, "[[1, 2], [3, 4, 5]]", &v);
+    printf("    - Jagged '[[1, 2], [3, 4, 5]]': %s -> \"%s\"\n",
+           jagged_mat_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool non_bool_not_guard = !eng_eval(&g_eng, "!5", &v) && !eng_eval(&g_eng, "!(2 + 3)", &v);
+    printf("    - Non-boolean '!5' / '!(2+3)' : %s -> \"%s\"\n",
+           non_bool_not_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool lim_diverge_guard = !eng_eval(&g_eng, "lim(x, abs(x) / x, 0)", &v);
+    printf("    - Jump limit 'lim(|x|/x, 0)'  : %s -> \"%s\"\n\n",
+           lim_diverge_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
     /* 6. Verify O(1) Module Toggling (`boot_syntax`, `units`, `user_physics`) */
@@ -795,5 +984,6 @@ int main(void) {
             unlike_unit_guard && concrete_real_guard && concrete_real_dist_unit_guard &&
             concrete_real_dist_iota_guard && concrete_dist_unitless_iota_guard &&
             fn_unit_mismatch_guard && gen_T_unit_mismatch_guard &&
+            conv_unit_mismatch_guard && jagged_mat_guard && non_bool_not_guard && lim_diverge_guard &&
             syn_off && units_off && phys_off) ? 0 : 1;
 }

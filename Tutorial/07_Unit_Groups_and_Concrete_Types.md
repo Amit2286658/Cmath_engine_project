@@ -2,7 +2,7 @@
 
 ## 1. Orthogonal `(EntityType, UnitType)` Architecture
 Every `Value` in the engine carries two independent tags:
-- **Entity Type (`type_id`)**: `real`, `iota`, `complex`, `vec2`, `vec3`, `vec`, `str`, etc.
+- **Entity Type (`type_id`)**: `real`, `iota`, `complex`, `vec2`, `vec3`, `vec`, `mat`, `str`, etc.
 - **Unit Type Group (`unit_id`)**: `distance`, `angle`, `mass`, `time`, `speed`, `pressure`, `energy`, `power`, or any user-defined custom unit group (e.g., `data_size`, `bandwidth`).
 
 ## 2. Postfix Unit Disambiguation (`m`, `im`, `mi`)

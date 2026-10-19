@@ -105,6 +105,50 @@ const char *eng_last_error(const Engine *eng) {
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                              char *buf, size_t cap);
 
+static void format_mat_slice(const Engine *eng, uint16_t data_idx,
+                             const uint16_t *dims, uint8_t rank, uint8_t axis,
+                             char *buf, size_t cap, size_t *used) {
+    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "[");
+    if (axis + 1 >= rank) {
+        uint16_t n = dims[axis];
+        for (uint16_t i = 0; i < n && *used < cap; ++i) {
+            double v = mem_read_pool(&eng->mem, (uint16_t)(data_idx + i));
+            if (v == 0.0) v = 0.0; /* normalize -0.0 */
+            *used += (size_t)snprintf(buf + *used, cap - *used, "%s%.6g",
+                                      (i > 0 ? ", " : ""), v);
+        }
+    } else {
+        uint16_t stride = 1;
+        for (uint8_t a = (uint8_t)(axis + 1); a < rank; ++a) {
+            stride = (uint16_t)(stride * dims[a]);
+        }
+        uint16_t n = dims[axis];
+        for (uint16_t i = 0; i < n && *used < cap; ++i) {
+            if (i > 0 && *used < cap) {
+                *used += (size_t)snprintf(buf + *used, cap - *used, ", ");
+            }
+            format_mat_slice(eng, (uint16_t)(data_idx + i * stride),
+                             dims, rank, (uint8_t)(axis + 1), buf, cap, used);
+        }
+    }
+    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "]");
+}
+
+static void format_mat_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
+    uint8_t  rank     = (uint8_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 2);
+    uint16_t dims[4]  = { 0, 0, 0, 0 };
+    for (uint8_t i = 0; i < 4; ++i) {
+        dims[i] = (i < rank) ? (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 4 + i) : 0;
+    }
+    if (rank == 0) {
+        snprintf(buf, cap, "[]");
+        return;
+    }
+    size_t used = 0;
+    format_mat_slice(eng, data_idx, dims, rank, 0, buf, cap, &used);
+}
+
 static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
     uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
@@ -140,6 +184,10 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
                              char *buf, size_t cap) {
     if (type_id == eng->mem.vec_type_id && type_id != 0) {
         format_vec_at(eng, pool_idx, buf, cap);
+        return;
+    }
+    if (type_id == eng->mem.mat_type_id && type_id != 0) {
+        format_mat_at(eng, pool_idx, buf, cap);
         return;
     }
 

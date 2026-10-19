@@ -31,9 +31,9 @@ extern "C" {
 #define USE_TAGGED_12B 0  /* 0 = 8-byte IEEE-754 NaN-boxing, 1 = 12-byte union */
 #endif
 
-#define MEM_SRC_BUF_CAP    16384   /* UTF-8 source buffer for interned strings   */
-#define MEM_MAX_AST_NODES   4096   /* 8-byte AST nodes (32 KB)                   */
-#define MEM_MAX_F64_POOL    2048   /* Flat double pool for literals/structs/vecs */
+#define MEM_SRC_BUF_CAP    32768   /* UTF-8 source buffer for interned strings   */
+#define MEM_MAX_AST_NODES   8192   /* 8-byte AST nodes (32 KB)                   */
+#define MEM_MAX_F64_POOL    4096   /* Flat double pool for literals/structs/vecs */
 #define MEM_MAX_CALL_STACK   256   /* Evaluation & local variable stack slots    */
 #define MEM_MAX_LABELS        16   /* Max tagged scopes (`Tag : { ... }`)        */
 
@@ -41,6 +41,7 @@ extern "C" {
 #define MEM_TYPE_VOID          0u  /* Invalid / void entity type ID              */
 #define MEM_UNIT_NONE          0u  /* Dimensionless / no unit tag                */
 #define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
+#define MEM_MAT_HDR_SLOTS      8u  /* [rank, total_len, data_idx, flags, d0..d3] */
 
 typedef enum {
     JUMP_NONE       = 0,
@@ -125,6 +126,7 @@ typedef struct {
     uint8_t     fast_real_type;
     uint8_t     str_type_id;
     uint8_t     vec_type_id;
+    uint8_t     mat_type_id;
 
     /* Tagged Scope (`Tag : { ... }`) Jump, Break & Reuse Runtime State */
     uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_BREAK_TAG)       */
@@ -163,6 +165,10 @@ void     mem_write_pool(MemArena *mem, uint16_t idx, double val);
 uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap);
 bool     mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t min_cap);
 void     mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride);
+
+/* Multidimensional Matrix (`$mat`) Header & Contiguous Payload Allocation */
+uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
+                           uint16_t *out_total_len, uint16_t *out_data_idx);
 
 /* AST Node Pool Allocation & Access */
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,

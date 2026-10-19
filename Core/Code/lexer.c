@@ -303,6 +303,12 @@ void lex_next(Lexer *lex) {
         } else if (best_syntax_tag == INTR_RBRACE) {
             if (lex->paren_depth > 0) lex->paren_depth--;
             lex->cur.kind = TOK_RBRACE;
+        } else if (best_syntax_tag == INTR_LBRACK) {
+            lex->paren_depth++;
+            lex->cur.kind = TOK_LBRACK;
+        } else if (best_syntax_tag == INTR_RBRACK) {
+            if (lex->paren_depth > 0) lex->paren_depth--;
+            lex->cur.kind = TOK_RBRACK;
         } else if (best_syntax_tag == INTR_COMMA) {
             lex->cur.kind = TOK_COMMA;
         } else {

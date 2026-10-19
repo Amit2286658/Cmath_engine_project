@@ -28,8 +28,8 @@ extern "C" {
 #define SYM_MAX_UNITS          32
 #define SYM_MAX_PAT_ELEMS     128
 #define SYM_MAX_FIELDS        128
-#define SYM_MAX_SYMS          512
-#define SYM_MAX_OVERLOADS     416
+#define SYM_MAX_SYMS         1024
+#define SYM_MAX_OVERLOADS    1024
 #define SYM_MAX_CONSTS         64
 #define SYM_MAX_EXTERNS        32
 
@@ -50,12 +50,15 @@ typedef enum {
     INTR_PARSE_I64,
     INTR_PARSE_STR_SLICE,
     INTR_VEC_TYPE,  /* @vec_type (dynamic growable/shrinkable vector of any T) */
+    INTR_MAT_TYPE,  /* @mat_type (multidimensional matrix/tensor `[...]`)      */
 
     /* Bootstrap Expression Syntax Delimiters (`"sym" => @lparen`) */
     INTR_LPAREN,    /* @lparen */
     INTR_RPAREN,    /* @rparen */
     INTR_LBRACE,    /* @lbrace */
     INTR_RBRACE,    /* @rbrace */
+    INTR_LBRACK,    /* @lbrack */
+    INTR_RBRACK,    /* @rbrack */
     INTR_COMMA,     /* @comma  */
 
     /* Bootstrap Meta / Lazy Control Intrinsics (`00_bootstrap.math`) */
@@ -74,6 +77,16 @@ typedef enum {
     INTR_BREAK_LOOP,   /* @break_loop(tag)    */
     INTR_CAND,         /* @cand(a, b) (`&` distributed/short-circuit AND) */
     INTR_COR,          /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
+    INTR_CNOT,         /* @cnot(a)    (`!` strict boolean condition NOT)  */
+    INTR_CALC_DIFF,    /* @calc_diff(x, expr, x0)       */
+    INTR_CALC_DIFF2,   /* @calc_diff2(x, expr, x0)      */
+    INTR_CALC_DIFFN,   /* @calc_diffn(x, expr, x0, n)   */
+    INTR_CALC_INTEG,   /* @calc_integ(x, expr, a, b)    */
+    INTR_CALC_LIM,     /* @calc_lim(x, expr, x0)        */
+    INTR_CALC_LIM_L,   /* @calc_lim_l(x, expr, x0)      */
+    INTR_CALC_LIM_R,   /* @calc_lim_r(x, expr, x0)      */
+    INTR_CALC_SIGMA,   /* @calc_sigma(k, expr, lo, hi)  */
+    INTR_CALC_PROD,    /* @calc_prod(k, expr, lo, hi)   */
     INTR_FIELD,        /* @field(s, f)        */
 
     /* Dynamic Vector Intrinsics (`$vec` of any `T` type) */
@@ -88,6 +101,25 @@ typedef enum {
     INTR_VRESIZE,   /* @vresize(v, n)      */
     INTR_VSHRINK,   /* @vshrink(v)         */
     INTR_VCLEAR,    /* @vclear(v)          */
+
+    /* Multidimensional Matrix Intrinsics (`$mat`) */
+    INTR_MZERO,     /* @mzero(r, c)        */
+    INTR_MONES,     /* @mones(r, c)        */
+    INTR_MEYE,      /* @meye(n)            */
+    INTR_MFILL,     /* @mfill(r, c, val)   */
+    INTR_MROWS,     /* @mrows(m)           */
+    INTR_MCOLS,     /* @mcols(m)           */
+    INTR_MRANK,     /* @mrank(m)           */
+    INTR_MLEN,      /* @mlen(m)            */
+    INTR_MSHAPE,    /* @mshape(m) -> $vec  */
+    INTR_MADD,      /* @madd(a, b)         */
+    INTR_MSUB,      /* @msub(a, b)         */
+    INTR_MSCAL,     /* @mscal(m, s)        */
+    INTR_MMUL,      /* @mmul(a, b)         */
+    INTR_MTRANS,    /* @mtrans(m)          */
+    INTR_MTRACE,    /* @mtrace(m)          */
+    INTR_MDET,      /* @mdet(m)            */
+    INTR_MINV,      /* @minv(m)            */
 
     /* Core Arithmetic Intrinsics */
     INTR_ADD,
@@ -127,6 +159,7 @@ typedef enum {
     INTR_LE,
     INTR_GT,
     INTR_GE,
+    INTR_APPROX,    /* @approx(a, b) (`~` approximate equality <= 1e-3) */
     INTR_LAND,
     INTR_LOR,
     INTR_LNOT,
@@ -158,7 +191,9 @@ typedef enum {
     AST_TAGGED_SCOPE,  /* Labeled scope/loop `Tag : { body }` (sub = label_id)  */
     AST_JUMP,          /* Jump to labeled scope `jump(Tag)` (sub = label_id)    */
     AST_RUN_TAG,       /* Inline reuse of labeled scope `run(Tag)`              */
-    AST_BREAK          /* Break out of loop/scope `break` / `break(Tag)`        */
+    AST_BREAK,         /* Break out of loop/scope `break` / `break(Tag)`        */
+    AST_MAT_LIT,       /* Multidimensional matrix literal `[...]`               */
+    AST_INDEX          /* C-style subscript `base[i]` / `base[r, c]`            */
 } AstKind;
 
 /* ============================================================================

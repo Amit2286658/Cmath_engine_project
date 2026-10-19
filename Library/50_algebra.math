@@ -155,3 +155,28 @@ $mat2(a:real, b:real, c:real, d:real)
     );
     x
 )
+
+# 5. Multidimensional Matrix Data Type (`$mat` via `[...]` Literals)
+#    Supports 1D `[1, 2, 3]`, 2D `[[1, 2], [3, 4]]` or `[1, 2 ; 3, 4]`,
+#    3D `[[[1, 2], [3, 4]], [[5, 6], [7, 8]]]`, and C-style subscripting `M[r, c]` / `M[r][c]`.
+"-" (m:mat, T)            :80  -> mat, T = @mscal(m, -1)
+(a:mat, T) "+" (b:mat, T) :<50 -> mat, T = @madd(a, b)
+(a:mat, T) "-" (b:mat, T) :<50 -> mat, T = @msub(a, b)
+(a:mat)    "*" (b:mat)    :<60 -> mat    = @mmul(a, b)
+(m:mat, T) "*" (s:real)   :<60 -> mat, T = @mscal(m, s)
+(s:real)   "*" (m:mat, T) :<60 -> mat, T = @mscal(m, s)
+(m:mat, T) "/" (s:real)   :<60 -> mat, T = @mscal(m, 1 / s)
+
+"mat_zeros"(r:real, c:real)           -> mat     = @mzero(r, c)
+"mat_ones"(r:real, c:real)            -> mat     = @mones(r, c)
+"mat_eye"(n:real)                     -> mat     = @meye(n)
+"mat_fill"(r:real, c:real, v:real, T) -> mat, T  = @mfill(r, c, v)
+"mat_rows"(m:mat)                     -> real    = @mrows(m)
+"mat_cols"(m:mat)                     -> real    = @mcols(m)
+"mat_rank"(m:mat)                     -> real    = @mrank(m)
+"mat_len"(m:mat)                      -> real    = @mlen(m)
+"mat_shape"(m:mat)                    -> vec     = @mshape(m)
+"transpose"(m:mat, T)                 -> mat, T  = @mtrans(m)
+"trace"(m:mat, T)                     -> real, T = @mtrace(m)
+"det"(m:mat)                          -> real    = @mdet(m)
+"inv"(m:mat)                          -> mat     = @minv(m)

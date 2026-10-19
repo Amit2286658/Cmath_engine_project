@@ -184,6 +184,51 @@ void mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride) {
     mem_write_pool(mem, hdr_idx + 2, (double)len);
 }
 
+
+/*
+ * Multidimensional Matrix (`$mat`) 8-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+7]`:
+ *   [0] = rank       (number of dimensions: 1, 2, 3, or 4)
+ *   [1] = total_len  (total scalar elements = d0 * d1 * ... * d_{rank-1})
+ *   [2] = data_idx   (start index in `f64_pool` of `total_len` contiguous doubles)
+ *   [3] = elem_tid   (element type ID, default fast_real_type)
+ *   [4] = d0         (dimension 0 size, e.g. rows)
+ *   [5] = d1         (dimension 1 size, e.g. cols)
+ *   [6] = d2         (dimension 2 size)
+ *   [7] = d3         (dimension 3 size)
+ */
+uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
+                           uint16_t *out_total_len, uint16_t *out_data_idx) {
+    if (rank == 0 || rank > 4) {
+        mem_err(mem, "Matrix rank must be between 1 and 4 (got %u)", (unsigned)rank);
+        return 0;
+    }
+    uint32_t total = 1;
+    for (uint8_t i = 0; i < rank; ++i) {
+        total *= (uint32_t)dims[i];
+        if (total > MEM_MAX_F64_POOL) {
+            mem_err(mem, "Matrix dimensions exceed pool capacity");
+            return 0;
+        }
+    }
+    uint16_t hdr_idx = mem_alloc_pool(mem, MEM_MAT_HDR_SLOTS);
+    if (mem->has_error) return 0;
+    uint16_t data_idx = (total > 0) ? mem_alloc_pool(mem, (uint16_t)total) : 0;
+    if (mem->has_error) return 0;
+    if (total > 0) {
+        memset(&mem->f64_pool[data_idx], 0, (size_t)total * sizeof(double));
+    }
+    mem_write_pool(mem, hdr_idx + 0, (double)rank);
+    mem_write_pool(mem, hdr_idx + 1, (double)total);
+    mem_write_pool(mem, hdr_idx + 2, (double)data_idx);
+    mem_write_pool(mem, hdr_idx + 3, (double)mem->fast_real_type);
+    for (uint8_t i = 0; i < 4; ++i) {
+        mem_write_pool(mem, hdr_idx + 4 + i, (i < rank) ? (double)dims[i] : 0.0);
+    }
+    if (out_total_len) *out_total_len = (uint16_t)total;
+    if (out_data_idx)  *out_data_idx  = data_idx;
+    return hdr_idx;
+}
+
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,
                        uint16_t ref, uint16_t left, uint16_t right) {
     if (mem->ast_count >= MEM_MAX_AST_NODES) {
