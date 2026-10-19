@@ -3,7 +3,7 @@
  *
  * Purpose:
  *   1. Compiles raw `.math` source text strings into `MemArena` + `SymTable`
- *      permanent tables (`ext_load_str`).
+ *      permanent tables (`ext_load_str`) with transactional rollback on error.
  *   2. Serializes and deserializes precompiled `.mathc` binary images strictly
  *      in memory (`ext_save_mathc_mem`, `ext_load_mathc_mem`) so the engine has
  *      zero filesystem, directory, or OS path dependencies.
@@ -25,7 +25,7 @@ extern "C" {
 
 #define MATHC_MAGIC            0x4348544Du  /* "MTHC" in little-endian        */
 #define MATHC_VERSION          1u
-#define MATHC_MAX_IMAGE_BYTES  131072u       /* Max serialized .mathc size     */
+#define MATHC_MAX_IMAGE_BYTES  262144u      /* Max serialized .mathc size     */
 
 typedef struct {
     uint32_t magic;              /* MATHC_MAGIC ("MTHC")                      */

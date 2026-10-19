@@ -10,10 +10,10 @@ This chapter documents:
 
 ## 1. Strict Boolean Prefix `!` vs. Approximate Equality `~`
 
-- **Prefix `!` (`"!" (a:real) :80 -> real = @cnot(a)`)**:
-  - Exclusively flips a **Boolean condition** (`!(x == 5)`, `!(5.01 ~ 5)`, `!(a > 0 && b > 0)`, `!is_prime(100)`, or distributed `(x == !(1 | 2))` / `(x & !y == 1 | 2)`).
-  - Non-boolean operands such as `!5`, `!0`, or `!(2 + 3)` are rejected with an error (`"Operator '!' requires a boolean condition..."`).
-  - Postfix `n!` (`5! = 120`) remains factorial because the Pratt parser separates prefix (`nud`) and postfix (`led`) positions.
+- **Prefix `!` (`"!" (a:real, none) :80 -> real = @cnot(a)`)**:
+  - Dispatches through the standard unary operator overload mechanism (`dispatch_overload`), just like postfix factorial `(n:real) "!" :90 -> real` (`5! = 120`).
+  - Non-`real` operands (such as `!"hello"` or `!vec2(1, 2)`) fail overload resolution with `"No active overload for '!' with type (...)"`, and unit-tagged operands (such as `!50m`) fail with `"Unit mismatch for '!'..."`.
+  - For unitless `real` operands, `@cnot` / `@lnot` flips `0 -> 1` and `1 -> 0` (so `!0 == 1`, `!1 == 0`, `!(x == 5)`, `!(5.01 ~ 5)`, and distributed `(x == !(1 | 2))` all work naturally), and throws an out-of-range error if the evaluated operand is not `0` or `1` (e.g. `!5` or `!(2 + 3)` -> `"Operand 5 out of range for boolean negation '!': expected 0 or 1"`).
 - **Approximate Equality `~` (`(a:real, T) "~" (b:real, T) :<30 -> real = @approx(a, b)`)**:
   - Returns `1` (true) when $|a - b| \le 0.001$ (at least 3 decimal places close):
     - `5.001 ~ 5` $\implies 1$ (true)

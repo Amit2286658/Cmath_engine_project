@@ -1,133 +1,50 @@
 /*
  * sym_table.c — Dynamic Module, Type, Unit, Struct, Symbol, Overload & Extern Implementation
+ *
+ * Routes:
+ *   - `@<intrinsic>` lookup -> `Core/lib/delegate/delegate.h`
+ *   - Reserved keywords & wildcard type/unit rules -> `Core/lib/hardcode/hardcode.h`
  */
 
 #include "sym_table.h"
+#include "../lib/delegate/delegate.h"
+#include "../lib/hardcode/hardcode.h"
 #include <stdio.h>
 #include <string.h>
-
-typedef struct {
-    const char *name;
-    IntrinsicId id;
-} IntrEntry;
-
-static const IntrEntry k_intrinsics[] = {
-    { "f64",          INTR_PARSE_F64 },
-    { "f64_trim1",    INTR_PARSE_F64_TRIM1 },
-    { "i64",          INTR_PARSE_I64 },
-    { "str_slice",    INTR_PARSE_STR_SLICE },
-    { "vec_type",     INTR_VEC_TYPE },
-    { "mat_type",     INTR_MAT_TYPE },
-    { "lparen",       INTR_LPAREN },
-    { "rparen",       INTR_RPAREN },
-    { "lbrace",       INTR_LBRACE },
-    { "rbrace",       INTR_RBRACE },
-    { "lbrack",       INTR_LBRACK },
-    { "rbrack",       INTR_RBRACK },
-    { "comma",        INTR_COMMA },
-    { "seq",          INTR_SEQ },
-    { "store",        INTR_STORE },
-    { "while",        INTR_WHILE },
-    { "if",           INTR_IF },
-    { "or_branch",    INTR_OR_BRANCH },
-    { "then_branch",  INTR_OR_BRANCH },
-    { "else_branch",  INTR_ELSE_BRANCH },
-    { "switch_block", INTR_SWITCH_BLOCK },
-    { "case_branch",  INTR_CASE_BRANCH },
-    { "ternary",      INTR_TERNARY },
-    { "colon",        INTR_COLON },
-    { "jump_tag",     INTR_JUMP_TAG },
-    { "run_tag",      INTR_RUN_TAG },
-    { "break_loop",   INTR_BREAK_LOOP },
-    { "cand",         INTR_CAND },
-    { "cor",          INTR_COR },
-    { "cnot",         INTR_CNOT },
-    { "calc_diff",    INTR_CALC_DIFF },
-    { "calc_diff2",   INTR_CALC_DIFF2 },
-    { "calc_diffn",   INTR_CALC_DIFFN },
-    { "calc_integ",   INTR_CALC_INTEG },
-    { "calc_lim",     INTR_CALC_LIM },
-    { "calc_lim_l",   INTR_CALC_LIM_L },
-    { "calc_lim_r",   INTR_CALC_LIM_R },
-    { "calc_sigma",   INTR_CALC_SIGMA },
-    { "calc_prod",    INTR_CALC_PROD },
-    { "field",        INTR_FIELD },
-    { "vnew",         INTR_VNEW },
-    { "vfill",        INTR_VFILL },
-    { "vpush",        INTR_VPUSH },
-    { "vpop",         INTR_VPOP },
-    { "vget",         INTR_VGET },
-    { "vset",         INTR_VSET },
-    { "vlen",         INTR_VLEN },
-    { "vcap",         INTR_VCAP },
-    { "vresize",      INTR_VRESIZE },
-    { "vshrink",      INTR_VSHRINK },
-    { "vclear",       INTR_VCLEAR },
-    { "mzero",        INTR_MZERO },
-    { "mones",        INTR_MONES },
-    { "meye",         INTR_MEYE },
-    { "mfill",        INTR_MFILL },
-    { "mrows",        INTR_MROWS },
-    { "mcols",        INTR_MCOLS },
-    { "mrank",        INTR_MRANK },
-    { "mlen",         INTR_MLEN },
-    { "mshape",       INTR_MSHAPE },
-    { "madd",         INTR_MADD },
-    { "msub",         INTR_MSUB },
-    { "mscal",        INTR_MSCAL },
-    { "mmul",         INTR_MMUL },
-    { "mtrans",       INTR_MTRANS },
-    { "mtrace",       INTR_MTRACE },
-    { "mdet",         INTR_MDET },
-    { "minv",         INTR_MINV },
-    { "add",          INTR_ADD },
-    { "sub",          INTR_SUB },
-    { "mul",          INTR_MUL },
-    { "div",          INTR_DIV },
-    { "mod",          INTR_MOD },
-    { "neg",          INTR_NEG },
-    { "abs",          INTR_ABS },
-    { "floor",        INTR_FLOOR },
-    { "ceil",         INTR_CEIL },
-    { "pow",          INTR_POW },
-    { "sqrt",         INTR_SQRT },
-    { "cbrt",         INTR_CBRT },
-    { "exp",          INTR_EXP },
-    { "ln",           INTR_LN },
-    { "log10",        INTR_LOG10 },
-    { "sin",          INTR_SIN },
-    { "cos",          INTR_COS },
-    { "tan",          INTR_TAN },
-    { "asin",         INTR_ASIN },
-    { "acos",         INTR_ACOS },
-    { "atan",         INTR_ATAN },
-    { "atan2",        INTR_ATAN2 },
-    { "sinh",         INTR_SINH },
-    { "cosh",         INTR_COSH },
-    { "tanh",         INTR_TANH },
-    { "eq",           INTR_EQ },
-    { "ne",           INTR_NE },
-    { "lt",           INTR_LT },
-    { "le",           INTR_LE },
-    { "gt",           INTR_GT },
-    { "ge",           INTR_GE },
-    { "approx",       INTR_APPROX },
-    { "land",         INTR_LAND },
-    { "lor",          INTR_LOR },
-    { "lnot",         INTR_LNOT },
-    { "lxor",         INTR_LXOR },
-    { "lnor",         INTR_LNOR },
-    { "lnand",        INTR_LNAND },
-    { "raw",          INTR_RAW },
-    { "type_name",    INTR_TYPE_NAME },
-    { "unit_name",    INTR_UNIT_NAME },
-    { NULL,           INTR_NONE }
-};
 
 void sym_init(SymTable *tab) {
     memset(tab, 0, sizeof(*tab));
     tab->type_count = 1; /* Index 0 reserved for MEM_TYPE_VOID */
     tab->unit_count = 1; /* Index 0 reserved for MEM_UNIT_NONE */
+    memset(tab->sym_first_ov, 0xFF, sizeof(tab->sym_first_ov));
+    memset(tab->sym_last_ov,  0xFF, sizeof(tab->sym_last_ov));
+    memset(tab->ov_next,      0xFF, sizeof(tab->ov_next));
+}
+
+void sym_link_overload(SymTable *tab, uint16_t ov_idx) {
+    if (ov_idx >= tab->overload_count) return;
+    uint16_t sid = tab->overloads[ov_idx].sym_id;
+    tab->ov_next[ov_idx] = MEM_NO_IDX;
+    if (sid >= SYM_MAX_SYMS) return;
+    if (tab->sym_first_ov[sid] == MEM_NO_IDX) {
+        tab->sym_first_ov[sid] = ov_idx;
+        tab->sym_last_ov[sid]  = ov_idx;
+    } else {
+        uint16_t prev = tab->sym_last_ov[sid];
+        if (prev < SYM_MAX_OVERLOADS) {
+            tab->ov_next[prev] = ov_idx;
+        }
+        tab->sym_last_ov[sid] = ov_idx;
+    }
+}
+
+void sym_rebuild_index(SymTable *tab) {
+    memset(tab->sym_first_ov, 0xFF, sizeof(tab->sym_first_ov));
+    memset(tab->sym_last_ov,  0xFF, sizeof(tab->sym_last_ov));
+    memset(tab->ov_next,      0xFF, sizeof(tab->ov_next));
+    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+        sym_link_overload(tab, i);
+    }
 }
 
 uint8_t sym_find_or_add_mod(SymTable *tab, MemArena *mem, StrSlice name) {
@@ -173,11 +90,13 @@ uint16_t sym_intern(SymTable *tab, MemArena *mem, StrSlice s) {
         if (mem_slice_eq(mem, tab->syms[i], s)) return i;
     }
     if (tab->sym_count >= SYM_MAX_SYMS) {
-        mem_err(mem, "Symbol table overflow");
+        mem_err(mem, "Symbol table overflow (max %d)", SYM_MAX_SYMS);
         return 0;
     }
     uint16_t id = tab->sym_count++;
-    tab->syms[id] = s;
+    tab->syms[id]         = s;
+    tab->sym_first_ov[id] = MEM_NO_IDX;
+    tab->sym_last_ov[id]  = MEM_NO_IDX;
     return id;
 }
 
@@ -192,9 +111,10 @@ int sym_find(const SymTable *tab, const MemArena *mem, const char *str, uint16_t
 }
 
 bool sym_has_active_op(const SymTable *tab, uint16_t sym_id) {
-    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+    if (sym_id >= tab->sym_count) return false;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
         const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id == sym_id && ov->fixity != FIX_FUNC && ov->fixity != FIX_SYNTAX &&
+        if (ov->fixity != FIX_FUNC && ov->fixity != FIX_SYNTAX &&
             sym_mod_enabled(tab, ov->mod_id)) {
             return true;
         }
@@ -203,10 +123,10 @@ bool sym_has_active_op(const SymTable *tab, uint16_t sym_id) {
 }
 
 uint8_t sym_get_active_syntax(const SymTable *tab, uint16_t sym_id) {
-    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+    if (sym_id >= tab->sym_count) return 0;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
         const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id == sym_id && ov->fixity == FIX_SYNTAX &&
-            sym_mod_enabled(tab, ov->mod_id)) {
+        if (ov->fixity == FIX_SYNTAX && sym_mod_enabled(tab, ov->mod_id)) {
             return ov->meta_tag;
         }
     }
@@ -214,10 +134,11 @@ uint8_t sym_get_active_syntax(const SymTable *tab, uint16_t sym_id) {
 }
 
 int sym_get_active_prec(const SymTable *tab, uint16_t sym_id, OpFixity fixity) {
+    if (sym_id >= tab->sym_count) return -1;
     int best = -1;
-    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
         const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id == sym_id && ov->fixity == (uint8_t)fixity && sym_mod_enabled(tab, ov->mod_id)) {
+        if (ov->fixity == (uint8_t)fixity && sym_mod_enabled(tab, ov->mod_id)) {
             if ((int)ov->prec > best) best = (int)ov->prec;
         }
     }
@@ -225,9 +146,10 @@ int sym_get_active_prec(const SymTable *tab, uint16_t sym_id, OpFixity fixity) {
 }
 
 uint8_t sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_filter) {
-    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+    if (sym_id >= tab->sym_count) return 0;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
         const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id == sym_id && sym_mod_enabled(tab, ov->mod_id)) {
+        if (sym_mod_enabled(tab, ov->mod_id)) {
             if (fix_filter == FIX_FUNC && ov->fixity != FIX_FUNC) continue;
             if ((fix_filter == FIX_PREFIX || fix_filter == FIX_POSTFIX) && ov->fixity != (uint8_t)fix_filter) continue;
             if (fix_filter != FIX_FUNC && (ov->fixity == FIX_FUNC || ov->fixity == FIX_SYNTAX)) continue;
@@ -239,10 +161,13 @@ uint8_t sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_f
     return 0;
 }
 
+bool sym_is_reserved_kw(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
+    return hardcode_is_reserved_kw(tab, mem, name, len);
+}
+
 uint16_t sym_find_type(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
-    if ((len == 1 && name[0] == 'T') || (len == 3 && memcmp(name, "any", 3) == 0)) {
-        return SYM_TYPE_ANY;
-    }
+    uint16_t wc = hardcode_resolve_wildcard_type(name, len);
+    if (wc != MEM_TYPE_VOID) return wc;
     for (uint16_t i = 1; i < tab->type_count; ++i) {
         if (!sym_mod_enabled(tab, tab->types[i].mod_id)) continue;
         StrSlice s = tab->types[i].name;
@@ -254,12 +179,8 @@ uint16_t sym_find_type(const SymTable *tab, const MemArena *mem, const char *nam
 }
 
 uint8_t sym_find_unit(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
-    if ((len == 1 && name[0] == 'T') || (len == 3 && memcmp(name, "any", 3) == 0)) {
-        return SYM_UNIT_GENERIC;
-    }
-    if (len == 4 && memcmp(name, "none", 4) == 0) {
-        return SYM_UNIT_LOCK_NONE;
-    }
+    uint8_t wc = hardcode_resolve_wildcard_unit(name, len);
+    if (wc != MEM_UNIT_NONE) return wc;
     for (uint8_t i = 1; i < tab->unit_count; ++i) {
         StrSlice s = tab->units[i];
         if (s.len == len && memcmp(mem_str_ptr(mem, s), name, len) == 0) {
@@ -329,13 +250,7 @@ const char *sym_unit_name(const SymTable *tab, const MemArena *mem, uint8_t unit
 }
 
 IntrinsicId sym_lookup_intrinsic(const char *s, uint16_t len) {
-    for (int i = 0; k_intrinsics[i].name != NULL; ++i) {
-        if (strlen(k_intrinsics[i].name) == len &&
-            memcmp(k_intrinsics[i].name, s, len) == 0) {
-            return k_intrinsics[i].id;
-        }
-    }
-    return INTR_NONE;
+    return delegate_lookup_intrinsic(s, len);
 }
 
 bool sym_register_extern(SymTable *tab, MemArena *mem, const char *name,

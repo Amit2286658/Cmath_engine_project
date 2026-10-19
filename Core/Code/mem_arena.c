@@ -13,9 +13,6 @@
 
 void mem_init(MemArena *mem) {
     memset(mem, 0, sizeof(*mem));
-    for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
-        mem->label_ast[i] = MEM_NO_IDX;
-    }
 }
 
 void mem_err(MemArena *mem, const char *fmt, ...) {
@@ -45,6 +42,8 @@ void mem_rewind_scratch(MemArena *mem) {
     mem->sp             = 0;
     mem->jump_active    = 0;
     mem->jump_target_id = 0;
+    mem->eval_depth     = 0;
+    mem->eval_steps     = 0;
     for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
         mem->label_ast[i] = MEM_NO_IDX;
     }
@@ -61,7 +60,7 @@ StrSlice mem_intern_str(MemArena *mem, const char *str, uint16_t len) {
             return s;
         }
     }
-    if (mem->src_len + len >= MEM_SRC_BUF_CAP) {
+    if ((uint32_t)mem->src_len + (uint32_t)len >= (uint32_t)MEM_SRC_BUF_CAP) {
         mem_err(mem, "Source arena buffer overflow (%u bytes)", (unsigned)MEM_SRC_BUF_CAP);
         StrSlice empty = { 0, 0 };
         return empty;
@@ -92,7 +91,7 @@ bool mem_slice_eq_cstr(const MemArena *mem, StrSlice s, const char *cstr) {
  * ============================================================================ */
 
 uint16_t mem_alloc_pool(MemArena *mem, uint16_t count) {
-    if (mem->pool_top + count > MEM_MAX_F64_POOL) {
+    if ((uint32_t)mem->pool_top + (uint32_t)count > (uint32_t)MEM_MAX_F64_POOL) {
         mem_err(mem, "Float value pool exhausted");
         return 0;
     }
@@ -106,11 +105,19 @@ double mem_read_pool(const MemArena *mem, uint16_t idx) {
 }
 
 void mem_write_pool(MemArena *mem, uint16_t idx, double val) {
+    if (mem->has_error) return;
     if (idx < MEM_MAX_F64_POOL) {
         mem->f64_pool[idx] = val;
     }
 }
 
+/*
+ * Dynamic Vector 4-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+3]`:
+ *   [0] = elem_type_id (0 = untyped/auto-inferred on first push, >0 = type ID T)
+ *   [1] = len          (current number of active elements T)
+ *   [2] = cap          (allocated capacity in elements T)
+ *   [3] = data_idx     (start index in `f64_pool` of `cap * stride` doubles, or 0)
+ */
 uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap) {
     uint16_t hdr_idx = mem_alloc_pool(mem, MEM_VEC_HDR_SLOTS);
     if (mem->has_error) return 0;
@@ -130,6 +137,10 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
     if (data_idx == 0) {
         uint16_t target_cap = (cap >= min_cap) ? cap : min_cap;
         if (target_cap < 4) target_cap = 4;
+        if ((uint32_t)target_cap * (uint32_t)stride > (uint32_t)MEM_MAX_F64_POOL) {
+            mem_err(mem, "Vector capacity exceeds pool limit");
+            return false;
+        }
         uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(target_cap * stride));
         if (mem->has_error) return false;
         memset(&mem->f64_pool[new_data], 0, (size_t)(target_cap * stride) * sizeof(double));
@@ -140,8 +151,13 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
 
     if (cap >= min_cap) return true;
 
-    uint16_t new_cap = (cap < 4) ? 4 : (uint16_t)(cap * 2);
-    if (new_cap < min_cap) new_cap = min_cap;
+    uint32_t new_cap32 = (cap < 4) ? 4u : ((uint32_t)cap * 2u);
+    if (new_cap32 < (uint32_t)min_cap) new_cap32 = (uint32_t)min_cap;
+    if (new_cap32 * (uint32_t)stride > (uint32_t)MEM_MAX_F64_POOL) {
+        mem_err(mem, "Vector capacity exceeds pool limit");
+        return false;
+    }
+    uint16_t new_cap     = (uint16_t)new_cap32;
     uint16_t extra_slots = (uint16_t)((new_cap - cap) * stride);
 
     if ((uint16_t)(data_idx + cap * stride) == mem->pool_top) {
@@ -183,7 +199,6 @@ void mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride) {
     }
     mem_write_pool(mem, hdr_idx + 2, (double)len);
 }
-
 
 /*
  * Multidimensional Matrix (`$mat`) 8-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+7]`:
@@ -280,82 +295,8 @@ void mem_set_slot(MemArena *mem, uint16_t frame_base, uint8_t slot, Value v) {
 }
 
 /* ============================================================================
- * 4. VALUE ENCODING (8-BYTE NAN-BOXING vs. 12-BYTE TAGGED UNION)
+ * 4. VALUE ENCODING (8-BYTE IEEE-754 NAN-BOXING)
  * ============================================================================ */
-
-#if USE_TAGGED_12B
-
-Value val_void(void) {
-    Value v;
-    memset(&v, 0, sizeof(v));
-    return v;
-}
-
-Value val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d) {
-    (void)mem;
-    Value v;
-    v.type_id = type_id;
-    v.flags   = unit_id;
-    v.as.f64  = d;
-    return v;
-}
-
-Value val_make_f64(MemArena *mem, uint16_t type_id, double d) {
-    return val_make_f64_unit(mem, type_id, MEM_UNIT_NONE, d);
-}
-
-double val_get_f64(const MemArena *mem, Value v) {
-    (void)mem;
-    return v.as.f64;
-}
-
-Value val_make_str(MemArena *mem, uint16_t type_id, StrSlice s) {
-    (void)mem;
-    Value v;
-    v.type_id    = type_id;
-    v.flags      = 0;
-    v.as.str.off = s.off;
-    v.as.str.len = s.len;
-    return v;
-}
-
-StrSlice val_get_str(const MemArena *mem, Value v) {
-    (void)mem;
-    StrSlice s = { (uint16_t)v.as.str.off, (uint16_t)v.as.str.len };
-    return s;
-}
-
-Value val_make_comp(MemArena *mem, uint16_t type_id, uint16_t pool_idx, uint16_t flat_size) {
-    (void)mem;
-    Value v;
-    v.type_id     = type_id;
-    v.flags       = 0;
-    v.as.comp.idx = pool_idx;
-    v.as.comp.cnt = flat_size;
-    return v;
-}
-
-uint16_t val_get_pool_idx(Value v) {
-    return (uint16_t)v.as.comp.idx;
-}
-
-uint16_t val_get_type(const MemArena *mem, Value v) {
-    (void)mem;
-    return v.type_id;
-}
-
-uint8_t val_get_unit(const MemArena *mem, Value v) {
-    (void)mem;
-    return (uint8_t)(v.flags & 0xFFu);
-}
-
-Value val_with_unit(MemArena *mem, Value v, uint8_t unit_id) {
-    (void)mem;
-    v.flags = unit_id;
-    return v;
-}
-
-#else /* 8-BYTE IEEE-754 NAN-BOXING */
 
 #define NANBOX_PREFIX     0xFFF8000000000000ULL
 #define NANBOX_MASK       0xFFF8000000000000ULL
@@ -386,11 +327,22 @@ Value val_void(void) {
     return (NB_TAG_VOID << NANBOX_TAG_SHIFT);
 }
 
+Value val_make_f64_at_pool(const MemArena *mem, uint16_t type_id, uint8_t unit_id, uint16_t pool_idx) {
+    if (type_id == mem->fast_real_type && type_id != 0 && unit_id == MEM_UNIT_NONE) {
+        return f64_to_bits(mem_read_pool(mem, pool_idx));
+    }
+    return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
+         | ((uint64_t)unit_id << NANBOX_UNIT_SHIFT)
+         | ((uint64_t)(type_id & 0xFFu) << NANBOX_TYPE_SHIFT)
+         | (uint64_t)pool_idx;
+}
+
 Value val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d) {
     if (type_id == mem->fast_real_type && type_id != 0 && unit_id == MEM_UNIT_NONE) {
         return f64_to_bits(d);
     }
     uint16_t idx = mem_alloc_pool(mem, 1);
+    if (mem->has_error) return val_void();
     mem_write_pool(mem, idx, d);
     return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
          | ((uint64_t)unit_id << NANBOX_UNIT_SHIFT)
@@ -473,13 +425,12 @@ Value val_with_unit(MemArena *mem, Value v, uint8_t unit_id) {
     return v;
 }
 
-#endif /* USE_TAGGED_12B */
-
 Value val_clone_comp(MemArena *mem, Value v, uint16_t flat_size) {
     uint16_t tid  = val_get_type(mem, v);
     uint8_t  unit = val_get_unit(mem, v);
     uint16_t old_idx = val_get_pool_idx(v);
     uint16_t new_idx = mem_alloc_pool(mem, flat_size);
+    if (mem->has_error) return val_void();
     for (uint16_t i = 0; i < flat_size; ++i) {
         mem_write_pool(mem, new_idx + i, mem_read_pool(mem, old_idx + i));
     }
@@ -493,6 +444,7 @@ Value val_from_f64(MemArena *mem, double d) {
 Value val_from_cstr(MemArena *mem, const char *cstr) {
     if (!cstr || mem->str_type_id == 0) return val_void();
     StrSlice s = mem_intern_str(mem, cstr, (uint16_t)strlen(cstr));
+    if (mem->has_error) return val_void();
     return val_make_str(mem, mem->str_type_id, s);
 }
 

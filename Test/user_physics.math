@@ -7,10 +7,20 @@
 #   2. Multi-branch `if ... or ... else`, `switch ... case ... else`,
 #      local `{ ... }` scopes, ternary `? :`, `break(Tag)`, and `Tag : { ... }`
 #   3. Wrapping host-registered C callbacks (`eng_register_extern`) for:
-#      - `@fx_rate(from, to)`         : Realtime currency exchange rate
-#      - `@fx_history(from, to, days)`: Vector-returning historical FX series
+#      - `@fx_rate(from, to)`           : Realtime currency exchange rate
+#      - `@fx_set_rate(ccy, per_usd)`   : Live currency quote feed update
+#      - `@fx_history(from, to, days)`  : Vector-returning historical FX series
 #      - `@kv_set(key, val)` / `@kv_get(key)` : Persistent host key-value store
-#      - `@elem_mass(symbol)`         : IUPAC Periodic Table atomic mass lookup
+#      - `@elem_mass(symbol)`           : IUPAC Periodic Table atomic mass lookup
+#   4. Streamlined `.math` Ergonomics (All 8 Features):
+#      - Unquoted function & constant names (`hyp_3d(x, y, z) = ...`, `golden_ang = ...`)
+#      - Optional `:real` parameter types and optional `-> real` return types
+#      - Default parameter values (`fx_with_fee(..., fee_pct:real = 1.5)`, `log_base(x, b = 10)`)
+#      - Keywordless `(i in 1...5){}` and `(v in vec){}` loops + `loop` keyword
+#      - Implicit multiplication (`2x`, `2π`, `3(x + 1)`)
+#      - Uniform Function Call / dot-chaining (`v.push(10).vec_sum()`)
+#      - General solver & extrema (`solve`, `fmin`, `fmax`)
+#      - Struct/vector/matrix destructuring (`r1, r2 := quad_roots(1, -5, 6)`)
 
 [user_physics]
 <[boot_syntax]
@@ -76,9 +86,19 @@
     Finish : { steps }
 }
 
-# 4. Host-Backed Realtime Currency Conversion (`@fx_rate`)
+# 4. Host-Backed Realtime Currency Conversion (`@fx_rate`, `@fx_set_rate`)
 "fx_rate"(from:str, to:str) -> real = @fx_rate(from, to)
-"convert_fx"(amount:real, from:str, to:str) -> real = amount * @fx_rate(from, to)
+"fx_set_rate"(ccy:str, per_usd:real) -> real = @fx_set_rate(ccy, per_usd)
+"convert_fx"(amount:real, from:str, to:str) -> real = (
+    assert(amount >= 0, "Currency amount cannot be negative") ;
+    amount * @fx_rate(from, to)
+)
+"fx_with_fee"(amount:real, from:str, to:str, fee_pct:real = 1.5) -> real = {
+    assert(amount >= 0, "Currency amount cannot be negative") ;
+    assert(fee_pct >= 0 && fee_pct < 100, "Fee percentage must be in [0, 100)") ;
+    gross := amount * @fx_rate(from, to) ;
+    gross * (1 - fee_pct / 100)
+}
 (usd:real) "to_inr" :90 -> real = usd * @fx_rate("USD", "INR")
 (eur:real) "to_usd" :90 -> real = eur * @fx_rate("EUR", "USD")
 "vec_sum_fx"(prices_usd:vec, target_ccy:str) -> real =
@@ -102,24 +122,18 @@
     6 * @elem_mass("C") + 12 * @elem_mass("H") + 6 * @elem_mass("O")
 
 # 8. Unit-Typed Operators & Functions + Generic Unit `T`
-#    - Specific unit-typed infix operators on `(real, distance)`
 (x:real, distance) "+" (y:real, distance) :<50 -> real, distance = @add(x, y)
 (x:real, distance) "-" (y:real, distance) :<50 -> real, distance = @sub(x, y)
 
-#    - Cross-dimension infix operators (`distance / time -> speed`, `speed * time -> distance`)
 (d:real, distance) "/" (t:real, time)  :<60 -> real, speed    = @div(d, t)
 (v:real, speed)    "*" (t:real, time)  :<60 -> real, distance = @mul(v, t)
 
-#    - Unit-typed function `avg_speed(d:real, distance, t:real, time) -> real, speed`
 "avg_speed"(d:real, distance, t:real, time) -> real, speed = d / t
 
-#    - Generic UnitType `T` functions (`scale_unit`, `unit_span`)
 "scale_unit"(x:real, T, k:real)   -> real, T = x * k
 "unit_span"(a:real, T, b:real, T) -> real, T = @abs(a - b)
 
 # 9. User-Defined Custom Unit Type Groups (`data_size` & `bandwidth`)
-#    Demonstrates that unit groups are NOT hardcoded in C — any user `.math`
-#    extension can create its own unit groups and cross-group operators!
 (x:real) "B"  :95 -> real, data_size = x
 (x:real) "KB" :95 -> real, data_size = x * 1024
 (x:real) "MB" :95 -> real, data_size = x * (1024 ^ 2)
@@ -127,3 +141,18 @@
 
 (sz:real, data_size) "/" (t:real, time)      :<60 -> real, bandwidth = @div(sz, t)
 (bw:real, bandwidth) "*" (t:real, time)      :<60 -> real, data_size = @mul(bw, t)
+
+# 10. Streamlined Shorthand Functions, Default Params & Keywordless Loops
+tau_const = 2π
+hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)
+log_base(x, base = 10) = ln(x) / ln(base)
+sum_squares_to(n) = {
+    s := 0 ;
+    (i in 1...n) { s += i^2 } ;
+    s
+}
+vec_dot_self(v:vec) = {
+    s := 0 ;
+    (x in v) { s += x^2 } ;
+    s
+}

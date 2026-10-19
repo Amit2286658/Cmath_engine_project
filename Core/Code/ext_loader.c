@@ -3,10 +3,18 @@
  *
  * Pure ISO C99 in-memory implementation: zero filesystem, directory, or path
  * dependencies (`<dirent.h>`, `<sys/stat.h>`, and `FILE*` I/O removed).
+ *
+ * Supports both classic explicit `.math` declarations and streamlined shorthand:
+ *   - Optional quotes around function and constant names:
+ *       `lerp(a, b, t) = a + (b - a) * t`  or  `"lerp"(a:real, b:real, t:real) -> real = ...`
+ *       `g0 = 9.80665`                     or  `"g0" : real = 9.80665`
+ *   - Optional `:real` parameter types and optional `-> real` return types
+ *   - Default parameter values (`round(x:real, digits:real = 0) -> real = ...`)
  */
 
 #include "ext_loader.h"
 #include "parser.h"
+#include "../lib/hardcode/hardcode.h"
 #include "evaluator.h"
 #include <stdlib.h>
 #include <string.h>
@@ -62,10 +70,20 @@ static StrSlice ext_read_quoted(ExtLoader *L) {
         if (L->src[L->pos] == '\\' && L->pos + 1 < L->len) {
             L->pos++;
         }
-        if (blen < sizeof(buf) - 1) buf[blen++] = L->src[L->pos];
+        if (blen >= sizeof(buf) - 1) {
+            mem_err(L->mem, "Quoted symbol exceeds maximum length (63 bytes)");
+            StrSlice empty = { 0, 0 };
+            return empty;
+        }
+        buf[blen++] = L->src[L->pos];
         L->pos++;
     }
-    if (L->pos < L->len && L->src[L->pos] == '"') L->pos++;
+    if (L->pos >= L->len || L->src[L->pos] != '"') {
+        mem_err(L->mem, "Unterminated quoted string symbol in declaration");
+        StrSlice empty = { 0, 0 };
+        return empty;
+    }
+    L->pos++;
     return mem_intern_str(L->mem, buf, blen);
 }
 
@@ -75,7 +93,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
     L->pos++; /* skip '$' */
     StrSlice tname = ext_read_ident(L);
     if (tab->type_count >= SYM_MAX_TYPES) {
-        mem_err(mem, "Type table overflow");
+        mem_err(mem, "Type table overflow (max %d)", SYM_MAX_TYPES);
         return;
     }
 
@@ -110,7 +128,14 @@ static void ext_parse_type_decl(ExtLoader *L) {
             if (c == '\\' && L->pos + 1 < L->len) {
                 char esc = L->src[L->pos + 1];
                 L->pos += 2;
-                pe->kind = (esc == 'd') ? PAT_DIGIT : PAT_ALPHA;
+                if (esc == 'd') {
+                    pe->kind = PAT_DIGIT;
+                } else if (esc == 'a') {
+                    pe->kind = PAT_ALPHA;
+                } else {
+                    mem_err(mem, "Invalid pattern escape '\\%c' (expected \\d or \\a)", esc);
+                    return;
+                }
             } else if (c == '"') {
                 pe->kind  = PAT_LIT;
                 pe->chars = ext_read_quoted(L);
@@ -120,7 +145,11 @@ static void ext_parse_type_decl(ExtLoader *L) {
                 uint16_t elen = 0;
                 while (L->pos < L->len && L->src[L->pos] != ']') {
                     if (L->src[L->pos] == '\\' && L->pos + 1 < L->len) L->pos++;
-                    if (elen < sizeof(excl) - 1) excl[elen++] = L->src[L->pos];
+                    if (elen >= sizeof(excl) - 1) {
+                        mem_err(mem, "Negated character class exceeds maximum length (31 bytes)");
+                        return;
+                    }
+                    excl[elen++] = L->src[L->pos];
                     L->pos++;
                 }
                 if (L->pos < L->len && L->src[L->pos] == ']') L->pos++;
@@ -178,18 +207,28 @@ static void ext_parse_type_decl(ExtLoader *L) {
         while (L->pos < L->len && !mem->has_error) {
             if (ext_match_char(L, ')')) break;
             StrSlice fname = ext_read_ident(L);
-            if (!ext_match_char(L, ':')) {
-                mem_err(mem, "Expected ':' in struct field declaration");
+            uint16_t ftid  = mem->fast_real_type;
+            if (ext_match_char(L, ':')) {
+                StrSlice ftype_s = ext_read_ident(L);
+                ftid = sym_find_type(tab, mem, mem_str_ptr(mem, ftype_s), ftype_s.len);
+                if (ftid == MEM_TYPE_VOID || ftid == SYM_TYPE_ANY) {
+                    mem_err(mem, "Unknown field type '%.*s'", (int)ftype_s.len, mem_str_ptr(mem, ftype_s));
+                    return;
+                }
+            }
+            if (ftid == tid) {
+                mem_err(mem, "Self-referential struct field '%.*s' in '$%.*s' is not allowed",
+                        (int)fname.len, mem_str_ptr(mem, fname),
+                        (int)tname.len, mem_str_ptr(mem, tname));
                 return;
             }
-            StrSlice ftype_s = ext_read_ident(L);
-            uint16_t ftid = sym_find_type(tab, mem, mem_str_ptr(mem, ftype_s), ftype_s.len);
-            if (ftid == MEM_TYPE_VOID) {
-                mem_err(mem, "Unknown field type '%.*s'", (int)ftype_s.len, mem_str_ptr(mem, ftype_s));
+            if (ftid >= tab->type_count || tab->types[ftid].flat_size == 0) {
+                mem_err(mem, "Incomplete or invalid field type in '$%.*s'",
+                        (int)tname.len, mem_str_ptr(mem, tname));
                 return;
             }
             if (tab->field_count >= SYM_MAX_FIELDS) {
-                mem_err(mem, "Struct field table overflow");
+                mem_err(mem, "Struct field table overflow (max %d)", SYM_MAX_FIELDS);
                 return;
             }
             FieldDef *fd = &tab->fields[tab->field_count++];
@@ -208,16 +247,6 @@ static void ext_parse_type_decl(ExtLoader *L) {
     }
 }
 
-/*
- * Resolve a single `type_or_unit` identifier (and optional `, unit` identifier)
- * in parameter or return position:
- *   - `real`            -> type = `real`,        unit = `SYM_UNIT_OMITTED`
- *   - `real, distance`  -> type = `real`,        unit = `distance`
- *   - `real, T`         -> type = `real`,        unit = `SYM_UNIT_GENERIC`
- *   - `distance`        -> type = `SYM_TYPE_ANY`,unit = `distance`
- *   - `T`               -> type = `SYM_TYPE_ANY`,unit = `SYM_UNIT_OMITTED`
- *   - `T, T`            -> type = `SYM_TYPE_ANY`,unit = `SYM_UNIT_GENERIC`
- */
 static bool ext_resolve_type_and_unit(ExtLoader *L, StrSlice first_id,
                                       bool has_second, StrSlice second_id,
                                       uint16_t *out_type, uint8_t *out_unit) {
@@ -245,7 +274,6 @@ static bool ext_resolve_type_and_unit(ExtLoader *L, StrSlice first_id,
         return true;
     }
 
-    /* Single identifier is not a known entity type -> treat as concrete unit with generic type T */
     uint8_t uid = sym_find_or_add_unit(tab, mem, s1, first_id.len);
     *out_type = SYM_TYPE_ANY;
     *out_unit = uid;
@@ -256,9 +284,19 @@ static bool ext_parse_one_param(ExtLoader *L, StrSlice *out_name,
                                 uint16_t *out_type, uint8_t *out_unit) {
     if (!ext_match_char(L, '(')) return false;
     *out_name = ext_read_ident(L);
-    if (!ext_match_char(L, ':')) {
-        mem_err(L->mem, "Expected ':' in parameter declaration");
+    if (sym_is_reserved_kw(L->tab, L->mem, mem_str_ptr(L->mem, *out_name), out_name->len)) {
+        mem_err(L->mem, "Cannot use reserved keyword '%.*s' as a variable name",
+                (int)out_name->len, mem_str_ptr(L->mem, *out_name));
         return false;
+    }
+    if (!ext_match_char(L, ':')) {
+        *out_type = L->mem->fast_real_type ? L->mem->fast_real_type : 1;
+        *out_unit = SYM_UNIT_OMITTED;
+        if (!ext_match_char(L, ')')) {
+            mem_err(L->mem, "Expected ')' after parameter declaration");
+            return false;
+        }
+        return true;
     }
     StrSlice tname = ext_read_ident(L);
     bool has_unit  = false;
@@ -277,21 +315,25 @@ static bool ext_parse_one_param(ExtLoader *L, StrSlice *out_name,
     return true;
 }
 
-/*
- * Check if the next identifier in a function parameter list `(a:real, distance, b:real)`
- * is a unit annotation (`distance`, not followed by `:`) rather than a new parameter (`b:`).
- */
 static bool ext_peek_ident_is_unit_annot(ExtLoader *L) {
     ext_skip_ws(L);
     uint16_t p = L->pos;
     if (p >= L->len || !lex_is_ident_start((unsigned char)L->src[p])) return false;
+    uint16_t id_start = p;
     while (p < L->len && lex_is_ident_cont((unsigned char)L->src[p])) p++;
+    uint16_t id_len = p - id_start;
     while (p < L->len && (L->src[p] == ' ' || L->src[p] == '\t' || L->src[p] == '\r' || L->src[p] == '\n')) p++;
-    return (p >= L->len || L->src[p] != ':');
+    if (p < L->len && (L->src[p] == ':' || L->src[p] == '=')) return false;
+    return sym_find_unit(L->tab, L->mem, L->src + id_start, id_len) != MEM_UNIT_NONE;
 }
 
 static bool ext_parse_return_spec(ExtLoader *L, uint16_t *out_rtype, uint8_t *out_runit) {
     ext_skip_ws(L);
+    if (L->pos < L->len && L->src[L->pos] == '=') {
+        *out_rtype = L->mem->fast_real_type ? L->mem->fast_real_type : 1;
+        *out_runit = SYM_UNIT_OMITTED;
+        return true;
+    }
     if (L->pos + 1 < L->len && L->src[L->pos] == '-' && L->src[L->pos + 1] == '>') {
         L->pos += 2;
     }
@@ -303,6 +345,33 @@ static bool ext_parse_return_spec(ExtLoader *L, uint16_t *out_rtype, uint8_t *ou
         runit_s  = ext_read_ident(L);
     }
     return ext_resolve_type_and_unit(L, rtype_s, has_unit, runit_s, out_rtype, out_runit);
+}
+
+static void ext_skip_default_expr(ExtLoader *L, uint16_t *out_start, uint16_t *out_end) {
+    ext_skip_ws(L);
+    *out_start = L->pos;
+    int depth = 0;
+    while (L->pos < L->len) {
+        char c = L->src[L->pos];
+        if (c == '"') {
+            L->pos++;
+            while (L->pos < L->len && L->src[L->pos] != '"') {
+                if (L->src[L->pos] == '\\' && L->pos + 1 < L->len) L->pos++;
+                L->pos++;
+            }
+            if (L->pos < L->len) L->pos++;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{') depth++;
+        else if (c == ')' || c == ']' || c == '}') {
+            if (depth == 0) break;
+            depth--;
+        } else if (c == ',' && depth == 0) {
+            break;
+        }
+        L->pos++;
+    }
+    *out_end = L->pos;
 }
 
 static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
@@ -339,42 +408,269 @@ static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
             mem_get_ast(mem, root->left)->kind == AST_SLOT_LOAD && mem_get_ast(mem, root->left)->sub == 0 &&
             mem_get_ast(mem, root->right)->kind == AST_SLOT_LOAD && mem_get_ast(mem, root->right)->sub == 1) {
             uint16_t target_sym = root->ref;
-            for (uint16_t i = 0; i < tab->overload_count; ++i) {
-                const OpOverload *target = &tab->overloads[i];
-                if (target != ov && target->sym_id == target_sym &&
-                    target->param_count == 2 &&
-                    target->param_types[0] == ov->param_types[0] &&
-                    target->param_types[1] == ov->param_types[1] &&
-                    target->param_units[0] == ov->param_units[0] &&
-                    target->param_units[1] == ov->param_units[1] &&
-                    target->ret_unit       == ov->ret_unit) {
-                    ov->body_ast    = target->body_ast;
-                    ov->local_count = target->local_count;
-                    ov->meta_tag    = 1;
-                    break;
+            if (target_sym < tab->sym_count) {
+                for (uint16_t i = tab->sym_first_ov[target_sym]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+                    const OpOverload *target = &tab->overloads[i];
+                    if (target != ov &&
+                        target->param_count == 2 &&
+                        target->param_types[0] == ov->param_types[0] &&
+                        target->param_types[1] == ov->param_types[1] &&
+                        target->param_units[0] == ov->param_units[0] &&
+                        target->param_units[1] == ov->param_units[1] &&
+                        target->ret_unit       == ov->ret_unit) {
+                        ov->body_ast    = target->body_ast;
+                        ov->local_count = target->local_count;
+                        ov->meta_tag    = 1;
+                        break;
+                    }
                 }
             }
         }
     }
 }
 
+
+static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
+    MemArena *mem = L->mem;
+    SymTable *tab = L->tab;
+    ext_skip_ws(L);
+
+    /* 1. Syntax delimiter binding (`"(" => @lparen`, `"{" => @lbrace`, `"," => @comma`) */
+    if (L->pos + 1 < L->len && L->src[L->pos] == '=' && L->src[L->pos + 1] == '>') {
+        L->pos += 2;
+        if (!ext_match_char(L, '@')) {
+            mem_err(mem, "Expected '@syntax_intrinsic' after '=>'");
+            return;
+        }
+        StrSlice iname = ext_read_ident(L);
+        IntrinsicId intr = sym_lookup_intrinsic(mem_str_ptr(mem, iname), iname.len);
+        if (intr != INTR_LPAREN && intr != INTR_RPAREN &&
+            intr != INTR_LBRACE && intr != INTR_RBRACE &&
+            intr != INTR_LBRACK && intr != INTR_RBRACK &&
+            intr != INTR_COMMA) {
+            mem_err(mem, "Unknown syntax delimiter intrinsic '@%.*s'",
+                    (int)iname.len, mem_str_ptr(mem, iname));
+            return;
+        }
+        if (tab->overload_count >= SYM_MAX_OVERLOADS) {
+            mem_err(mem, "Overload table overflow (max %d)", SYM_MAX_OVERLOADS);
+            return;
+        }
+        uint16_t ov_idx = tab->overload_count++;
+        OpOverload *ov  = &tab->overloads[ov_idx];
+        memset(ov, 0, sizeof(*ov));
+        ov->sym_id   = sym_id;
+        ov->mod_id   = L->cur_mod;
+        ov->fixity   = FIX_SYNTAX;
+        ov->meta_tag = (uint8_t)intr;
+        sym_link_overload(tab, ov_idx);
+        return;
+    }
+
+    /* 2. Constant definition (`"g0" : real = 9.80665`, `g0 : real = 9.80665`, or `g0 = 9.80665`) */
+    if (ext_match_char(L, ':') || ext_match_char(L, '=')) {
+        bool already_matched_eq = (L->src[L->pos - 1] == '=');
+        uint16_t rtid = mem->fast_real_type ? mem->fast_real_type : 1;
+        uint8_t  ruid = SYM_UNIT_OMITTED;
+        if (!already_matched_eq) {
+            if (!ext_parse_return_spec(L, &rtid, &ruid)) return;
+            if (rtid == SYM_TYPE_ANY) {
+                rtid = mem->fast_real_type ? mem->fast_real_type : 1;
+            }
+            if (!ext_match_char(L, '=')) {
+                mem_err(mem, "Expected '=' in constant definition");
+                return;
+            }
+        }
+        if (tab->const_count >= SYM_MAX_CONSTS) {
+            mem_err(mem, "Constant table overflow (max %d)", SYM_MAX_CONSTS);
+            return;
+        }
+        ext_skip_ws(L);
+        Parser P;
+        parser_init(&P, mem, tab, L->src, L->len, L->pos, false, true);
+        lex_next(&P.lex);
+        uint16_t c_ast = parser_parse_expr(&P, 0);
+        L->pos = (P.lex.cur.kind == TOK_EOF) ? P.lex.pos : P.lex.cur.off;
+        if (mem->has_error || c_ast == MEM_NO_IDX) return;
+
+        uint16_t c_pool_idx = 0;
+        uint8_t  final_unit = (ruid != SYM_UNIT_OMITTED && ruid != SYM_UNIT_GENERIC && ruid != SYM_UNIT_LOCK_NONE)
+                              ? ruid : MEM_UNIT_NONE;
+        if (mem_get_ast(mem, c_ast)->kind == AST_LIT) {
+            c_pool_idx = mem_get_ast(mem, c_ast)->ref;
+        } else {
+            Value ev = eval_ast(mem, tab, c_ast, 0, (uint8_t)rtid);
+            if (mem->has_error) return;
+            double d = val_get_f64(mem, ev);
+            if (final_unit == MEM_UNIT_NONE && ruid == SYM_UNIT_OMITTED) {
+                final_unit = val_get_unit(mem, ev);
+            }
+            c_pool_idx = mem_alloc_pool(mem, 1);
+            if (mem->has_error) return;
+            mem_write_pool(mem, c_pool_idx, d);
+        }
+        Value cval = val_make_f64_at_pool(mem, rtid, final_unit, c_pool_idx);
+        uint8_t cid = tab->const_count++;
+        tab->consts[cid].sym_id   = sym_id;
+        tab->consts[cid].mod_id   = L->cur_mod;
+        tab->consts[cid].type_id  = (uint8_t)rtid;
+        tab->consts[cid].unit_id  = final_unit;
+        tab->consts[cid].val_idx  = cid;
+        tab->consts[cid].pool_idx = c_pool_idx;
+        tab->const_vals[cid]      = cval;
+        return;
+    }
+
+    /* 3. Function or Prefix Operator Declaration (`"fn"(...)` or `fn(...)`) */
+    if (!ext_match_char(L, '(')) {
+        mem_err(mem, "Expected '(', ':', '=', or '=>' after symbol in declaration");
+        return;
+    }
+    StrSlice pnames[8];
+    uint16_t ptypes[8];
+    uint8_t  punits[8];
+    bool     has_def[8];
+    uint16_t def_start[8];
+    uint16_t def_end[8];
+    uint8_t  pcount    = 0;
+    uint8_t  req_count = 0;
+    bool     seen_def  = false;
+    memset(has_def, 0, sizeof(has_def));
+
+    while (L->pos < L->len && !mem->has_error) {
+        if (ext_match_char(L, ')')) break;
+        if (pcount >= 8) { mem_err(mem, "Max 8 parameters supported"); break; }
+        pnames[pcount] = ext_read_ident(L);
+        if (sym_is_reserved_kw(tab, mem, mem_str_ptr(mem, pnames[pcount]), pnames[pcount].len)) {
+            mem_err(mem, "Cannot use reserved keyword '%.*s' as a variable name",
+                    (int)pnames[pcount].len, mem_str_ptr(mem, pnames[pcount]));
+            break;
+        }
+        if (ext_match_char(L, ':')) {
+            StrSlice tn = ext_read_ident(L);
+            bool has_u  = false;
+            StrSlice un = { 0, 0 };
+            if (ext_match_char(L, ',')) {
+                if (ext_peek_ident_is_unit_annot(L)) {
+                    has_u = true;
+                    un    = ext_read_ident(L);
+                }
+            }
+            if (!ext_resolve_type_and_unit(L, tn, has_u, un, &ptypes[pcount], &punits[pcount])) {
+                break;
+            }
+        } else {
+            ptypes[pcount] = mem->fast_real_type ? mem->fast_real_type : 1;
+            punits[pcount] = SYM_UNIT_OMITTED;
+        }
+
+        if (ext_match_char(L, '=')) {
+            seen_def        = true;
+            has_def[pcount] = true;
+            ext_skip_default_expr(L, &def_start[pcount], &def_end[pcount]);
+        } else {
+            if (seen_def) {
+                mem_err(mem, "Parameter without default value cannot follow a default parameter");
+                break;
+            }
+            req_count++;
+        }
+        ext_match_char(L, ',');
+        pcount++;
+    }
+    if (mem->has_error) return;
+
+    ext_skip_ws(L);
+    uint8_t fixity = FIX_FUNC;
+    uint8_t prec   = 0;
+
+    if (ext_match_char(L, ':')) {
+        fixity = FIX_PREFIX;
+        char *endp = NULL;
+        prec = (uint8_t)strtol(L->src + L->pos, &endp, 10);
+        L->pos = (uint16_t)(endp - L->src);
+    }
+
+    uint16_t rtid = 0;
+    uint8_t  ruid = SYM_UNIT_OMITTED;
+    if (!ext_parse_return_spec(L, &rtid, &ruid)) return;
+    ext_match_char(L, '=');
+
+    if (tab->overload_count >= SYM_MAX_OVERLOADS) {
+        mem_err(mem, "Overload table overflow (max %d)", SYM_MAX_OVERLOADS);
+        return;
+    }
+    uint16_t ov_idx = tab->overload_count++;
+    OpOverload *ov  = &tab->overloads[ov_idx];
+    memset(ov, 0, sizeof(*ov));
+    ov->sym_id      = sym_id;
+    ov->mod_id      = L->cur_mod;
+    ov->fixity      = fixity;
+    ov->prec        = prec;
+    ov->param_count = pcount;
+    ov->ret_type    = (uint8_t)rtid;
+    ov->ret_unit    = ruid;
+    for (uint8_t i = 0; i < pcount; ++i) {
+        ov->param_types[i] = (uint8_t)ptypes[i];
+        ov->param_units[i] = punits[i];
+    }
+    sym_link_overload(tab, ov_idx);
+
+    ext_compile_body(L, ov, pnames);
+    if (mem->has_error) return;
+
+    /* 4. Synthesize lower-arity overload wrappers for trailing default parameters */
+    if (seen_def && fixity == FIX_FUNC && req_count < pcount) {
+        hardcode_synthesize_default_overloads(mem, tab, L->src, sym_id, L->cur_mod,
+                                              ov_idx, pcount, req_count,
+                                              pnames, ptypes, punits,
+                                              def_start, def_end, rtid, ruid);
+    }
+}
+
 bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
     mem_clear_err(mem);
+    if (!ext_src) {
+        mem_err(mem, "Null extension source string");
+        return false;
+    }
+    size_t raw_len = strlen(ext_src);
+    if (raw_len > 65534u) {
+        mem_err(mem, "Extension source length exceeds maximum (65534 bytes)");
+        return false;
+    }
+
+    /* Save watermarks for transactional rollback on compile error */
+    uint16_t saved_src_len        = mem->src_len;
+    uint16_t saved_ast_count      = mem->ast_count;
+    uint16_t saved_pool_top       = mem->pool_top;
+    uint8_t  saved_fast_real      = mem->fast_real_type;
+    uint8_t  saved_str_type       = mem->str_type_id;
+    uint8_t  saved_vec_type       = mem->vec_type_id;
+    uint8_t  saved_mat_type       = mem->mat_type_id;
+
+    uint8_t  saved_mod_count      = tab->mod_count;
+    uint64_t saved_active_modules = tab->active_modules;
+    uint8_t  saved_type_count     = tab->type_count;
+    uint8_t  saved_unit_count     = tab->unit_count;
+    uint16_t saved_pat_elem_count = tab->pat_elem_count;
+    uint16_t saved_field_count    = tab->field_count;
+    uint16_t saved_sym_count      = tab->sym_count;
+    uint16_t saved_overload_count = tab->overload_count;
+    uint8_t  saved_const_count    = tab->const_count;
 
     ExtLoader L;
     memset(&L, 0, sizeof(L));
     L.mem = mem;
     L.tab = tab;
     L.src = ext_src;
-    L.len = (uint16_t)strlen(ext_src);
+    L.len = (uint16_t)raw_len;
     L.pos = 0;
 
-    if (tab->mod_count == 0) {
-        StrSlice def_mod = mem_intern_str(mem, "default", 7);
-        L.cur_mod = sym_find_or_add_mod(tab, mem, def_mod);
-    } else {
-        L.cur_mod = tab->mod_count - 1;
-    }
+    /* Default any extension without an explicit `[module]` header to `[default]` */
+    StrSlice def_mod = mem_intern_str(mem, "default", 7);
+    L.cur_mod = sym_find_or_add_mod(tab, mem, def_mod);
 
     while (L.pos < L.len && !mem->has_error) {
         ext_skip_ws(&L);
@@ -385,7 +681,10 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         if (c == '[') {
             L.pos++;
             StrSlice mname = ext_read_ident(&L);
-            ext_match_char(&L, ']');
+            if (!ext_match_char(&L, ']')) {
+                mem_err(mem, "Expected closing ']' in module header");
+                break;
+            }
             L.cur_mod = sym_find_or_add_mod(tab, mem, mname);
             continue;
         }
@@ -393,7 +692,10 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         if (c == '<' && L.pos + 1 < L.len && L.src[L.pos + 1] == '[') {
             L.pos += 2;
             StrSlice dep = ext_read_ident(&L);
-            ext_match_char(&L, ']');
+            if (!ext_match_char(&L, ']')) {
+                mem_err(mem, "Expected closing ']' in module dependency");
+                break;
+            }
             uint8_t dep_id = sym_find_or_add_mod(tab, mem, dep);
             tab->active_modules |= (1ULL << dep_id);
             continue;
@@ -405,153 +707,20 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         }
 
         if (c == '"') {
-            StrSlice sym    = ext_read_quoted(&L);
-            uint16_t sym_id = sym_intern(tab, mem, sym);
-            ext_skip_ws(&L);
-
-            /* Syntax delimiter binding (`"(" => @lparen`, `"{" => @lbrace`, `"," => @comma`) */
-            if (L.pos + 1 < L.len && L.src[L.pos] == '=' && L.src[L.pos + 1] == '>') {
-                L.pos += 2;
-                if (!ext_match_char(&L, '@')) {
-                    mem_err(mem, "Expected '@syntax_intrinsic' after '=>'");
-                    break;
-                }
-                StrSlice iname = ext_read_ident(&L);
-                IntrinsicId intr = sym_lookup_intrinsic(mem_str_ptr(mem, iname), iname.len);
-                if (intr != INTR_LPAREN && intr != INTR_RPAREN &&
-                    intr != INTR_LBRACE && intr != INTR_RBRACE &&
-                    intr != INTR_LBRACK && intr != INTR_RBRACK &&
-                    intr != INTR_COMMA) {
-                    mem_err(mem, "Unknown syntax delimiter intrinsic '@%.*s'",
-                            (int)iname.len, mem_str_ptr(mem, iname));
-                    break;
-                }
-                if (tab->overload_count >= SYM_MAX_OVERLOADS) {
-                    mem_err(mem, "Overload table overflow");
-                    break;
-                }
-                OpOverload *ov = &tab->overloads[tab->overload_count++];
-                memset(ov, 0, sizeof(*ov));
-                ov->sym_id   = sym_id;
-                ov->mod_id   = L.cur_mod;
-                ov->fixity   = FIX_SYNTAX;
-                ov->meta_tag = (uint8_t)intr;
-                continue;
-            }
-
-            if (ext_match_char(&L, ':')) {
-                uint16_t rtid = 0;
-                uint8_t  ruid = SYM_UNIT_OMITTED;
-                if (!ext_parse_return_spec(&L, &rtid, &ruid)) break;
-                if (!ext_match_char(&L, '=')) {
-                    mem_err(mem, "Expected '=' in constant definition");
-                    break;
-                }
-                ext_skip_ws(&L);
-                Parser P;
-                parser_init(&P, mem, tab, L.src, L.len, L.pos, false, true);
-                lex_next(&P.lex);
-                uint16_t c_ast = parser_parse_expr(&P, 0);
-                L.pos = (P.lex.cur.kind == TOK_EOF) ? P.lex.pos : P.lex.cur.off;
-
-                uint16_t c_pool_idx = 0;
-                uint8_t  final_unit = (ruid != SYM_UNIT_OMITTED && ruid != SYM_UNIT_GENERIC && ruid != SYM_UNIT_LOCK_NONE)
-                                      ? ruid : MEM_UNIT_NONE;
-                Value cval = val_void();
-                if (c_ast != MEM_NO_IDX) {
-                    if (mem_get_ast(mem, c_ast)->kind == AST_LIT) {
-                        c_pool_idx = mem_get_ast(mem, c_ast)->ref;
-                        cval = val_make_f64_unit(mem, rtid, final_unit, mem_read_pool(mem, c_pool_idx));
-                    } else {
-                        Value ev = eval_ast(mem, tab, c_ast, 0, (uint8_t)rtid);
-                        double d = val_get_f64(mem, ev);
-                        if (final_unit == MEM_UNIT_NONE && ruid == SYM_UNIT_OMITTED) {
-                            final_unit = val_get_unit(mem, ev);
-                        }
-                        c_pool_idx = mem_alloc_pool(mem, 1);
-                        mem_write_pool(mem, c_pool_idx, d);
-                        cval = val_make_f64_unit(mem, rtid, final_unit, d);
-                    }
-                }
-                if (tab->const_count < SYM_MAX_CONSTS) {
-                    uint8_t cid = tab->const_count++;
-                    tab->consts[cid].sym_id   = sym_id;
-                    tab->consts[cid].mod_id   = L.cur_mod;
-                    tab->consts[cid].type_id  = (uint8_t)rtid;
-                    tab->consts[cid].unit_id  = final_unit;
-                    tab->consts[cid].val_idx  = cid;
-                    tab->consts[cid].pool_idx = c_pool_idx;
-                    tab->const_vals[cid]      = cval;
-                }
-                continue;
-            }
-
-            if (!ext_match_char(&L, '(')) {
-                mem_err(mem, "Expected '(', ':', or '=>' after symbol in declaration");
-                break;
-            }
-            StrSlice pnames[8];
-            uint16_t ptypes[8];
-            uint8_t  punits[8];
-            uint8_t  pcount = 0;
-
-            while (L.pos < L.len && !mem->has_error) {
-                if (ext_match_char(&L, ')')) break;
-                if (pcount >= 8) { mem_err(mem, "Max 8 parameters supported"); break; }
-                pnames[pcount] = ext_read_ident(&L);
-                ext_match_char(&L, ':');
-                StrSlice tn = ext_read_ident(&L);
-                bool has_u  = false;
-                StrSlice un = { 0, 0 };
-                if (ext_match_char(&L, ',')) {
-                    if (ext_peek_ident_is_unit_annot(&L)) {
-                        has_u = true;
-                        un    = ext_read_ident(&L);
-                        ext_match_char(&L, ',');
-                    }
-                }
-                if (!ext_resolve_type_and_unit(&L, tn, has_u, un, &ptypes[pcount], &punits[pcount])) {
-                    break;
-                }
-                pcount++;
-            }
+            StrSlice sym = ext_read_quoted(&L);
             if (mem->has_error) break;
+            uint16_t sym_id = sym_intern(tab, mem, sym);
+            if (mem->has_error) break;
+            ext_parse_sym_decl(&L, sym_id);
+            continue;
+        }
 
-            ext_skip_ws(&L);
-            uint8_t fixity = FIX_FUNC;
-            uint8_t prec   = 0;
-
-            if (ext_match_char(&L, ':')) {
-                fixity = FIX_PREFIX;
-                char *endp = NULL;
-                prec = (uint8_t)strtol(L.src + L.pos, &endp, 10);
-                L.pos = (uint16_t)(endp - L.src);
-            }
-
-            uint16_t rtid = 0;
-            uint8_t  ruid = SYM_UNIT_OMITTED;
-            if (!ext_parse_return_spec(&L, &rtid, &ruid)) break;
-            ext_match_char(&L, '=');
-
-            if (tab->overload_count >= SYM_MAX_OVERLOADS) {
-                mem_err(mem, "Overload table overflow");
-                break;
-            }
-            OpOverload *ov = &tab->overloads[tab->overload_count++];
-            memset(ov, 0, sizeof(*ov));
-            ov->sym_id      = sym_id;
-            ov->mod_id      = L.cur_mod;
-            ov->fixity      = fixity;
-            ov->prec        = prec;
-            ov->param_count = pcount;
-            ov->ret_type    = (uint8_t)rtid;
-            ov->ret_unit    = ruid;
-            for (uint8_t i = 0; i < pcount; ++i) {
-                ov->param_types[i] = (uint8_t)ptypes[i];
-                ov->param_units[i] = punits[i];
-            }
-
-            ext_compile_body(&L, ov, pnames);
+        if (lex_is_ident_start((unsigned char)c)) {
+            StrSlice sym = ext_read_ident(&L);
+            if (mem->has_error || sym.len == 0) break;
+            uint16_t sym_id = sym_intern(tab, mem, sym);
+            if (mem->has_error) break;
+            ext_parse_sym_decl(&L, sym_id);
             continue;
         }
 
@@ -561,8 +730,13 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
             uint8_t  punits[8];
             if (!ext_parse_one_param(&L, &pnames[0], &ptypes[0], &punits[0])) break;
 
-            StrSlice sym    = ext_read_quoted(&L);
+            ext_skip_ws(&L);
+            StrSlice sym = (L.pos < L.len && L.src[L.pos] == '"')
+                           ? ext_read_quoted(&L)
+                           : ext_read_ident(&L);
+            if (mem->has_error || sym.len == 0) break;
             uint16_t sym_id = sym_intern(tab, mem, sym);
+            if (mem->has_error) break;
             ext_skip_ws(&L);
 
             uint8_t pcount = 1;
@@ -596,10 +770,11 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
             ext_match_char(&L, '=');
 
             if (tab->overload_count >= SYM_MAX_OVERLOADS) {
-                mem_err(mem, "Overload table overflow");
+                mem_err(mem, "Overload table overflow (max %d)", SYM_MAX_OVERLOADS);
                 break;
             }
-            OpOverload *ov = &tab->overloads[tab->overload_count++];
+            uint16_t ov_idx = tab->overload_count++;
+            OpOverload *ov  = &tab->overloads[ov_idx];
             memset(ov, 0, sizeof(*ov));
             ov->sym_id         = sym_id;
             ov->mod_id         = L.cur_mod;
@@ -614,6 +789,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
                 ov->param_types[1] = (uint8_t)ptypes[1];
                 ov->param_units[1] = punits[1];
             }
+            sym_link_overload(tab, ov_idx);
 
             ext_compile_body(&L, ov, pnames);
             continue;
@@ -624,8 +800,31 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         break;
     }
 
+    if (mem->has_error) {
+        /* Transactional rollback: restore all permanent & symbol table counters */
+        mem->src_len        = saved_src_len;
+        mem->ast_count      = saved_ast_count;
+        mem->pool_top       = saved_pool_top;
+        mem->fast_real_type = saved_fast_real;
+        mem->str_type_id    = saved_str_type;
+        mem->vec_type_id    = saved_vec_type;
+        mem->mat_type_id    = saved_mat_type;
+
+        tab->mod_count      = saved_mod_count;
+        tab->active_modules = saved_active_modules;
+        tab->type_count     = saved_type_count;
+        tab->unit_count     = saved_unit_count;
+        tab->pat_elem_count = saved_pat_elem_count;
+        tab->field_count    = saved_field_count;
+        tab->sym_count      = saved_sym_count;
+        tab->overload_count = saved_overload_count;
+        tab->const_count    = saved_const_count;
+        sym_rebuild_index(tab);
+        return false;
+    }
+
     mem_snapshot_perm(mem);
-    return !mem->has_error;
+    return true;
 }
 
 /* ============================================================================
@@ -716,6 +915,63 @@ size_t ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
     return total_bytes;
 }
 
+static bool validate_mathc_indices(const MemArena *mem, const SymTable *tab, const MathcHeader *hdr) {
+    for (uint8_t i = 0; i < hdr->mod_count; ++i) {
+        StrSlice s = tab->mod_names[i];
+        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    }
+    for (uint16_t i = 1; i < hdr->type_count; ++i) {
+        const TypeDef *td = &tab->types[i];
+        if ((uint32_t)td->name.off + (uint32_t)td->name.len > hdr->perm_src_len) return false;
+        if (td->is_consuming) {
+            if ((uint32_t)td->start_idx + (uint32_t)td->field_count > hdr->pat_elem_count) return false;
+        } else if (td->parser_intr == INTR_NONE) {
+            if ((uint32_t)td->start_idx + (uint32_t)td->field_count > hdr->field_count) return false;
+        }
+    }
+    for (uint8_t i = 1; i < hdr->unit_count; ++i) {
+        StrSlice s = tab->units[i];
+        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    }
+    for (uint16_t i = 0; i < hdr->pat_elem_count; ++i) {
+        StrSlice s = tab->pat_elems[i].chars;
+        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    }
+    for (uint16_t i = 0; i < hdr->field_count; ++i) {
+        const FieldDef *fd = &tab->fields[i];
+        if ((uint32_t)fd->name.off + (uint32_t)fd->name.len > hdr->perm_src_len) return false;
+        if (fd->type_id == 0 || fd->type_id >= hdr->type_count) return false;
+    }
+    for (uint16_t i = 0; i < hdr->sym_count; ++i) {
+        StrSlice s = tab->syms[i];
+        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    }
+    for (uint16_t i = 0; i < hdr->overload_count; ++i) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->sym_id >= hdr->sym_count) return false;
+        if (ov->fixity != FIX_SYNTAX && ov->body_ast != MEM_NO_IDX &&
+            ov->body_ast >= hdr->perm_ast_count) {
+            return false;
+        }
+    }
+    for (uint8_t i = 0; i < hdr->const_count; ++i) {
+        const ConstDef *cd = &tab->consts[i];
+        if (cd->sym_id >= hdr->sym_count) return false;
+        if (cd->pool_idx >= hdr->perm_pool_top) return false;
+    }
+    for (uint16_t i = 0; i < hdr->perm_ast_count; ++i) {
+        const AstNode *n = &mem->ast[i];
+        if (n->kind == AST_LIT) {
+            if (n->sub == hdr->str_type_id && hdr->str_type_id != 0) {
+                if ((uint32_t)n->left + (uint32_t)n->right > hdr->perm_src_len) return false;
+            } else if (n->sub != MEM_TYPE_VOID && n->ref >= hdr->perm_pool_top) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
                         const uint8_t *data, size_t len) {
     mem_clear_err(mem);
@@ -743,6 +999,7 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
         hdr.perm_pool_top  > MEM_MAX_F64_POOL  ||
         hdr.mod_count      > SYM_MAX_MODULES   ||
         hdr.type_count     > SYM_MAX_TYPES     ||
+        hdr.type_count     == 0                ||
         hdr.unit_count     > SYM_MAX_UNITS     ||
         hdr.pat_elem_count > SYM_MAX_PAT_ELEMS ||
         hdr.field_count    > SYM_MAX_FIELDS    ||
@@ -777,6 +1034,11 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
 
     #undef COPY_SLICE
 
+    if (!validate_mathc_indices(mem, tab, &hdr)) {
+        mem_err(mem, "Corrupted .mathc index out of bounds");
+        return false;
+    }
+
     mem->fast_real_type = hdr.fast_real_type;
     mem->str_type_id    = hdr.str_type_id;
     mem->vec_type_id    = hdr.vec_type_id;
@@ -795,14 +1057,16 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     tab->const_count    = hdr.const_count;
     tab->active_modules = hdr.active_modules;
 
-    /* Reconstruct ABI-specific Value representations for global constants */
+    /* Reconstruct ABI-specific Value representations for global constants IN-PLACE
+       using their saved `pool_idx` (zero new pool allocations). */
     for (uint8_t i = 0; i < tab->const_count; ++i) {
         uint16_t rtid = tab->consts[i].type_id;
         uint8_t  ruid = tab->consts[i].unit_id;
-        double   dval = mem_read_pool(mem, tab->consts[i].pool_idx);
-        tab->const_vals[i] = val_make_f64_unit(mem, rtid, ruid, dval);
+        uint16_t pidx = tab->consts[i].pool_idx;
+        tab->const_vals[i] = val_make_f64_at_pool(mem, rtid, ruid, pidx);
     }
-    mem->pool_top = hdr.perm_pool_top;
+
+    sym_rebuild_index(tab);
     mem_snapshot_perm(mem);
     return true;
 }

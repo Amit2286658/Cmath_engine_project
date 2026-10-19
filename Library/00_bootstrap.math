@@ -4,8 +4,9 @@
 # Without this file, the engine does not know what parentheses `(` `)`, local
 # scope braces `{` `}`, commas `,`, struct member access `.`, numbers, strings,
 # dynamic vectors `$vec`, semicolons `;`, variable assignments `:=` / `=` / `+=`,
-# ternary `? :`, loops `??`, `if`/`or`/`else`, `switch`/`case`, `break`,
-# tagged scope jumps `jump(Tag)` / `run(Tag)`, or calculus constructs are.
+# ternary `? :`, loops `??` / `(i in 1...5){}` / `loop`, `if`/`or`/`else`,
+# `switch`/`case`, `break`, tagged scope jumps `jump(Tag)` / `run(Tag)`, or
+# calculus & solver constructs are.
 # The C core loads this file first so subsequent `.math` files can use them.
 
 [boot_syntax]
@@ -37,7 +38,7 @@ $mat  ~                      => @mat_type
 <[boot_syntax]
 <[boot_types]
 
-# 3. Struct Member Access Operator `.` (Left-associative infix, precedence 95)
+# 3. Struct Member Access & UFCS Method Chaining Operator `.` (Left-associative, prec 95)
 (s:real) "." (f:real) :<95 -> real = @field(s, f)
 
 # 4. Multi-Instruction Sequencing `;` (Left-associative infix, precedence 1)
@@ -45,8 +46,8 @@ $mat  ~                      => @mat_type
 #    to act as a multi-instruction block!
 (a:real) ";" (b:real) :<1 -> real = @seq(a, b)
 
-# 5. Local Variable, Multi-Variable (`x, y := 5`) & Compound Assignment Operators
-#    (`:=`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, right-associative prec 5)
+# 5. Local Variable, Multi-Variable (`x, y := 5`), Destructuring (`r1, r2 := quad_roots(...)`)
+#    & Compound Assignment Operators (`:=`, `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `^=`, prec 5)
 #    Variables declared with `:=` inside `{ ... }` are lexically scoped to `{ ... }`!
 (target:real) ":=" (val:real) :>5 -> real = @store(target, val)
 (target:real) "="  (val:real) :>5 -> real = @store(target, val)
@@ -70,11 +71,11 @@ $mat  ~                      => @mat_type
 #    - Prefix `!` ONLY flips a boolean condition (`!(x == 5)`, `!(5.01 ~ 5)`, `(x == !(1 | 2))`);
 #      it is undefined for non-boolean values (`!5` is rejected as an error).
 #    - `&` (prec 35) and `|` (prec 34) distribute over comparisons (`(x & y == 1 | 2)`).
-"!" (a:real)          :80  -> real = @cnot(a)
+"!" (a:real, none)    :80  -> real = @cnot(a)
 (a:real) "&" (b:real) :<35 -> real = @cand(a, b)
 (a:real) "|" (b:real) :<34 -> real = @cor(a, b)
 
-# 9. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `break`, `jump` & `run`
+# 9. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `loop`, `break`, `jump` & `run`
 "if"(cond:real, then_val:real, else_val:real) -> real = @if(cond, then_val, else_val)
 "or"(cond:real, body:real)                    -> real = @or_branch(cond, body)
 "then"(cond:real, body:real)                  -> real = @or_branch(cond, body)
@@ -82,12 +83,13 @@ $mat  ~                      => @mat_type
 "default"(body:real)                          -> real = @else_branch(body)
 "switch"(val:real, body:real)                 -> real = @switch_block(val, body)
 "case"(val:real, body:real)                   -> real = @case_branch(val, body)
+"loop"(iter:real, body:real)                  -> real = @loop_kw(iter, body)
 "jump"(tag:real)                              -> real = @jump_tag(tag)
 "run"(tag:real)                               -> real = @run_tag(tag)
 "break"()                                     -> real = @break_loop(0)
 "break"(tag:real)                             -> real = @break_loop(tag)
 
-# 10. Expression-Based High School Calculus Constructs (Differentiation, Integration, Limits, Sums)
+# 10. Expression-Based High School Calculus, Equation Solver & Extrema Constructs
 "diff"(var_x:real, expr:real, x0:real)                         -> real = @calc_diff(var_x, expr, x0)
 "diff2"(var_x:real, expr:real, x0:real)                        -> real = @calc_diff2(var_x, expr, x0)
 "diff_n"(var_x:real, expr:real, x0:real, order:real)           -> real = @calc_diffn(var_x, expr, x0)
@@ -99,11 +101,21 @@ $mat  ~                      => @mat_type
 "lim_right"(var_x:real, expr:real, x0:real)                    -> real = @calc_lim_r(var_x, expr, x0)
 "sigma"(var_k:real, expr:real, lo:real, hi:real)               -> real = @calc_sigma(var_k, expr, lo)
 "prod"(var_k:real, expr:real, lo:real, hi:real)                -> real = @calc_prod(var_k, expr, lo)
+"solve"(var_x:real, eq:real)                                   -> real = @calc_solve(var_x, eq)
+"solve"(var_x:real, eq:real, guess:real)                       -> real = @calc_solve(var_x, eq, guess)
+"solve"(var_x:real, eq:real, a:real, b:real)                   -> real = @calc_solve(var_x, eq, a)
+"fmin"(var_x:real, expr:real, a:real, b:real)                  -> real = @calc_fmin(var_x, expr, a)
+"fmax"(var_x:real, expr:real, a:real, b:real)                  -> real = @calc_fmax(var_x, expr, a)
 
-# 11. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`)
+# 11. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`), Range `..` / `...` & `in`
+(a:real, T) ".."  (b:real, T) :<45 -> vec  = @vrange(a, b)
+(a:real, T) "..." (b:real, T) :<45 -> vec  = @vrange(a, b)
+(item:T)    "in"  (v:vec)     :<55 -> real = @vin(item, v)
+
 "vec"()                       -> vec  = @vnew(0)
 "vec"(cap:real)               -> vec  = @vnew(cap)
 "vec"(count:real, init:T)     -> vec  = @vfill(count, init)
+"list"(item:T)                -> vec  = @vfill(1, item)
 "push"(v:vec, item:T)         -> vec  = @vpush(v, item)
 "pop"(v:vec)                  -> T    = @vpop(v)
 "at"(v:vec, idx:real)         -> T    = @vget(v, idx)
@@ -117,3 +129,7 @@ $mat  ~                      => @mat_type
 # 12. Runtime Entity Type & Unit Type Introspection (`type_of(x)`, `unit_of(x)`)
 "type_of"(x:T) -> str = @type_name(x)
 "unit_of"(x:T) -> str = @unit_name(x)
+
+# 13. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
+"error"(msg:str)             -> real = @err(msg)
+"assert"(cond:real, msg:str) -> real = if(cond, 1, error(msg))

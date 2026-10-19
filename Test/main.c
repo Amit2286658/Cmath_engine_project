@@ -13,14 +13,18 @@
  *      - Standard right-associative ternary `cond ? x : y`
  *      - Colon-tagged scopes/loops `Tag : { ... }` and `Tag : (cond) ?? { ... }` with
  *        `jump(Tag)`, `run(Tag)`, `break`, and `break(OuterTag)`
+ *      - Keywordless `(i in 1...5) { ... }` / `(v in vec) { ... }` and `loop` constructs
  *      - Logical operators (`&&`, `||`, `!`, `and`, `or`, `not`, `nor`, `xor`, `nand`)
  *        and distributed comparison shorthand `(x & y == 1 | 2)`
- *      - Multi-variable declarations (`x, y := 5`) and compound assignments
- *        (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`)
+ *      - Multi-variable declarations (`x, y := 5`), struct/vector/matrix destructuring
+ *        (`r1, r2 := quad_roots(1, -5, 6)`), and compound assignments (`+=`, `-=`, etc.)
  *      - Dynamic slot promotion (`x := 5 ; x = x + 5i` -> `5 + 5i : complex`)
  *   5. Algebraic expressions (`$mat2`, `solve_2x2`, `quad_roots`, `quad_croot`, polynomials)
  *   6. Host Extern Callbacks (`eng_register_extern`: `@fx_rate`, `@fx_history`, `@kv_set`,
  *      `@kv_get`, `@elem_mass`)
+ *   7. Streamlined `.math` Ergonomics (shorthand declarations, default parameters,
+ *      variadic `vec(...)` & `a..b` / `a...b` ranges, `(i in 1...5){}`, implicit
+ *      multiplication, UFCS dot-chaining, `solve`/`fmin`/`fmax`, destructuring)
  */
 
 #include "math_engine.h"
@@ -70,11 +74,11 @@ typedef struct {
 } FxQuote;
 
 typedef struct {
-    const FxQuote *quotes;
-    size_t         count;
+    FxQuote *quotes;
+    size_t   count;
 } FxRateCache;
 
-static const FxQuote k_live_fx_quotes[] = {
+static FxQuote g_live_fx_quotes[] = {
     { "USD",   1.00 },
     { "EUR",   0.92 },
     { "GBP",   0.79 },
@@ -82,9 +86,9 @@ static const FxQuote k_live_fx_quotes[] = {
     { "JPY", 150.00 }
 };
 
-static const FxRateCache k_fx_cache = {
-    k_live_fx_quotes,
-    sizeof(k_live_fx_quotes) / sizeof(k_live_fx_quotes[0])
+static FxRateCache g_fx_cache = {
+    g_live_fx_quotes,
+    sizeof(g_live_fx_quotes) / sizeof(g_live_fx_quotes[0])
 };
 
 static bool lookup_usd_rate(const FxRateCache *cache, const char *ccy, double *out_per_usd) {
@@ -121,6 +125,36 @@ static bool host_fx_rate_cb(MemArena *mem, const SymTable *tab,
     }
     *out_val = val_from_f64(mem, to_per_usd / from_per_usd);
     return true;
+}
+
+static bool host_fx_set_rate_cb(MemArena *mem, const SymTable *tab,
+                                const Value *args, uint8_t argc,
+                                void *user_ctx, Value *out_val) {
+    (void)tab;
+    if (argc != 2) {
+        mem_err(mem, "@fx_set_rate expects (ccy:str, per_usd:real)");
+        return false;
+    }
+    char ccy[16];
+    if (!val_as_cstr(mem, args[0], ccy, sizeof(ccy))) {
+        mem_err(mem, "@fx_set_rate first argument must be a currency code string");
+        return false;
+    }
+    double new_rate = val_get_f64(mem, args[1]);
+    if (new_rate <= 0.0) {
+        mem_err(mem, "@fx_set_rate rate must be positive (got %g)", new_rate);
+        return false;
+    }
+    FxRateCache *cache = (FxRateCache *)user_ctx;
+    for (size_t i = 0; i < cache->count; ++i) {
+        if (strcmp(cache->quotes[i].ccy, ccy) == 0) {
+            cache->quotes[i].per_usd = new_rate;
+            *out_val = val_from_f64(mem, new_rate);
+            return true;
+        }
+    }
+    mem_err(mem, "Cannot update unknown currency %s", ccy);
+    return false;
 }
 
 static bool host_fx_history_cb(MemArena *mem, const SymTable *tab,
@@ -273,15 +307,16 @@ static bool host_elem_mass_cb(MemArena *mem, const SymTable *tab,
 }
 
 static void register_all_host_externs(Engine *eng) {
-    eng_register_extern(eng, "fx_rate",    host_fx_rate_cb,    (void *)&k_fx_cache);
-    eng_register_extern(eng, "fx_history", host_fx_history_cb, (void *)&k_fx_cache);
-    eng_register_extern(eng, "kv_set",     host_kv_set_cb,     (void *)&g_kv_store);
-    eng_register_extern(eng, "kv_get",     host_kv_get_cb,     (void *)&g_kv_store);
-    eng_register_extern(eng, "elem_mass",  host_elem_mass_cb,  NULL);
+    eng_register_extern(eng, "fx_rate",     host_fx_rate_cb,     (void *)&g_fx_cache);
+    eng_register_extern(eng, "fx_set_rate", host_fx_set_rate_cb, (void *)&g_fx_cache);
+    eng_register_extern(eng, "fx_history",  host_fx_history_cb,  (void *)&g_fx_cache);
+    eng_register_extern(eng, "kv_set",      host_kv_set_cb,      (void *)&g_kv_store);
+    eng_register_extern(eng, "kv_get",      host_kv_get_cb,      (void *)&g_kv_store);
+    eng_register_extern(eng, "elem_mass",   host_elem_mass_cb,   NULL);
 }
 
 /* ============================================================================
- * 3. AUTOMATED TEST SUITE (114 TESTS ACROSS ALL MODULES, CONTROL FLOW & LOGIC)
+ * 3. AUTOMATED TEST SUITE
  * ============================================================================ */
 
 typedef struct {
@@ -405,11 +440,17 @@ static const TestCase k_tests[] = {
       "17", "real",
       "3D trajectory path length over vec<vec3> (5 + 12)" },
 
-    /* J. Host-Registered Extern Callbacks (`@fx_rate`, `@fx_history`, `@kv_set`/`@kv_get`, `@elem_mass`) */
+    /* J. Host-Registered Extern Callbacks (`@fx_rate`, `@fx_set_rate`, `@fx_history`, `@kv_set`/`@kv_get`, `@elem_mass`) */
     { "fx_rate(\"USD\", \"INR\")",         "84",   "real", "Host extern '@fx_rate(\"USD\", \"INR\")'" },
     { "convert_fx(250, \"USD\", \"EUR\")", "230",  "real", "User 'convert_fx(250, USD, EUR)'" },
     { "convert_fx(92, \"EUR\", \"INR\")",  "8400", "real", "Cross-currency triangulation EUR -> USD -> INR" },
     { "50 to_inr + (92 to_usd) to_inr",    "12600","real", "Postfix currency ops 'to_inr' and 'to_usd'" },
+    { "fx_with_fee(100, \"USD\", \"INR\", 1.5)", "8274", "real",
+      "Multi-instruction 'fx_with_fee(100, USD, INR, 1.5%)' -> 8274" },
+    { "fx_set_rate(\"INR\", 86.5) ; r := 100 to_inr ; fx_set_rate(\"INR\", 84) ; r", "8650", "real",
+      "Realtime rate tick via '@fx_set_rate' updates 100 to_inr -> 8650 live" },
+    { "p := vec() ; push(p, 10) ; push(p, 25) ; push(p, 15) ; vec_sum_fx(p, \"INR\")", "4200", "real",
+      "USD price vector sum converted to INR via 'vec_sum_fx(p, INR)' -> 4200" },
     { "fx_history(\"USD\", \"INR\", 5)",   "[82, 82.5, 83, 83.5, 84]", "vec",
       "Vector-returning host extern '@fx_history' -> vec<real>" },
     { "fx_sma(\"USD\", \"INR\", 5, 3)",    "83.5", "real",
@@ -580,7 +621,9 @@ static const TestCase k_tests[] = {
       "Introspect custom user unit group via unit_of((10 MB) / (2 sec))" },
     { "buf : real, data_size := 1 MB ; buf += 512 KB ; buf", "1572864", "real",
       "Variable locked to custom user unit group 'real, data_size'" },
-    /* 11. Strict Boolean-Condition Prefix '!' & Approximate Equality '~' Operator Tests */
+    /* 11. Prefix '!' Logical Negation Overload & Approximate Equality '~' Operator Tests */
+    { "!0 * 10 + !1", "10", "real",
+      "Prefix '!' operator overload on 0/1: !0 = 1, !1 = 0 -> 10" },
     { "x := 5 ; !(x == 5) * 10 + !(x == 4)", "1", "real",
       "Prefix '!' flips boolean conditions: !(x == 5) is 0, !(x == 4) is 1" },
     { "x := 3 ; (x == !(1 | 2))", "1", "real",
@@ -749,16 +792,70 @@ static const TestCase k_tests[] = {
       "Cardiac output (5.04 L/min) + MAP (93.3333 mmHg) ~ 98.3733" },
     { "lincoln_petersen_pop(40, 60, 12) + trophic_energy_at(10000, 2)", "300", "real",
       "Mark-recapture population (200) + 10% trophic energy law (100) -> 300" },
+
+    /* 18. All 8 Streamlined Ergonomic Features + Keywordless `(i in 1...5){}` / `(v in vec){}` & `loop` */
+    { "tau_const ~ (2 * π)", "1", "real",
+      "[Feat 1] Shorthand unquoted constant 'tau_const = 2π'" },
+    { "hyp_3d(3, 4) * 100 + hyp_3d(3, 4, 12)", "513", "real",
+      "[Feat 1 & 6] Shorthand 'hyp_3d(x, y, z = 0)' with default z=0 (5) and z=12 (13)" },
+    { "log_base(1000) * 10 + log_base(8, 2)", "33", "real",
+      "[Feat 1 & 6] Shorthand 'log_base(x, base = 10)' with default base=10 (3) and base=2 (3)" },
+    { "round(3.6) * 100 + round(3.14159, 2)", "403.14", "real",
+      "[Feat 6] Default parameter 'round(x, digits = 0)': round(3.6)=4, round(3.14159, 2)=3.14" },
+    { "fx_with_fee(100, \"USD\", \"INR\")", "8274", "real",
+      "[Feat 6] Default fee_pct=1.5 in 'fx_with_fee(100, \"USD\", \"INR\")' -> 8274" },
+    { "vec(10, 20, 30, 40)", "[10, 20, 30, 40]", "vec",
+      "[Feat 2] Variadic 'vec(10, 20, 30, 40)' constructor -> [10, 20, 30, 40]" },
+    { "1..5", "[1, 2, 3, 4, 5]", "vec",
+      "[Feat 2] Inclusive 2-dot range operator '1..5' -> [1, 2, 3, 4, 5]" },
+    { "1...5", "[1, 2, 3, 4, 5]", "vec",
+      "[Feat 2] Inclusive 3-dot range operator '1...5' -> [1, 2, 3, 4, 5]" },
+    { "(3 in (1...5)) * 10 + (9 in (1...5))", "10", "real",
+      "[Feat 2] Vector membership operator 'in': (3 in 1...5)=1, (9 in 1...5)=0" },
+    { "s := 0 ; (i in 1...5) { s += i } ; s", "15", "real",
+      "[Feat 3] Keywordless range loop '(i in 1...5) { s += i }' -> 15" },
+    { "s := 0 ; (i in 1..5) { s += i^2 } ; s", "55", "real",
+      "[Feat 3] Keywordless 2-dot range loop '(i in 1..5) { s += i^2 }' -> 55" },
+    { "arr := vec(10, 20, 30, 40) ; tot := 0 ; (v in arr) { tot += v } ; tot", "100", "real",
+      "[Feat 3] Keywordless vector loop '(v in arr) { tot += v }' -> 100" },
+    { "pts := list(vec2(1, 2), vec2(3, 4), vec2(5, 6)) ; sx := 0 ; (p in pts) { sx += p.x * p.y } ; sx", "44", "real",
+      "[Feat 3] Keywordless struct-vector loop '(p in pts) { sx += p.x * p.y }' -> 2+12+30 = 44" },
+    { "s := 0 ; loop (i in 1...5) { s += i * 2 } ; s", "30", "real",
+      "[Feat 3] Explicit 'loop (i in 1...5) { ... }' syntax -> 30" },
+    { "k := 1 ; acc := 0 ; loop (k <= 4) { acc += k ; k += 1 } ; acc", "10", "real",
+      "[Feat 3] Conditional 'loop (k <= 4) { ... }' while-style loop -> 10" },
+    { "k := 0 ; loop { k += 1 ; if (k == 7) { break } } ; k", "7", "real",
+      "[Feat 3] Unconditional 'loop { ... break }' construct -> 7" },
+    { "cnt := 0 ; Outer : (i in 1...5) { (j in 1...5) { if (i * j > 6) { break(Outer) } ; cnt += 1 } } ; cnt", "8", "real",
+      "[Feat 3] Tagged keywordless nested loop 'Outer : (i in 1...5) { ... break(Outer) }' -> 8" },
+    { "sum_squares_to(5) + vec_dot_self(vec(2, 3, 6))", "104", "real",
+      "[Feat 1 & 3] User functions 'sum_squares_to(5)' (55) + 'vec_dot_self(vec(2,3,6))' (49) -> 104" },
+    { "x := 4 ; 2x^2 + 3x + 1", "45", "real",
+      "[Feat 4] Implicit multiplication '2x^2 + 3x + 1' at x=4 -> 32 + 12 + 1 = 45" },
+    { "x := 5 ; 3(x + 1) + (x + 1)(x - 1)", "42", "real",
+      "[Feat 4] Implicit multiplication '3(x + 1) + (x + 1)(x - 1)' at x=5 -> 18 + 24 = 42" },
+    { "2 sin(π / 2) + 2 √16 + (2π / π)", "12", "real",
+      "[Feat 4] Implicit multiplication '2 sin(π/2) + 2 √16 + (2π / π)' -> 2 + 8 + 2 = 12" },
+    { "v := vec() ; v.push(10).push(20).push(30).vec_sum() + v.len()", "63", "real",
+      "[Feat 5] UFCS dot-chaining 'v.push(10).push(20).push(30).vec_sum() + v.len()' -> 63" },
+    { "M := [4, 7 ; 2, 6] ; M.transpose().det() + (3 - 4i).cabs()", "15", "real",
+      "[Feat 5] UFCS dot-chaining 'M.transpose().det() + (3 - 4i).cabs()' -> 10 + 5 = 15" },
+    { "solve(x, x^2 == 9, 2) * 10 + solve(x, 2x + 5 == 17)", "36", "real",
+      "[Feat 7] General equation solver 'solve(x, x^2 == 9, 2)' (3) and 'solve(x, 2x + 5 == 17)' (6)" },
+    { "solve(x, cos(x) == x, 0.5) ~ 0.739085", "1", "real",
+      "[Feat 7] Transcendental equation solver 'solve(x, cos(x) == x, 0.5)' -> Dottie number ~0.739085" },
+    { "fmin(x, (x - 3)^2 + 5, 0, 10) * 10 + fmax(x, -(x - 4)^2 + 12, 0, 10)", "34", "real",
+      "[Feat 7] Extrema finders 'fmin(x, (x-3)^2+5, 0, 10)' (3) and 'fmax(x, -(x-4)^2+12, 0, 10)' (4)" },
+    { "r1, r2 := quad_roots(1, -5, 6) ; r1 * 10 + r2", "32", "real",
+      "[Feat 8] Struct destructuring 'r1, r2 := quad_roots(1, -5, 6)' -> r1=3, r2=2" },
+    { "a, b, c := vec(10, 20, 30) ; p, q := [100, 200] ; a + b + c + p + q", "360", "real",
+      "[Feat 8] Vector & matrix destructuring 'a, b, c := vec(10,20,30)' and 'p, q := [100,200]'" },
     { NULL, NULL, NULL, NULL }
 };
 
 static void print_architecture_report(const Engine *eng) {
     printf("========================================================================\n");
-#if USE_TAGGED_12B
-    printf("  ENGINE MODE : 12-Byte Tagged Union (USE_TAGGED_12B = 1)\n");
-#else
-    printf("  ENGINE MODE : 8-Byte IEEE-754 NaN-Boxing (USE_TAGGED_12B = 0)\n");
-#endif
+    printf("  ENGINE MODE : 8-Byte IEEE-754 NaN-Boxing (sizeof(Value) == 8)\n");
     printf("========================================================================\n");
     printf("  sizeof(Value)        : %5zu bytes\n", sizeof(Value));
     printf("  sizeof(AstNode)      : %5zu bytes\n", sizeof(AstNode));
@@ -860,7 +957,7 @@ int main(void) {
     print_architecture_report(&g_eng);
 
     /* 4. Run Automated Expression Test Suite */
-    printf("[4] Running Full Automated Suite (Stdlib + Control Flow + Booleans + Multi-Var + Algebra + Units + Physics + Chemistry):\n");
+    printf("[4] Running Full Automated Suite (Stdlib + Control Flow + Booleans + Multi-Var + Algebra + Units + Physics + Chemistry + Ergonomics):\n");
     int passed = 0, total = 0;
     for (int i = 0; k_tests[i].expr != NULL; ++i) {
         total++;
@@ -882,9 +979,9 @@ int main(void) {
     }
     printf("\n    Suite Summary: %d / %d passed.\n\n", passed, total);
 
-    /* 5. Verify Compile-Time Guardrails for Scopes, `if/or/else`, and `vec<T>` */
+    /* 5. Verify Compile-Time Guardrails for Scopes, `if/or/else`, Reserved Keywords, and `vec<T>` */
     bool vec_type_guard = !eng_eval(&g_eng, "v := vec() ; push(v, 10) ; push(v, vec2(1, 2))", &v);
-    printf("[5] Type-Safety & Control-Flow Grammar Guardrails:\n");
+    printf("[5] Type-Safety, Reserved-Keyword & Control-Flow Grammar Guardrails:\n");
     printf("    - Homogeneous vec<T> guard    : %s -> \"%s\"\n",
            vec_type_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
@@ -902,6 +999,22 @@ int main(void) {
     bool else_if_guard = !eng_eval(&g_eng, "if (0) { 10 } else if (1) { 20 }", &v);
     printf("    - 'else if' (2nd if) rejection: %s -> \"%s\"\n",
            else_if_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool kw_var_guard = !eng_eval(&g_eng, "if := 5", &v) &&
+                        !eng_eval(&g_eng, "else := 5", &v) &&
+                        !eng_eval(&g_eng, "or := 5", &v) &&
+                        !eng_eval(&g_eng, "x, switch := 5", &v) &&
+                        !eng_eval(&g_eng, "(loop in 1...5) {}", &v);
+    printf("    - Reserved keyword as variable: %s -> \"%s\"\n",
+           kw_var_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool kw_tag_guard = !eng_eval(&g_eng, "if : { 10 }", &v) &&
+                        !eng_eval(&g_eng, "jump(else)", &v) &&
+                        !eng_eval(&g_eng, "break(switch)", &v);
+    printf("    - Reserved keyword as tag     : %s -> \"%s\"\n",
+           kw_tag_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
     bool unlike_unit_guard = !eng_eval(&g_eng, "y := 100cm ; y += 60°", &v);
@@ -950,13 +1063,33 @@ int main(void) {
            eng_last_error(&g_eng));
 
     bool non_bool_not_guard = !eng_eval(&g_eng, "!5", &v) && !eng_eval(&g_eng, "!(2 + 3)", &v);
-    printf("    - Non-boolean '!5' / '!(2+3)' : %s -> \"%s\"\n",
+    printf("    - Out-of-range '!5' / '!(2+3)': %s -> \"%s\"\n",
            non_bool_not_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
+    bool not_overload_guard = !eng_eval(&g_eng, "!\"hello\"", &v);
+    printf("    - No-overload '!\"hello\"'      : %s -> \"%s\"\n",
+           not_overload_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
     bool lim_diverge_guard = !eng_eval(&g_eng, "lim(x, abs(x) / x, 0)", &v);
-    printf("    - Jump limit 'lim(|x|/x, 0)'  : %s -> \"%s\"\n\n",
+    printf("    - Jump limit 'lim(|x|/x, 0)'  : %s -> \"%s\"\n",
            lim_diverge_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool custom_err_guard = !eng_eval(&g_eng, "error(\"Custom domain error: x must be 0 or 1\")", &v);
+    printf("    - Custom 'error(\"...\")'       : %s -> \"%s\"\n",
+           custom_err_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool fx_unknown_ccy_guard = !eng_eval(&g_eng, "convert_fx(100, \"USD\", \"BTC\")", &v);
+    printf("    - Unknown FX pair 'USD->BTC'  : %s -> \"%s\"\n",
+           fx_unknown_ccy_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool fx_neg_amount_guard = !eng_eval(&g_eng, "convert_fx(-50, \"USD\", \"INR\")", &v);
+    printf("    - Negative FX amount '-50'    : %s -> \"%s\"\n\n",
+           fx_neg_amount_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
     /* 6. Verify O(1) Module Toggling (`boot_syntax`, `units`, `user_physics`) */
@@ -975,15 +1108,95 @@ int main(void) {
 
     eng_set_module(&g_eng, "user_physics", false);
     bool phys_off = !eng_eval(&g_eng, "convert_fx(100, \"USD\", \"INR\")", &v);
-    printf("    - Disable [user_physics] -> eval(\"convert_fx\") : %s (\"%s\")\n",
+    printf("    - Disable [user_physics] -> eval(\"convert_fx\") : %s (\"%s\")\n\n",
            phys_off ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
     eng_set_module(&g_eng, "user_physics", true);
 
+    /* 7. Verify All 8 Audit Regression Cases */
+    printf("[7] Audit Regression Suite (Bugs 1-8 Verification):\n");
+
+    /* Bug 1: .mathc load preserves unit-tagged constants across evaluations */
+    const uint8_t *uconst_mathc = NULL;
+    size_t uconst_len = 0;
+    bool bug1_ok = user_compile_ext(&g_eng, "[uconst_mod]\n\"gx\" : real, distance = 5m\n", &uconst_mathc, &uconst_len) &&
+                   user_load_mathc(&g_eng, uconst_mathc, uconst_len) &&
+                   eng_eval(&g_eng, "10 + 20 * 30", &v) &&
+                   eng_eval(&g_eng, "gx + 1m", &v) &&
+                   (val_get_f64(&g_eng.mem, v) == 6.0) &&
+                   (strcmp(eng_unit_name(&g_eng, eng_val_unit(&g_eng, v), (char[32]){0}, 32), "distance") == 0);
+    printf("    - [Bug 1] .mathc unit constant (gx + 1m == 6m) : %s\n", bug1_ok ? "PASS" : "FAIL");
+
+    /* Bug 2: Failed extension load rolls back all state transactionally */
+    uint16_t pre_ov  = g_eng.sym.overload_count;
+    uint16_t pre_ast = g_eng.mem.perm_ast_count;
+    bool bug2_fail = !user_compile_ext(&g_eng, "\"leak_fn\"(x:real) -> real = x + 1\n\"bad_fn\"(x:real) -> real = (1 + ", NULL, NULL);
+    bool bug2_no_leak = !eng_eval(&g_eng, "leak_fn(5)", &v);
+    bool bug2_ok = bug2_fail && bug2_no_leak &&
+                   (g_eng.sym.overload_count == pre_ov) &&
+                   (g_eng.mem.perm_ast_count == pre_ast);
+    printf("    - [Bug 2] Transactional rollback on bad ext    : %s (overloads=%u)\n",
+           bug2_ok ? "PASS" : "FAIL", g_eng.sym.overload_count);
+
+    /* Bug 3: Deeply nested expression rejected by PARSER_MAX_EXPR_DEPTH */
+    char deep_expr[512];
+    memset(deep_expr, '(', 200);
+    deep_expr[200] = '1';
+    memset(deep_expr + 201, ')', 200);
+    deep_expr[401] = '\0';
+    bool bug3_ok = !eng_eval(&g_eng, deep_expr, &v);
+    printf("    - [Bug 3] Deep nesting guard (200 parens)      : %s (\"%s\")\n",
+           bug3_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
+
+    /* Bug 4: Self-referential struct rejected at compile time */
+    bool bug4_ok = !user_compile_ext(&g_eng, "$self_node(a:real, next:self_node)", NULL, NULL);
+    printf("    - [Bug 4] Self-referential struct rejection    : %s (\"%s\")\n",
+           bug4_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
+
+    /* Bug 5: Overlong >65534-char input rejected instead of uint16_t truncation */
+    char *huge_expr = (char *)malloc(66000);
+    bool bug5_ok = false;
+    if (huge_expr) {
+        memset(huge_expr, ' ', 65540);
+        huge_expr[0] = '1';
+        huge_expr[1] = '+';
+        huge_expr[2] = '1';
+        huge_expr[65540] = '@';
+        huge_expr[65541] = '\0';
+        bug5_ok = !eng_eval(&g_eng, huge_expr, &v);
+        free(huge_expr);
+    }
+    printf("    - [Bug 5] >65534-byte input truncation guard   : %s (\"%s\")\n",
+           bug5_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
+
+    /* Bug 6: Pool exhaustion does not overwrite f64_pool[0] */
+    double saved_pool0 = g_eng.mem.f64_pool[0];
+    bool bug6_exhaust = !eng_eval(&g_eng, "v := vec(9000, 5)", &v);
+    bool bug6_ok = bug6_exhaust && (g_eng.mem.f64_pool[0] == saved_pool0);
+    printf("    - [Bug 6] Pool exhaustion f64_pool[0] integrity: %s (pool[0]=%g)\n",
+           bug6_ok ? "PASS" : "FAIL", g_eng.mem.f64_pool[0]);
+
+    /* Bug 7: Extension without [module] header joins [default], not [biology] */
+    bool bug7_compile = user_compile_ext(&g_eng, "\"anon_mod_fn\"(x:real) -> real = x * 3\n", NULL, NULL);
+    eng_set_module(&g_eng, "biology", false);
+    bool bug7_eval = eng_eval(&g_eng, "anon_mod_fn(7)", &v) && (val_get_f64(&g_eng.mem, v) == 21.0);
+    eng_set_module(&g_eng, "biology", true);
+    bool bug7_ok = bug7_compile && bug7_eval;
+    printf("    - [Bug 7] Headerless user ext in [default]     : %s\n", bug7_ok ? "PASS" : "FAIL");
+
+    /* Bug 8: Float-to-int UB guard on huge/fractional/NaN vector & matrix indices */
+    bool bug8_huge = !eng_eval(&g_eng, "pts := vec() ; push(pts, 10) ; at(pts, -4294967296)", &v);
+    bool bug8_frac = !eng_eval(&g_eng, "pts := vec() ; push(pts, 10) ; push(pts, 20) ; at(pts, 0.5)", &v);
+    bool bug8_ok   = bug8_huge && bug8_frac;
+    printf("    - [Bug 8] Safe float-to-int index guard        : %s (\"%s\")\n",
+           bug8_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
+
     return (passed == total && blank_ok && load_mathc_ok && vec_type_guard &&
             scope_isolation_guard && multi_else_guard && else_if_guard &&
+            kw_var_guard && kw_tag_guard &&
             unlike_unit_guard && concrete_real_guard && concrete_real_dist_unit_guard &&
             concrete_real_dist_iota_guard && concrete_dist_unitless_iota_guard &&
             fn_unit_mismatch_guard && gen_T_unit_mismatch_guard &&
-            conv_unit_mismatch_guard && jagged_mat_guard && non_bool_not_guard && lim_diverge_guard &&
-            syn_off && units_off && phys_off) ? 0 : 1;
+            conv_unit_mismatch_guard && jagged_mat_guard && non_bool_not_guard && not_overload_guard && lim_diverge_guard && custom_err_guard && fx_unknown_ccy_guard && fx_neg_amount_guard &&
+            syn_off && units_off && phys_off &&
+            bug1_ok && bug2_ok && bug3_ok && bug4_ok && bug5_ok && bug6_ok && bug7_ok && bug8_ok) ? 0 : 1;
 }

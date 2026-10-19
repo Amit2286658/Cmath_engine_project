@@ -17,7 +17,8 @@
 extern "C" {
 #endif
 
-#define PARSER_MAX_LOCALS 32
+#define PARSER_MAX_LOCALS      32
+#define PARSER_MAX_EXPR_DEPTH 128
 
 typedef struct {
     StrSlice name;
@@ -42,6 +43,7 @@ typedef struct {
     uint8_t    param_count;
     uint8_t    scope_depth;
     uint8_t    in_ternary_then;
+    uint16_t   expr_depth;
     bool       last_was_block;
     LabelDef   labels[MEM_MAX_LABELS];
     uint8_t    label_count;

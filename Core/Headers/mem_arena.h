@@ -4,7 +4,7 @@
  * Purpose:
  *   Encapsulates ALL memory allocation, string interning, float/struct/vector
  *   pools, AST node storage, call stack frames, scratch watermarks, and Value
- *   bit packing (8-byte IEEE-754 NaN-boxing vs. 12-byte Tagged Union), including
+ *   bit packing (8-byte IEEE-754 NaN-boxing), including
  *   orthogonal Entity Type (`type_id`) and Unit Type (`unit_id`) tags.
  *
  *   To customize memory sizes, switch to a heap/slab/embedded SRAM allocator,
@@ -27,15 +27,13 @@ extern "C" {
  * 1. COMPILE-TIME VALUE ENCODING & ARENA CAPACITY TUNABLES
  * ============================================================================ */
 
-#ifndef USE_TAGGED_12B
-#define USE_TAGGED_12B 0  /* 0 = 8-byte IEEE-754 NaN-boxing, 1 = 12-byte union */
-#endif
-
-#define MEM_SRC_BUF_CAP    32768   /* UTF-8 source buffer for interned strings   */
-#define MEM_MAX_AST_NODES   8192   /* 8-byte AST nodes (32 KB)                   */
-#define MEM_MAX_F64_POOL    4096   /* Flat double pool for literals/structs/vecs */
-#define MEM_MAX_CALL_STACK   256   /* Evaluation & local variable stack slots    */
-#define MEM_MAX_LABELS        16   /* Max tagged scopes (`Tag : { ... }`)        */
+#define MEM_SRC_BUF_CAP     32768   /* UTF-8 source buffer for interned strings   */
+#define MEM_MAX_AST_NODES    8192   /* 8-byte AST nodes (64 KB)                   */
+#define MEM_MAX_F64_POOL     8192   /* Flat double pool for literals/structs/vecs */
+#define MEM_MAX_CALL_STACK    256   /* Evaluation & local variable stack slots    */
+#define MEM_MAX_LABELS         16   /* Max tagged scopes (`Tag : { ... }`)        */
+#define MEM_MAX_EVAL_DEPTH    128   /* Max recursive AST evaluation depth         */
+#define MEM_MAX_EVAL_STEPS 2000000u /* Global AST evaluation step budget per eval */
 
 #define MEM_NO_IDX        0xFFFFu  /* Null 16-bit index sentinel                 */
 #define MEM_TYPE_VOID          0u  /* Invalid / void entity type ID              */
@@ -60,30 +58,10 @@ typedef struct {
     uint16_t len;
 } StrSlice;
 
-#if USE_TAGGED_12B
-
-/* 12-Byte Packed Tagged Union (`type_id` = entity type, `flags` = unit_id) */
-typedef struct __attribute__((packed, aligned(4))) {
-    uint16_t type_id;
-    uint16_t flags;
-    union {
-        double   f64;
-        int64_t  i64;
-        struct { uint32_t off, len; } str;
-        struct { uint32_t idx, cnt; } comp;
-    } as;
-} Value;
-
-_Static_assert(sizeof(Value) == 12, "12-byte Tagged Union Value must be 12 bytes");
-
-#else
-
 /* 8-Byte IEEE-754 NaN-Boxed Value (bits 32..39 = type_id, bits 40..47 = unit_id) */
 typedef uint64_t Value;
 
-_Static_assert(sizeof(Value) == 8, "8-byte NaN-Boxed Value must be 8 bytes");
-
-#endif /* USE_TAGGED_12B */
+_Static_assert(sizeof(Value) == 8, "8-byte NaN-Boxed Value must be strictly 8 bytes");
 
 /* Strictly 8-byte AST node stored in `MemArena.ast` */
 typedef struct {
@@ -132,6 +110,10 @@ typedef struct {
     uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_BREAK_TAG)       */
     uint8_t     jump_target_id;
     uint16_t    label_ast[MEM_MAX_LABELS];
+
+    /* Recursion & Global Step Budget State */
+    uint16_t    eval_depth;
+    uint32_t    eval_steps;
 
     /* Error state */
     bool        has_error;
@@ -189,6 +171,7 @@ void     mem_set_slot(MemArena *mem, uint16_t frame_base, uint8_t slot, Value v)
 Value    val_void(void);
 Value    val_make_f64(MemArena *mem, uint16_t type_id, double d);
 Value    val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double d);
+Value    val_make_f64_at_pool(const MemArena *mem, uint16_t type_id, uint8_t unit_id, uint16_t pool_idx);
 double   val_get_f64(const MemArena *mem, Value v);
 Value    val_make_str(MemArena *mem, uint16_t type_id, StrSlice s);
 StrSlice val_get_str(const MemArena *mem, Value v);

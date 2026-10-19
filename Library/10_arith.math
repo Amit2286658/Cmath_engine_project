@@ -17,8 +17,8 @@
 (a:real) "plus"  (b:real) :<45 -> real = a + b
 (a:real) "minus" (b:real) :<45 -> real = a - b
 
-# 3. Right-Associative Infix Exponentiation (:>prec)
-(a:real) "^" (b:real) :>75 -> real = @pow(a, b)
+# 3. Right-Associative Infix Exponentiation (:>85, binds tighter than unary '-' :80 so -x^2 == -(x^2))
+(a:real) "^" (b:real) :>85 -> real = @pow(a, b)
 
 # 4. Relational Comparisons, Approximate Equality `~` (:<30) & Chained Boolean Logic
 #    - `~` returns true (`1`) when `|a - b| <= 0.001` (at least 3 decimal places close:
@@ -69,11 +69,14 @@
     acc
 )
 
-# 8. Common Utility, Rounding & Boolean Predicate Functions
+# 8. Common Utility, Rounding (with default parameter `digits = 0`) & Boolean Predicate Functions
 "abs"(x:real)   -> real = @abs(x)
 "floor"(x:real) -> real = @floor(x)
 "ceil"(x:real)  -> real = @ceil(x)
-"round"(x:real) -> real = if(x >= 0, @floor(x + 0.5), @ceil(x - 0.5))
+"round"(x:real, digits:real = 0) -> real = (
+    s := 10 ^ digits;
+    if(x >= 0, @floor(x * s + 0.5), @ceil(x * s - 0.5)) / s
+)
 "trunc"(x:real) -> real = if(x >= 0, @floor(x), @ceil(x))
 "fract"(x:real) -> real = x - @floor(x)
 "sign"(x:real)  -> real = if(x > 0, 1, if(x < 0, -1, 0))
@@ -83,7 +86,7 @@
 "abs_diff"(a:real, b:real) -> real = if(a < b, b - a, a - b)
 "is_even"(n:real) -> real = (n % 2 == 0)
 "is_odd"(n:real)  -> real = (n % 2 != 0)
-"is_close"(a:real, b:real, tol:real) -> real = (@abs(a - b) <= tol)
+"is_close"(a:real, b:real, tol:real = 0.000001) -> real = (@abs(a - b) <= tol)
 
 # 9. Number Theory & Combinatorics (`gcd`, `lcm`, `ncr`, `npr`, `fib`, `is_prime`, `mod_pow`)
 "gcd"(a:real, b:real) -> real = (

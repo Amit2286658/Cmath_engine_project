@@ -39,8 +39,18 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
     mem_clear_err(&eng->mem);
     mem_rewind_scratch(&eng->mem);
 
+    if (!expr) {
+        mem_err(&eng->mem, "Null expression");
+        return false;
+    }
+    size_t raw_len = strlen(expr);
+    if (raw_len > 65534u) {
+        mem_err(&eng->mem, "Expression length exceeds maximum (65534 bytes)");
+        return false;
+    }
+
     Parser P;
-    parser_init(&P, &eng->mem, &eng->sym, expr, (uint16_t)strlen(expr), 0, false, false);
+    parser_init(&P, &eng->mem, &eng->sym, expr, (uint16_t)raw_len, 0, false, false);
 
     lex_next(&P.lex);
     if (P.lex.cur.kind == TOK_EOF && !eng->mem.has_error) {
@@ -64,6 +74,7 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
     uint16_t frame_base = 0;
     if (P.local_count > 0) {
         frame_base = mem_push_frame(&eng->mem, P.local_count);
+        if (eng->mem.has_error) return false;
         for (uint8_t i = 0; i < P.local_count; ++i) {
             mem_set_slot(&eng->mem, frame_base, i, val_make_f64(&eng->mem, eng->mem.fast_real_type, 0.0));
         }
@@ -103,7 +114,7 @@ const char *eng_last_error(const Engine *eng) {
 }
 
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
-                             char *buf, size_t cap);
+                             uint8_t depth, char *buf, size_t cap);
 
 static void format_mat_slice(const Engine *eng, uint16_t data_idx,
                              const uint16_t *dims, uint8_t rank, uint8_t axis,
@@ -149,7 +160,12 @@ static void format_mat_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t
     format_mat_slice(eng, data_idx, dims, rank, 0, buf, cap, &used);
 }
 
-static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
+static void format_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
+                          char *buf, size_t cap) {
+    if (depth > 16) {
+        snprintf(buf, cap, "[...]");
+        return;
+    }
     uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
     uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 1);
@@ -167,10 +183,10 @@ static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t
             snprintf(elem_str, sizeof(elem_str), "\"%.*s\"",
                      (int)s.len, mem_str_ptr(&eng->mem, s));
         } else if (elem_tid == eng->mem.vec_type_id && elem_tid != 0) {
-            format_vec_at(eng, elem_pidx, elem_str, sizeof(elem_str));
+            format_vec_at(eng, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else if (elem_tid > 0 && elem_tid < eng->sym.type_count &&
                    !eng->sym.types[elem_tid].is_consuming) {
-            format_struct_at(eng, elem_tid, elem_pidx, elem_str, sizeof(elem_str));
+            format_struct_at(eng, elem_tid, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else {
             snprintf(elem_str, sizeof(elem_str), "%.6g", mem_read_pool(&eng->mem, elem_pidx));
         }
@@ -181,9 +197,13 @@ static void format_vec_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t
 }
 
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
-                             char *buf, size_t cap) {
+                             uint8_t depth, char *buf, size_t cap) {
+    if (depth > 16) {
+        snprintf(buf, cap, "<...> ");
+        return;
+    }
     if (type_id == eng->mem.vec_type_id && type_id != 0) {
-        format_vec_at(eng, pool_idx, buf, cap);
+        format_vec_at(eng, pool_idx, depth, buf, cap);
         return;
     }
     if (type_id == eng->mem.mat_type_id && type_id != 0) {
@@ -211,7 +231,8 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         const FieldDef *fd = &eng->sym.fields[td->start_idx + i];
         char f_str[64];
         if (!eng->sym.types[fd->type_id].is_consuming) {
-            format_struct_at(eng, fd->type_id, pool_idx + fd->flat_offset, f_str, sizeof(f_str));
+            format_struct_at(eng, fd->type_id, pool_idx + fd->flat_offset,
+                             (uint8_t)(depth + 1), f_str, sizeof(f_str));
         } else {
             snprintf(f_str, sizeof(f_str), "%.6g", mem_read_pool(&eng->mem, pool_idx + fd->flat_offset));
         }
@@ -240,6 +261,6 @@ void eng_format_value(const Engine *eng, Value val, char *buf, size_t buf_cap) {
             snprintf(buf, buf_cap, "%.10g", val_get_f64(&eng->mem, val));
         }
     } else {
-        format_struct_at(eng, tid, val_get_pool_idx(val), buf, buf_cap);
+        format_struct_at(eng, tid, val_get_pool_idx(val), 0, buf, buf_cap);
     }
 }

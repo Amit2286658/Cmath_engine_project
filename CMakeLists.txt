@@ -16,6 +16,8 @@ endif()
 
 # Hardening flags that work without needing virtual-address-space tricks --
 # useful on sandboxed environments (proot, etc.) where ASan/Valgrind can't run.
+# _FORTIFY_SOURCE needs at least some optimization to do anything at -O0, it's
+# effectively a no-op there -- hence -Og instead of -O0 in Debug below.
 add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
 add_compile_options(-fstack-protector-strong)
 
@@ -23,6 +25,8 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
 endif()
 
+# Debug: debug symbols, light optimization (needed for fortify to take effect),
+# sanitizers if the toolchain supports them.
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-g -Og)
 
@@ -63,32 +67,36 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-O2)
 endif()
 
-# Gather engine implementation sources (Core/Code/*.c) and host/test sources (Test/*.c)
-file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Core/Code/*.c")
+# Gather engine implementation sources:
+#   - Core/Code/*.c          : Core engine pipeline (arena, sym_table, lexer, parser, ext_loader, evaluator)
+#   - Core/lib/delegate/*.c  : All `@` intrinsic C delegates (@add, @sin, @vnew, @mzero, @calc_*, etc.)
+#   - Core/lib/hardcode/*.c  : All hardcoded grammar & ergonomic rules (reserved kw, implicit *, UFCS, etc.)
+file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/Core/Code/*.c"
+    "${CMAKE_SOURCE_DIR}/Core/lib/delegate/*.c"
+    "${CMAKE_SOURCE_DIR}/Core/lib/hardcode/*.c"
+)
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Test/*.c")
 
-add_executable(myapp ${CORE_SOURCES} ${TEST_SOURCES})
-
-target_include_directories(myapp PRIVATE
+# Reusable static library target (ready for Android NDK / host embedding)
+add_library(mathengine STATIC ${CORE_SOURCES})
+target_include_directories(mathengine PUBLIC
     "${CMAKE_SOURCE_DIR}/Core/Headers"
+    "${CMAKE_SOURCE_DIR}/Core/lib/delegate"
+    "${CMAKE_SOURCE_DIR}/Core/lib/hardcode"
 )
+target_link_libraries(mathengine PUBLIC m)
 
-# Link standard C math library (<math.h>: sin, cos, pow, sqrt, cbrt, fmod, etc.)
-target_link_libraries(myapp PRIVATE m)
+# Test & demo executable linked against `mathengine`
+add_executable(myapp ${TEST_SOURCES})
+target_link_libraries(myapp PRIVATE mathengine)
 
-# Optional standalone AOT `.math` -> `.mathc` & header compiler (`make stdlib`)
+# Optional standalone AOT extension text -> `.mathc` & header compiler (`make stdlib`)
 if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
     add_executable(mathc EXCLUDE_FROM_ALL
         "${CMAKE_SOURCE_DIR}/Library/mathc.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/mem_arena.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/sym_table.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/lexer.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/parser.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/ext_loader.c"
-        "${CMAKE_SOURCE_DIR}/Core/Code/evaluator.c"
     )
-    target_include_directories(mathc PRIVATE "${CMAKE_SOURCE_DIR}/Core/Headers")
-    target_link_libraries(mathc PRIVATE m)
+    target_link_libraries(mathc PRIVATE mathengine)
 
     add_custom_target(stdlib
         COMMAND mathc
@@ -109,6 +117,6 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/90_biology.math"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Recompiling Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
+        COMMENT "Recompiling Library/* -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
     )
 endif()

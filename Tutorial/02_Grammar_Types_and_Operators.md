@@ -1,6 +1,6 @@
-# Chapter 2 — Grammar, Types, Operators & Postfix `"i"`
+# Chapter 2 — Grammar, Types, Shorthand Declarations, Default Params, Implicit Multiplication & Postfix `"i"`
 
-This chapter explains how `.math` files define lexical types, syntax delimiters, operator fixities/precedences, and complex numbers.
+This chapter explains how `.math` files define lexical types, syntax delimiters, operator fixities/precedences, streamlined function/constant declarations, default parameters, implicit multiplication, and complex numbers.
 
 ## 1. Module Headers & Dependencies
 
@@ -22,6 +22,7 @@ $real ~ \d+ ("." \d+)?       => @f64
 $iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
+$mat  ~                      => @mat_type
 ```
 
 - **`$real`**: Matches integer and decimal literals (`42`, `3.14159`) and parses them into 64-bit IEEE-754 floats (`@f64`).
@@ -35,10 +36,33 @@ $vec  ~                      => @vec_type
 | **Prefix Unary** | `"sym"(x:T) :prec -> Ret = body` | `"√"(x:real) :80 -> real = @sqrt(x)` |
 | **Postfix Unary** | `(x:T) "sym" :prec -> Ret = body` | `(n:real) "!" :90 -> real = ...` |
 | **Left-Assoc Infix** | `(a:T1) "sym" (b:T2) :<prec -> Ret = body` | `(a:real) "+" (b:real) :<50 -> real = @add(a, b)` |
-| **Right-Assoc Infix** | `(a:T1) "sym" (b:T2) :>prec -> Ret = body` | `(a:real) "^" (b:real) :>75 -> real = @pow(a, b)` |
+| **Right-Assoc Infix** | `(a:T1) "sym" (b:T2) :>prec -> Ret = body` | `(a:real) "^" (b:real) :>85 -> real = @pow(a, b)` |
 | **Function Call** | `"name"(a:T1, b:T2, ...) -> Ret = body` | `"hypot"(a:real, b:real) -> real = √(a^2 + b^2)` |
 
-## 4. Postfix `"i"` Operator & Complex Arithmetic (`30_complex.math`)
+## 4. Streamlined Function & Constant Declarations + Default Parameter Values
+
+In `.math` files, identifier function/constant names do not require quotes, untyped parameters default to `:real`, and omitted `-> Ret` defaults to `-> real`. Trailing parameters can also specify default values (`param = default_expr`), which automatically synthesize lower-arity overloads:
+
+```math
+# Shorthand constant declarations (quotes and `:real` optional)
+tau_const  = 2π
+golden_ang = 360 / (φ ^ 2)
+
+# Shorthand function declarations with default parameter values
+hyp_3d(x, y, z = 0)        = √(x^2 + y^2 + z^2)
+log_base(x, base = 10)     = ln(x) / ln(base)
+round(x:real, digits = 0)  = ...
+fx_with_fee(amount:real, from:str, to:str, fee_pct:real = 1.5) -> real = { ... }
+```
+
+## 5. Natural Implicit Multiplication (`2x`, `2π`, `3(x + 1)`, `(x + 1)(x - 1)`, `2 sin(x)`)
+
+When a value, variable, constant, or closing `)` is immediately followed by an identifier, `(...)`, or prefix-only operator (`√`), the parser inserts multiplication `*` at binding power `60 -> 65`:
+- `x := 4 ; 2x^2 + 3x + 1` -> `45` (because `^` at `:85` binds tighter than implicit `*`, `2x^2` parses as `2 * (x^2)`)
+- `x := 5 ; 3(x + 1) + (x + 1)(x - 1)` -> `42`
+- `2 sin(π / 2) + 2 √16 + (2π / π)` -> `12`
+
+## 6. Postfix `"i"` Operator & Complex Arithmetic (`30_complex.math`)
 
 ```math
 $complex(re:real, im:real)

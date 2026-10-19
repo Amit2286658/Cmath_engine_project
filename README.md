@@ -1,11 +1,24 @@
 # Cmath Engine
 
 A lightweight, fast, embeddable **C11 mathematical programming engine** built on
-a *blank-slate* architecture. The C core ships with **zero hardcoded math,
-types, or grammar** — every delimiter, type, operator, function, constant,
+a *blank-slate* architecture. The engine ships with **zero hardcoded math,
+types, or operators** — every delimiter, type, operator, function, constant,
 control structure, and unit type group is compiled from modular `.math` files
 into a portable `.mathc` binary image. Modules can be enabled or disabled in
 **O(1)** via a bitmask flip.
+
+The design is a deliberate **three-way separation of concerns**:
+
+- **`Core/Code/` + `Core/Headers/`** — the engine pipeline (arena, symbol table,
+  lexer, Pratt parser, extension loader, AST evaluator).
+- **`Core/lib/delegate/`** — every C-backed `@` intrinsic (`@add`, `@sin`,
+  `@vnew`, `@mzero`, `@calc_diff`, `@calc_solve`, ...).
+- **`Core/lib/hardcode/`** — the small set of *hardcoded* grammar/ergonomic rules
+  (reserved keywords, default `:real`/`-> real` fallback, implicit
+  multiplication, keywordless loops, destructuring), kept explicitly isolated so
+  they are auditable in one place.
+- **`Library/`** — all operators, precedences, types, units, structs, constants,
+  and scientific functions.
 
 The engine core (`Core/`) has **no filesystem, path, or networking
 dependencies**. The host frontend owns all file I/O; the engine compiles
@@ -27,10 +40,21 @@ databases, or sensor reads.
   in `.math` to native C functions (HTTP, storage, hardware, ...).
 - **Rich control flow** — `{ }` scope blocks, `if ... or ... else`, `switch`/
   `case`, ternary `? :`, `Tag : { ... }` labeled scopes with `jump`/`run`, and
-  `break`/`break(Tag)`.
-- **Expressive assignments** — multi-variable declarations `x, y := 5`,
-  compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`), and dynamic slot
-  promotion (`x := 5 ; x = x + 5i` → `5 + 5i : complex`).
+  `break`/`break(Tag)`. Plus keywordless `(i in 1...5) { ... }` /
+  `(v in vec) { ... }` loops and the `loop` keyword.
+- **Streamlined `.math` ergonomics** — unquoted shorthand declarations
+  (`fn(a, b) = ...`, `c = ...`), optional `:real`/`-> real` types, default
+  parameters (`round(x, digits = 0)`), implicit multiplication (`2x`, `3(x + 1)`,
+  `2π`), range (`1..5`, `1...5`) & membership (`x in vec`) operators, and UFCS
+  dot-chaining (`v.push(10).vec_sum()`).
+- **Solvers & extrema** — the general equation solver `solve(x, expr == val, guess)`
+  plus `fmin`/`fmax` over an interval.
+- **Expressive assignments & destructuring** — multi-variable declarations
+  `x, y := 5`, compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`),
+  struct/vector/matrix destructuring (`r1, r2 := quad_roots(1, -5, 6)`), and
+  dynamic slot promotion (`x := 5 ; x = x + 5i` → `5 + 5i : complex`).
+- **Custom errors & assertions** — `error("msg")` and `assert(cond, "msg")` abort
+  evaluation with a user message.
 - **Distributed boolean logic** — `&& || ! and or not nor xor nand`, plus the
   comparison shorthand `(x & y == 1 | 2)`.
 - **Orthogonal `(EntityType, UnitType)` tags** — values carry a type *and* a
@@ -61,13 +85,19 @@ databases, or sensor reads.
 - **Pratt parser** — operator fixity and precedence are data.
 - **Multiple dispatch** — operators/functions overloaded on operand types
   *and* unit groups.
-- **Generic dynamic vectors** — growable/shrinkable `$vec` of *any* `T`.
+- **Generic dynamic vectors** — growable/shrinkable `$vec` of *any* `T`, with
+  variadic literals `vec(10, 20, 30)` / `list(a, ...)` and `a..b` / `a...b` ranges.
 - **Flat C-style structs** — `$vec2`, `$vec3`, `$circle`, `$mat2`, `$complex`.
 - **Rich standard library** — arithmetic/combinatorics/number theory/stats,
   trigonometry, complex numbers, geometry, algebra (matrices, quadratics,
   polynomials), calculus, units & conversions, physics, chemistry, and biology.
-- **Dual value encoding** — 8-byte IEEE-754 **NaN-boxing** (default) or a
-  12-byte **tagged union** (`USE_TAGGED_12B`).
+- **Pure 8-byte NaN-boxed values** — every `Value` is a single 64-bit register
+  (`sizeof(Value) == 8`); unitless `real`s are stored inline with zero pool
+  allocation, and everything else lives in the quiet-NaN payload space.
+- **Reusable `mathengine` library** — the core builds as a static library
+  (`libmathengine.a`) ready for host embedding or Android NDK integration.
+- **Guardrailed evaluation** — bounded AST nesting depth (128), a per-eval step
+  budget, oversized-input rejection, and transactional extension rollback.
 - **UTF-8 aware** — `√`, `π`, `°`, `i`, `^`, `!` and more work natively.
 - **Hardened builds** — fortify source, stack protector, ASan/UBSan when available.
 
@@ -79,21 +109,28 @@ Host Application (Test/main.c)
      │
      ├──► [math_engine]  Top-Level Wrapper — auto-boots embedded stdlib,
      │        │          registers host externs
-     │        ├──► [mem_arena]    Isolated memory & 8B/12B Value packing
+     │        ├──► [mem_arena]    Isolated memory & 8-byte NaN-boxed Values
      │        ├──► [sym_table]    Types, structs, modules, overloads, units, externs
      │        ├──► [lexer]        Pattern-driven consuming types & syntax tokens
      │        ├──► [parser]       Top-down operator precedence (Pratt) parser
      │        ├──► [ext_loader]   In-memory `.math` compiler & `.mathc` serializer
-     │        └──► [evaluator]    Type-dispatched AST evaluator & `@` intrinsics
+     │        ├──► [evaluator]    Type-dispatched AST evaluator
+     │        │
+     │        ├──► [delegate]     C `@<intrinsic>` implementations (@add, @sin,
+     │        │                   @vnew, @mzero, @calc_diff, @calc_solve, ...)
+     │        └──► [hardcode]     Hardcoded grammar & ergonomic rules (reserved
+     │                            keywords, implicit *, UFCS, `(i in ...){}`, ...)
      │
      └──► [user_loader]  In-memory user extension utility
                1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc`
                2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
 ```
 
-`Core/Code/*.c` is the engine; `Test/` and `Tutorial/` are host-side. The engine
-never touches files or directories — the host reads `.math` text, hands it to
-the engine, and decides where to persist the returned `.mathc` bytes.
+`Core/Code/*.c`, `Core/lib/delegate/*.c`, and `Core/lib/hardcode/*.c` form the
+engine (built together as the `mathengine` static library); `Test/` and
+`Tutorial/` are host-side. The engine never touches files or directories — the
+host reads `.math` text, hands it to the engine, and decides where to persist
+the returned `.mathc` bytes.
 
 ## Repository Layout
 
@@ -106,6 +143,9 @@ Core/
               stdlib_precompiled.h   (auto-generated embedded stdlib image)
   Code/       math_engine.c  mem_arena.c  sym_table.c  lexer.c
               parser.c  ext_loader.c  evaluator.c  user_loader.c
+  lib/
+    delegate/ delegate.h  delegate.c   C `@<intrinsic>` implementations
+    hardcode/ hardcode.h  hardcode.c   Hardcoded grammar & ergonomic rules
 Library/
   mathc.c             Standalone AOT `.math` -> `.mathc` + header compiler
   00_bootstrap.math   Syntax, lexical types, control flow, scopes/booleans,
@@ -123,7 +163,7 @@ Library/
   90_biology.math     Genetics, molecular biology, physiology, ecology
   stdlib.mathc        Compiled standard library image (generated)
 Test/
-  main.c              Host demo & 215-case automated test suite
+  main.c              Host demo & 247-case automated test suite
   user_physics.math   Sample user extension (host-backed functions)
 Tutorial/
   00_Index_and_Overview.md  ...  09_Calculus_Arith_and_Sciences.md
@@ -139,7 +179,6 @@ make run                       # build if needed, then run
 make clean                     # remove the selected build dir
 
 make build release             # optimized build -> ReleaseBuild/myapp
-make run release USE_TAGGED_12B=1   # 12-byte tagged-union Value
 make build CC=gcc              # override the compiler
 ```
 
@@ -151,18 +190,18 @@ cmake --build build
 ./build/myapp
 ```
 
+The core is built as the static library target **`mathengine`**
+(`libmathengine.a`); the demo (`myapp`) and the AOT compiler (`mathc`) both link
+against it, so the engine can be embedded directly into other hosts.
+
 Run from the repository root (the demo looks for `Test/user_physics.math`).
 
 ### Value encoding
 
-| `USE_TAGGED_12B` | `Value` | Encoding |
-| --- | --- | --- |
-| `0` (default) | 8 bytes | IEEE-754 NaN-boxing |
-| `1` | 12 bytes | Packed tagged union |
-
-```sh
-cmake -S . -B build -DUSE_TAGGED_12B=ON
-```
+Every `Value` is a strictly **8-byte IEEE-754 NaN-box** (`sizeof(Value) == 8`):
+unitless `$real`s are stored inline as `double` bits with zero pool allocation,
+while `$iota`, unit-tagged scalars, `$str`, structs, `$vec`, and `$mat` live in
+the quiet-NaN payload space.
 
 ### Recompiling the standard library
 
@@ -215,7 +254,7 @@ postfix `i` operator (`5i`, `(3 + 4)i`, `sin(x)i`).
 
 ```
 (a:real) "+" (b:real) :<50 -> real = @add(a, b)   # left-assoc, precedence 50
-(a:real) "^" (b:real) :>75 -> real = @pow(a, b)   # right-assoc, precedence 75
+(a:real) "^" (b:real) :>85 -> real = @pow(a, b)   # right-assoc; binds tighter than unary '-'
 "-"      (x:real)     :80 -> real = @neg(x)       # prefix unary
 (x:real) "++"         :90 -> real = x + 1         # postfix
 ```
@@ -267,6 +306,48 @@ lim(x, expr, x0)           # two-sided limit (Richardson extrapolation)
 lim_left / lim_right       # one-sided limits
 sigma(k, expr, lo, hi)     # discrete summation
 prod(k, expr, lo, hi)      # discrete product
+solve(x, expr == val)      # general equation solver (optional guess / bracket)
+fmin(x, expr, a, b)        # minimum over [a, b]
+fmax(x, expr, a, b)        # maximum over [a, b]
+```
+
+### Ergonomic shorthand, loops & destructuring
+
+Declarations may omit types (falling back to `real`) and quote-free names:
+
+```
+tau_const = 2π                              # unquoted constant
+hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)    # shorthand fn + default param
+log_base(x, base = 10) = ln(x) / ln(base)   # default parameter
+round(x, digits = 0)                        # default parameter
+```
+
+Implicit multiplication lets math read naturally:
+
+```
+x := 4 ; 2x^2 + 3x + 1        # 45
+2 sin(π / 2) + 2 √16          # 10
+```
+
+Ranges, membership, keywordless loops, and UFCS chaining:
+
+```
+1..5          # [1, 2, 3, 4, 5]
+1...5         # [1, 2, 3, 4, 5]
+(3 in 1...5)  # 1
+(i in 1...5) { s += i }        # keywordless range loop
+(v in arr) { tot += v }        # keywordless vector loop
+loop (k <= 4) { acc += k ; k += 1 }
+loop { k += 1 ; if (k == 7) { break } }
+v := vec() ; v.push(10).push(20).vec_sum()   # UFCS dot-chaining
+```
+
+Destructuring and custom errors:
+
+```
+r1, r2 := quad_roots(1, -5, 6)     # r1 = 3, r2 = 2
+a, b, c := vec(10, 20, 30)
+error("msg") ; assert(cond, "msg")
 ```
 
 ### Array subscripting & multidimensional matrices
@@ -374,7 +455,7 @@ Callbacks receive evaluated `Value` arguments and use helpers such as
 | --- | --- | --- |
 | `boot_syntax` | `00_bootstrap` | `(` `)` `{` `}` `[` `]` `,` delimiters |
 | `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec`, `$mat` |
-| `boot_control` | `00_bootstrap` | `.`, `;`, `:=`, `=`, `??`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical & distributed operators, `!`/`~`, array `v[i]`, calculus constructs, `type_of`/`unit_of`, compound assignments, vector API |
+| `boot_control` | `00_bootstrap` | `.` (member access & UFCS), `;`, `:=`, `=`, `??`, `loop`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical & distributed operators, `!`/`~`, array `v[i]`, calculus & solver constructs (`diff`/`integrate`/`lim`/`sigma`/`prod`/`solve`/`fmin`/`fmax`), ranges `..`/`...`, `in`, `error`/`assert`, `type_of`/`unit_of`, compound assignments, vector API |
 | `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, percentages/interest/EMI/work-time/progressions, `π`/`pi`/`e`/`phi` |
 | `trig` | `20_trig` | `sin cos tan sec csc cot`, inverses, `sinh cosh tanh` (+inverses), `ln log10 log2 logb exp sqrt cbrt hypot`, `sigmoid` |
 | `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /` (generic over unit `T`), `conj cabs carg cexp_i polar` |
@@ -478,6 +559,12 @@ loading.
 | `integrate(x, 3 * (x^2), 0, 2)` | `8` | real |
 | `lim(x, sin(x) / x, 0)` | `1` | real |
 | `sigma(k, k^2, 1, 5)` | `55` | real |
+| `solve(x, x^2 == 9, 2)` | `3` | real |
+| `fmin(x, (x - 3)^2 + 5, 0, 10)` | `3` | real |
+| `1...5` | `[1, 2, 3, 4, 5]` | vec |
+| `x := 4 ; 2x^2 + 3x + 1` | `45` | real |
+| `s := 0 ; (i in 1...5) { s += i } ; s` | `15` | real |
+| `r1, r2 := quad_roots(1, -5, 6) ; r1 * 10 + r2` | `32` | real |
 | `5.001 ~ 5` | `1` | real |
 | `ke(2 kg, 36 kph)` | `100` | real |
 | `lorentz_gamma(0.6 * c0)` | `1.25` | real |
@@ -506,14 +593,19 @@ A full chapter-by-chapter guide lives in [`Tutorial/`](Tutorial/00_Index_and_Ove
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
 stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
 reload), registers host externs, prints an architecture report, and runs a
-**215-case** automated suite (stdlib + control flow + booleans + multi-var +
+**247-case** automated suite (stdlib + control flow + booleans + multi-var +
 concrete units + array/matrix + calculus + conversions + algebra + physics +
-chemistry + biology + host externs), followed by type-safety guardrails and O(1)
-module-toggling checks. Run it with `make run`.
+chemistry + biology + host externs + ergonomics), followed by type-safety &
+reserved-keyword guardrails, O(1) module-toggling checks, and an **8-case audit regression
+suite** (unit constants in `.mathc`, transactional rollback, nesting-depth and
+input-length guards, self-referential structs, pool integrity, headerless user
+extensions, and safe float→int indexing). Run it with `make run`.
 
 ## Design Goals
 
-1. **Zero built-ins** — a predictable, minimal, auditable core.
+1. **Zero hardcoded math** — every type, operator, unit, and function comes from
+   `.math`; the only hardcoded grammar/ergonomic rules are quarantined in
+   `Core/lib/hardcode/` so they are predictable and auditable.
 2. **Data-driven language** — syntax and semantics live in `.math`, not C.
 3. **No engine-side I/O** — the host owns files/network; the engine owns memory.
 4. **Instant boot** — precompiled, embedded, O(1) `memcpy` load.

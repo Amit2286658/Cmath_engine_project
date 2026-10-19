@@ -6,8 +6,9 @@
  *   consuming lexical types, physical/dimensional unit types (`distance`,
  *   `angle`, `mass`, `time`, `speed`, ...), flat C-style structs, dynamic
  *   vectors (`$vec`), generic entity & unit wildcards (`T` / `any`),
- *   operator/function overloads, global constants, private C intrinsic IDs,
- *   and host-registered extern callbacks (`@<extern_name>`).
+ *   operator/function overloads (with O(1) per-symbol chain indexing),
+ *   global constants, private C intrinsic IDs, and host-registered extern
+ *   callbacks (`@<extern_name>`).
  */
 
 #ifndef SYM_TABLE_H
@@ -24,13 +25,13 @@ extern "C" {
  * ============================================================================ */
 
 #define SYM_MAX_MODULES        32
-#define SYM_MAX_TYPES          32
-#define SYM_MAX_UNITS          32
-#define SYM_MAX_PAT_ELEMS     128
-#define SYM_MAX_FIELDS        128
-#define SYM_MAX_SYMS         1024
-#define SYM_MAX_OVERLOADS    1024
-#define SYM_MAX_CONSTS         64
+#define SYM_MAX_TYPES          64
+#define SYM_MAX_UNITS          64
+#define SYM_MAX_PAT_ELEMS     256
+#define SYM_MAX_FIELDS        256
+#define SYM_MAX_SYMS         2048
+#define SYM_MAX_OVERLOADS    2048
+#define SYM_MAX_CONSTS        128
 #define SYM_MAX_EXTERNS        32
 
 #define SYM_TYPE_ANY        0xFEu   /* Generic `T` / `any` entity type           */
@@ -75,6 +76,7 @@ typedef enum {
     INTR_JUMP_TAG,     /* @jump_tag(tag)      */
     INTR_RUN_TAG,      /* @run_tag(tag)       */
     INTR_BREAK_LOOP,   /* @break_loop(tag)    */
+    INTR_LOOP_KW,      /* @loop_kw(iter, b)   */
     INTR_CAND,         /* @cand(a, b) (`&` distributed/short-circuit AND) */
     INTR_COR,          /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
     INTR_CNOT,         /* @cnot(a)    (`!` strict boolean condition NOT)  */
@@ -87,6 +89,9 @@ typedef enum {
     INTR_CALC_LIM_R,   /* @calc_lim_r(x, expr, x0)      */
     INTR_CALC_SIGMA,   /* @calc_sigma(k, expr, lo, hi)  */
     INTR_CALC_PROD,    /* @calc_prod(k, expr, lo, hi)   */
+    INTR_CALC_SOLVE,   /* @calc_solve(x, eq, guess)     */
+    INTR_CALC_FMIN,    /* @calc_fmin(x, expr, a, b)     */
+    INTR_CALC_FMAX,    /* @calc_fmax(x, expr, a, b)     */
     INTR_FIELD,        /* @field(s, f)        */
 
     /* Dynamic Vector Intrinsics (`$vec` of any `T` type) */
@@ -101,6 +106,8 @@ typedef enum {
     INTR_VRESIZE,   /* @vresize(v, n)      */
     INTR_VSHRINK,   /* @vshrink(v)         */
     INTR_VCLEAR,    /* @vclear(v)          */
+    INTR_VRANGE,    /* @vrange(a, b) (`a..b` / `a...b` inclusive range) */
+    INTR_VIN,       /* @vin(item, v) (`x in v` vector membership check) */
 
     /* Multidimensional Matrix Intrinsics (`$mat`) */
     INTR_MZERO,     /* @mzero(r, c)        */
@@ -171,6 +178,7 @@ typedef enum {
     INTR_RAW,
     INTR_TYPE_NAME, /* @type_name(x) -> $str */
     INTR_UNIT_NAME, /* @unit_name(x) -> $str */
+    INTR_ERR,       /* @err(msg:str) -> raises custom error */
     INTR_COUNT
 } IntrinsicId;
 
@@ -193,7 +201,9 @@ typedef enum {
     AST_RUN_TAG,       /* Inline reuse of labeled scope `run(Tag)`              */
     AST_BREAK,         /* Break out of loop/scope `break` / `break(Tag)`        */
     AST_MAT_LIT,       /* Multidimensional matrix literal `[...]`               */
-    AST_INDEX          /* C-style subscript `base[i]` / `base[r, c]`            */
+    AST_INDEX,         /* C-style subscript `base[i]` / `base[r, c]`            */
+    AST_FOR_IN,        /* Range/collection loop `(i in a..b) { ... }` / `loop`  */
+    AST_UNPACK_ELEM    /* Multi-variable destructuring / scalar broadcast       */
 } AstKind;
 
 /* ============================================================================
@@ -255,10 +265,10 @@ typedef struct {
     uint8_t  param_count;
     uint8_t  local_count;
     uint8_t  ret_type;
-    uint8_t  ret_unit;       /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..31 */
+    uint8_t  ret_unit;       /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..63 */
     uint8_t  meta_tag;       /* 1 = inlined alias, or INTR_LPAREN..INTR_FIELD                    */
     uint8_t  param_types[8];
-    uint8_t  param_units[8]; /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..31 */
+    uint8_t  param_units[8]; /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..63 */
     uint16_t body_ast;
 } OpOverload;
 
@@ -310,6 +320,11 @@ typedef struct SymTable {
     OpOverload  overloads[SYM_MAX_OVERLOADS];
     uint16_t    overload_count;
 
+    /* Per-symbol overload chains for O(1) symbol dispatch (rebuilt in-memory) */
+    uint16_t    sym_first_ov[SYM_MAX_SYMS];
+    uint16_t    sym_last_ov[SYM_MAX_SYMS];
+    uint16_t    ov_next[SYM_MAX_OVERLOADS];
+
     ConstDef    consts[SYM_MAX_CONSTS];
     Value       const_vals[SYM_MAX_CONSTS];
     uint8_t     const_count;
@@ -324,6 +339,8 @@ typedef struct SymTable {
  * ============================================================================ */
 
 void        sym_init(SymTable *tab);
+void        sym_rebuild_index(SymTable *tab);
+void        sym_link_overload(SymTable *tab, uint16_t ov_idx);
 
 /* Module management & O(1) bitmask toggling */
 uint8_t     sym_find_or_add_mod(SymTable *tab, MemArena *mem, StrSlice name);
@@ -338,6 +355,7 @@ bool        sym_has_active_op(const SymTable *tab, uint16_t sym_id);
 uint8_t     sym_get_active_syntax(const SymTable *tab, uint16_t sym_id);
 int         sym_get_active_prec(const SymTable *tab, uint16_t sym_id, OpFixity fixity);
 uint8_t     sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_filter);
+bool        sym_is_reserved_kw(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len);
 
 /* Entity Type, Unit Type & Flat Struct Queries */
 uint16_t    sym_find_type(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len);
