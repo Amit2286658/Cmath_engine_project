@@ -17,6 +17,10 @@ $circle(center:vec2, radius:real)
 (s:real) "*" (v:vec2) :<60 -> vec2 = vec2(s * v.x, s * v.y)
 (v:vec2) "*" (s:real) :<60 -> vec2 = vec2(v.x * s, v.y * s)
 
+# Insert / Composition Operator `into` -> constructs `vec3` from `vec2` and `real`
+(z:real, T) "into" (v:vec2, T) :>55 -> vec3, T = vec3(v.x, v.y, z)
+(v:vec2, T) "into" (z:real, T) :>55 -> vec3, T = vec3(v.x, v.y, z)
+
 "dot"(a:vec2, b:vec2)       -> real = a.x * b.x + a.y * b.y
 "cross2"(a:vec2, b:vec2)    -> real = a.x * b.y - a.y * b.x
 "vec2_mag"(v:vec2)          -> real = hypot(v.x, v.y)

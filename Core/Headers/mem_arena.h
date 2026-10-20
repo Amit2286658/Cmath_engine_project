@@ -40,12 +40,16 @@ extern "C" {
 #define MEM_UNIT_NONE          0u  /* Dimensionless / no unit tag                */
 #define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
 #define MEM_MAT_HDR_SLOTS      8u  /* [rank, total_len, data_idx, flags, d0..d3] */
+#define MEM_FN_HDR_SLOTS       4u  /* [body_ast, param_cnt, slots, frame_base]   */
 
 typedef enum {
-    JUMP_NONE       = 0,
-    JUMP_GOTO       = 1,  /* `jump(Tag)` — transfer PC to `Tag`                 */
-    JUMP_BREAK_ANON = 2,  /* `break`     — exit innermost loop or tagged scope  */
-    JUMP_BREAK_TAG  = 3   /* `break(Tag)`— exit enclosing `Tag` loop/scope      */
+    JUMP_NONE          = 0,
+    JUMP_GOTO          = 1,  /* `jump(Tag)`        — transfer PC to `Tag`            */
+    JUMP_BREAK_ANON    = 2,  /* `break [val]`      — exit innermost loop or scope    */
+    JUMP_BREAK_TAG     = 3,  /* `break(Tag[,val])` — exit enclosing `Tag` loop/scope */
+    JUMP_CONTINUE_ANON = 4,  /* `continue`         — next iteration of innermost loop*/
+    JUMP_CONTINUE_TAG  = 5,  /* `continue(Tag)`    — next iteration of `Tag` loop    */
+    JUMP_RETURN        = 6   /* `return [val]`     — early return from function/eval */
 } JumpKind;
 
 /* ============================================================================
@@ -105,10 +109,12 @@ typedef struct {
     uint8_t     str_type_id;
     uint8_t     vec_type_id;
     uint8_t     mat_type_id;
+    uint8_t     fn_type_id;
 
-    /* Tagged Scope (`Tag : { ... }`) Jump, Break & Reuse Runtime State */
-    uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_BREAK_TAG)       */
+    /* Control-Flow Jump, Break, Continue, Return & Tagged Scope Runtime State */
+    uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_RETURN)          */
     uint8_t     jump_target_id;
+    Value       jump_val;          /* Payload for `break expr` / `return expr`   */
     uint16_t    label_ast[MEM_MAX_LABELS];
 
     /* Recursion & Global Step Budget State */

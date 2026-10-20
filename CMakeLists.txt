@@ -6,13 +6,6 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 add_compile_options(-Wall -Wextra)
 
-# Value representation option: OFF = 8-byte IEEE-754 NaN-boxing (0), ON = 12-byte Tagged Union (1)
-option(USE_TAGGED_12B "Use 12-byte tagged union Value representation instead of 8-byte NaN-boxing" OFF)
-if(USE_TAGGED_12B)
-    add_compile_definitions(USE_TAGGED_12B=1)
-else()
-    add_compile_definitions(USE_TAGGED_12B=0)
-endif()
 
 # Hardening flags that work without needing virtual-address-space tricks --
 # useful on sandboxed environments (proot, etc.) where ASan/Valgrind can't run.

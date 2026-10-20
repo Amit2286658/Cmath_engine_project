@@ -7,6 +7,12 @@ control structure, and unit type group is compiled from modular `.math` files
 into a portable `.mathc` binary image. Modules can be enabled or disabled in
 **O(1)** via a bitmask flip.
 
+---
+
+## Section 1 — Codebase Documentation
+
+### Architecture
+
 The design is a deliberate **three-way separation of concerns**:
 
 - **`Core/Code/` + `Core/Headers/`** — the engine pipeline (arena, symbol table,
@@ -25,83 +31,6 @@ dependencies**. The host frontend owns all file I/O; the engine compiles
 `.math` text and loads `.mathc` images strictly in memory, and can call back
 into host-provided C functions (`@extern`) for things like live web APIs,
 databases, or sensor reads.
-
-## Highlights
-
-- **Blank-slate core** — `eng_init_blank()` rejects even `1 + 2`. Nothing is
-  built in.
-- **Embedded precompiled stdlib** — `eng_init()` boots the entire scientific
-  standard library from an embedded byte image in O(1) `memcpy` time
-  (zero parsing, zero I/O).
-- **Pure in-memory user extensions** — `user_compile_ext` compiles raw `.math`
-  text into host-managed `.mathc` bytes; `user_load_mathc` reloads them in O(1).
-- **AOT `.math` → `.mathc` + C-header compiler** (`mathc`) for build-time baking.
-- **Host extern callbacks** — `eng_register_extern()` binds `@name(...)` calls
-  in `.math` to native C functions (HTTP, storage, hardware, ...).
-- **Rich control flow** — `{ }` scope blocks, `if ... or ... else`, `switch`/
-  `case`, ternary `? :`, `Tag : { ... }` labeled scopes with `jump`/`run`, and
-  `break`/`break(Tag)`. Plus keywordless `(i in 1...5) { ... }` /
-  `(v in vec) { ... }` loops and the `loop` keyword.
-- **Streamlined `.math` ergonomics** — unquoted shorthand declarations
-  (`fn(a, b) = ...`, `c = ...`), optional `:real`/`-> real` types, default
-  parameters (`round(x, digits = 0)`), implicit multiplication (`2x`, `3(x + 1)`,
-  `2π`), range (`1..5`, `1...5`) & membership (`x in vec`) operators, and UFCS
-  dot-chaining (`v.push(10).vec_sum()`).
-- **Solvers & extrema** — the general equation solver `solve(x, expr == val, guess)`
-  plus `fmin`/`fmax` over an interval.
-- **Expressive assignments & destructuring** — multi-variable declarations
-  `x, y := 5`, compound assignments (`+=`, `-=`, `*=`, `/=`, `%=`, `^=`),
-  struct/vector/matrix destructuring (`r1, r2 := quad_roots(1, -5, 6)`), and
-  dynamic slot promotion (`x := 5 ; x = x + 5i` → `5 + 5i : complex`).
-- **Custom errors & assertions** — `error("msg")` and `assert(cond, "msg")` abort
-  evaluation with a user message.
-- **Distributed boolean logic** — `&& || ! and or not nor xor nand`, plus the
-  comparison shorthand `(x & y == 1 | 2)`.
-- **Orthogonal `(EntityType, UnitType)` tags** — values carry a type *and* a
-  unit group. Unit groups (`distance`, `angle`, `mass`, `speed`, `pressure`,
-  ...) are registered from `.math`, so users can define their own.
-- **Concrete variable locks** — `x : real := 5`, `x : distance := 50m`,
-  `x : real, distance := 50m`, `x, y : real, distance := 50m`.
-- **Generic unit `T`** — same-unit operators/functions preserve the unit
-  (`scale_unit`, `unit_span`); cross-unit operators transform dimensions
-  (`distance / time -> speed`).
-- **Same-unit conversions** — the universal infix operator `(2.5 km) in (1 m)`,
-  unit-checked postfix operators (`to_m`, `to_rad`, `to_psi`, ...), and pairwise
-  functions (`km_to_m`, `deg_to_rad`, ...).
-- **Strict boolean `!` & approximate equality `~`** — `!` flips only boolean
-  conditions (`!(x == 5)`, distributed `(x == !(1 | 2))`); `~` tests closeness
-  (`5.001 ~ 5`).
-- **Array & tensor literals** — C-style `v[i]` subscripting for vectors/structs,
-  and a dedicated `$mat` N-dimensional matrix/tensor type with `[...]` literals,
-  `M[r, c]` indexing, matrix arithmetic, `det`/`trace`/`transpose`/`inv`/`mat_rank`.
-- **Calculus** — derivatives (`diff`, `diff2`, `diff_n`), definite integrals
-  (`integrate`/`ntg`), two-sided & one-sided limits (`lim`, `lim_left`,
-  `lim_right`), discrete `sigma`/`prod`, Taylor series, arc length, and solids of
-  revolution.
-- **Broad curriculum** — commercial/general arithmetic (percentages, interest,
-  EMI, work & time, progressions), high-school physics, chemistry, and
-  quantitative biology.
-- **Pattern-driven lexer** — consuming `$type` regex patterns.
-- **Pratt parser** — operator fixity and precedence are data.
-- **Multiple dispatch** — operators/functions overloaded on operand types
-  *and* unit groups.
-- **Generic dynamic vectors** — growable/shrinkable `$vec` of *any* `T`, with
-  variadic literals `vec(10, 20, 30)` / `list(a, ...)` and `a..b` / `a...b` ranges.
-- **Flat C-style structs** — `$vec2`, `$vec3`, `$circle`, `$mat2`, `$complex`.
-- **Rich standard library** — arithmetic/combinatorics/number theory/stats,
-  trigonometry, complex numbers, geometry, algebra (matrices, quadratics,
-  polynomials), calculus, units & conversions, physics, chemistry, and biology.
-- **Pure 8-byte NaN-boxed values** — every `Value` is a single 64-bit register
-  (`sizeof(Value) == 8`); unitless `real`s are stored inline with zero pool
-  allocation, and everything else lives in the quiet-NaN payload space.
-- **Reusable `mathengine` library** — the core builds as a static library
-  (`libmathengine.a`) ready for host embedding or Android NDK integration.
-- **Guardrailed evaluation** — bounded AST nesting depth (128), a per-eval step
-  budget, oversized-input rejection, and transactional extension rollback.
-- **UTF-8 aware** — `√`, `π`, `°`, `i`, `^`, `!` and more work natively.
-- **Hardened builds** — fortify source, stack protector, ASan/UBSan when available.
-
-## Architecture
 
 ```
 Host Application (Test/main.c)
@@ -126,13 +55,7 @@ Host Application (Test/main.c)
                2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
 ```
 
-`Core/Code/*.c`, `Core/lib/delegate/*.c`, and `Core/lib/hardcode/*.c` form the
-engine (built together as the `mathengine` static library); `Test/` and
-`Tutorial/` are host-side. The engine never touches files or directories — the
-host reads `.math` text, hands it to the engine, and decides where to persist
-the returned `.mathc` bytes.
-
-## Repository Layout
+### Repository Layout
 
 ```
 CMakeLists.txt
@@ -163,15 +86,15 @@ Library/
   90_biology.math     Genetics, molecular biology, physiology, ecology
   stdlib.mathc        Compiled standard library image (generated)
 Test/
-  main.c              Host demo & 247-case automated test suite
+  main.c              Host demo & automated test suite
   user_physics.math   Sample user extension (host-backed functions)
-Tutorial/
-  00_Index_and_Overview.md  ...  09_Calculus_Arith_and_Sciences.md
+  Math Engine Language (MEP) — Complete Reference.md
+                      Canonical language specification & tutorial guidebook
 ```
 
-## Building
+### Building
 
-### With the provided makefile
+#### With the provided makefile
 
 ```sh
 make build                     # debug build (default) via Clang -> DebugBuild/myapp
@@ -182,7 +105,7 @@ make build release             # optimized build -> ReleaseBuild/myapp
 make build CC=gcc              # override the compiler
 ```
 
-### With CMake directly
+#### With CMake directly
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
@@ -196,14 +119,14 @@ against it, so the engine can be embedded directly into other hosts.
 
 Run from the repository root (the demo looks for `Test/user_physics.math`).
 
-### Value encoding
+### Value Encoding
 
 Every `Value` is a strictly **8-byte IEEE-754 NaN-box** (`sizeof(Value) == 8`):
 unitless `$real`s are stored inline as `double` bits with zero pool allocation,
 while `$iota`, unit-tagged scalars, `$str`, structs, `$vec`, and `$mat` live in
 the quiet-NaN payload space.
 
-### Recompiling the standard library
+### Recompiling the Standard Library
 
 `Core/Headers/stdlib_precompiled.h` is the `mathc` image of `Library/*.math`
 embedded as a C array. Regenerate it (and `Library/stdlib.mathc`) after editing
@@ -219,256 +142,17 @@ Standalone use of `mathc`:
 ./DebugBuild/mathc out.mathc out_header.h my_array in1.math in2.math ...
 ```
 
-## The `.math` Language
+### The `.mathc` Binary Format
 
-### Modules
+A `.mathc` image is a compact, ABI- and OS-neutral snapshot of the engine's
+permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
+version, type/module/symbol/constant counts, arena watermarks, module bitmask)
+followed by the payload. Because the header is fixed-width and the payload is
+copied verbatim, loading is a single `memcpy` — hence O(1) boot. Host-registered
+externs are intentionally *not* serialized; they are re-bound by the host after
+loading.
 
-Every `.math` file groups declarations into named modules with `[module_name]`
-and declares dependencies with `<[dependency]`. Dependencies control load order
-and the active module bitmask used for O(1) toggling.
-
-```
-[complex_ext]
-<[arith]
-<[trig]
-```
-
-### Lexical types & delimiters
-
-```
-"(" => @lparen
-"{" => @lbrace
-"}" => @rbrace
-"[" => @lbrack
-"]" => @rbrack
-$real ~ \d+ ("." \d+)?       => @f64
-$str  ~ "\"" [^"]* "\""      => @str_slice
-$vec  ~                      => @vec_type
-$mat  ~                      => @mat_type
-```
-
-`$iota` (the imaginary scalar) has no lexical pattern — it is produced by the
-postfix `i` operator (`5i`, `(3 + 4)i`, `sin(x)i`).
-
-### Operators
-
-```
-(a:real) "+" (b:real) :<50 -> real = @add(a, b)   # left-assoc, precedence 50
-(a:real) "^" (b:real) :>85 -> real = @pow(a, b)   # right-assoc; binds tighter than unary '-'
-"-"      (x:real)     :80 -> real = @neg(x)       # prefix unary
-(x:real) "++"         :90 -> real = x + 1         # postfix
-```
-
-- `:<N` left-assoc infix at precedence `N` · `:>N` right-assoc infix
-- `:N` prefix / postfix · maximal munch resolves `++`, `+++`
-- `@name(...)` calls a private C intrinsic (or a host-registered extern)
-
-### Functions, dispatch & control flow
-
-```
-"sin"(x:real)    -> real = @sin(x)
-(a:complex) "+" (b:complex) :<50 -> complex = complex(a.re + b.re, a.im + b.im)
-```
-
-All control flow comes from a small set of bootstrap intrinsics:
-
-```
-( stmt1 ; stmt2 ; final_expr )   # sequencing
-x := value                       # local variable (also '=' for mutation)
-(cond) ?? ( body )               # lazy while loop
-if(cond, then_expr, else_expr)   # lazy conditional
-```
-
-The `boot_control` module layers a full statement grammar on top:
-
-```
-x = { a := 3 ; b := 4 ; a^2 + b^2 }   # value-returning scope block
-{ x = x + 5 ; 9999 }                  # isolated scope (block value discarded)
-x, y := 5                             # multi-variable declaration
-x += 1 ; x -= 2 ; x *= 3 ; x ^= 2     # compound assignments
-
-if (c1) { b1 } or (c2) { b2 } else { b3 }          # else-if chain
-switch (v) { case 1 : { ... } else : { ... } }     # switch / case (numbers & strings)
-(cond) ? x : y                                     # right-assoc ternary
-
-Tag : { ... jump(Tag) ... }           # labeled scope; jump/run/break(Tag)
-Loop : (cond) ?? { ... break(Loop) }  # labeled while loop
-```
-
-Expression-based calculus constructs are also bootstrap intrinsics:
-
-```
-diff(x, expr, x0)          # derivative of expr at x = x0 (5-point stencil)
-diff2(x, expr, x0)         # second derivative
-diff_n(x, expr, x0, order) # nth derivative
-integrate(x, expr, a, b)   # definite integral (composite Simpson)
-lim(x, expr, x0)           # two-sided limit (Richardson extrapolation)
-lim_left / lim_right       # one-sided limits
-sigma(k, expr, lo, hi)     # discrete summation
-prod(k, expr, lo, hi)      # discrete product
-solve(x, expr == val)      # general equation solver (optional guess / bracket)
-fmin(x, expr, a, b)        # minimum over [a, b]
-fmax(x, expr, a, b)        # maximum over [a, b]
-```
-
-### Ergonomic shorthand, loops & destructuring
-
-Declarations may omit types (falling back to `real`) and quote-free names:
-
-```
-tau_const = 2π                              # unquoted constant
-hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)    # shorthand fn + default param
-log_base(x, base = 10) = ln(x) / ln(base)   # default parameter
-round(x, digits = 0)                        # default parameter
-```
-
-Implicit multiplication lets math read naturally:
-
-```
-x := 4 ; 2x^2 + 3x + 1        # 45
-2 sin(π / 2) + 2 √16          # 10
-```
-
-Ranges, membership, keywordless loops, and UFCS chaining:
-
-```
-1..5          # [1, 2, 3, 4, 5]
-1...5         # [1, 2, 3, 4, 5]
-(3 in 1...5)  # 1
-(i in 1...5) { s += i }        # keywordless range loop
-(v in arr) { tot += v }        # keywordless vector loop
-loop (k <= 4) { acc += k ; k += 1 }
-loop { k += 1 ; if (k == 7) { break } }
-v := vec() ; v.push(10).push(20).vec_sum()   # UFCS dot-chaining
-```
-
-Destructuring and custom errors:
-
-```
-r1, r2 := quad_roots(1, -5, 6)     # r1 = 3, r2 = 2
-a, b, c := vec(10, 20, 30)
-error("msg") ; assert(cond, "msg")
-```
-
-### Array subscripting & multidimensional matrices
-
-Vectors and structs support C-style `v[i]` subscripting for reading and in-place
-mutation (`=`, `+=`, `-=`, `*=`, `/=`), including negative indices on `$vec`:
-
-```
-v := vec3(2, 4, 6) ; v[0] = 10 ; v[1] += 5 ; v[2] *= 3 ; v   # vec3(x=10, y=9, z=18)
-a := vec(3, 10) ; a[-1] = 30                                 # negative index from end
-```
-
-`$mat` is a dedicated 1D–4D matrix/tensor type built from `[...]` literals
-(nested or semicolon row-separated):
-
-```
-M := [[1, 2, 3], [4, 5, 6]]     # or [1, 2, 3 ; 4, 5, 6]
-M[0, 1] = 9 ; M[1][0] += 10     # multi-index & chained read/write
-T := [[[1,2],[3,4]], [[5,6],[7,8]]] ; T[1, 0, 1]
-A * B ; det(M) ; trace(M) ; transpose(M) ; inv(M) ; mat_rank(M)
-```
-
-Factorial, implemented *in the language*:
-
-```
-(n:real) "!" :90 -> real = (
-    acc := 1;
-    k   := n;
-    (k > 1) ?? (
-        acc = acc * k;
-        k   = k - 1
-    );
-    acc
-)
-```
-
-### Unit type groups & concrete locks
-
-Every value carries an orthogonal `(EntityType, UnitType)` tag pair. Unit groups
-are declared in `.math` after the return type — never hardcoded in C:
-
-```
-(x:real) "m"  :95 -> real, distance = x
-(x:real) "km" :95 -> real, distance = x * 1000
-(x:real) "sec":95 -> real, time     = x
-
-(d:real, distance) "/" (t:real, time)  :<60 -> real, speed    = @div(d, t)
-(v:real, speed)    "*" (t:real, time)  :<60 -> real, distance = @mul(v, t)
-
-"scale_unit"(x:real, T, k:real)   -> real, T = x * k            # generic unit T
-"unit_span"(a:real, T, b:real, T) -> real, T = @abs(a - b)      # same-unit T
-```
-
-Functions accept a generic unit `T` (preserved on the result) or a concrete unit
-group (checked at call time). Variables can lock their entity type, unit group,
-or both:
-
-```
-x := 5                          # dynamic entity & unit
-x : real := 5                   # entity locked to real
-x : distance := 50m             # unit locked to distance (entity may promote)
-x : real, distance := 50m       # both locked
-x, y : real, distance := 50m    # multi-variable concrete declaration
-```
-
-### Structs & dynamic vectors
-
-```
-$vec2(x:real, y:real)
-$vec3(x:real, y:real, z:real)
-$circle(center:vec2, radius:real)
-$mat2(a:real, b:real, c:real, d:real)
-```
-
-Fields flatten into contiguous `double` slots with compile-time offset
-resolution (`c.center.y`). `$vec` is a homogeneous dynamic array of any `T`:
-`vec()`, `vec(cap)`, `vec(count, init)`, `push`, `pop`, `at` (negative index
-from end), `set`, `len`, `cap`, `resize`, `shrink`, `clear`.
-
-```
-v := vec() ; push(v, 10) ; push(v, 20) ; v          # [10, 20]
-```
-
-### Host externs
-
-Any `@name(...)` that is not a built-in C intrinsic compiles to an
-`AST_EXTERN` node. The host binds it at runtime:
-
-```c
-bool eng_register_extern(Engine *eng, const char *name,
-                         EngExternFn fn, void *user_ctx);
-```
-
-```math
-"fx_rate"(from:str, to:str) -> real = @fx_rate(from, to)
-```
-
-Callbacks receive evaluated `Value` arguments and use helpers such as
-`val_get_f64`, `val_as_cstr`, `val_from_f64`, `val_from_cstr`, and
-`val_from_f64_vec`.
-
-## Standard Library Modules
-
-| Module | File | Contents (selected) |
-| --- | --- | --- |
-| `boot_syntax` | `00_bootstrap` | `(` `)` `{` `}` `[` `]` `,` delimiters |
-| `boot_types` | `00_bootstrap` | `$real`, `$iota`, `$str`, `$vec`, `$mat` |
-| `boot_control` | `00_bootstrap` | `.` (member access & UFCS), `;`, `:=`, `=`, `??`, `loop`, `if`/`or`/`else`, `switch`/`case`, `? :`, `jump`/`run`/`break`, logical & distributed operators, `!`/`~`, array `v[i]`, calculus & solver constructs (`diff`/`integrate`/`lim`/`sigma`/`prod`/`solve`/`fmin`/`fmax`), ranges `..`/`...`, `in`, `error`/`assert`, `type_of`/`unit_of`, compound assignments, vector API |
-| `arith` | `10_arith` | `+ - * / % ^`, comparisons, `&&`/`\|\|`, `abs`/`min`/`max`/`clamp`, `gcd`/`lcm`/`ncr`/`npr`/`fib`/`is_prime`/`mod_pow`, `vec_sum`/`mean`/`variance`/`stddev`/`sma`, percentages/interest/EMI/work-time/progressions, `π`/`pi`/`e`/`phi` |
-| `trig` | `20_trig` | `sin cos tan sec csc cot`, inverses, `sinh cosh tanh` (+inverses), `ln log10 log2 logb exp sqrt cbrt hypot`, `sigmoid` |
-| `complex_ext` | `30_complex` | postfix `i`, `$complex`, overloaded `+ - * /` (generic over unit `T`), `conj cabs carg cexp_i polar` |
-| `geom_ext` | `40_geom` | `$vec2/$vec3/$circle`, vector arithmetic & `**` dot, `cross2/cross3`, magnitudes/distances, `circle_area`, `sphere_vol` |
-| `algebra` | `50_algebra` | `$mat2`, `$mat` multidim matrices (arithmetic, `det`/`trace`/`transpose`/`inv`, `mat_zeros`/`mat_eye`/`mat_rank`/`mat_shape`), `solve_2x2`, `quad_roots`, `quad_croot`, Horner `poly_val`, `poly_deriv/integ/add/mul`, `poly_newton` |
-| `calculus` | `55_calculus` | symbolic polynomial calculus (`poly_diff`, `poly_def_integ`, `poly_newton_root`), tangent/normal lines, curvature, arc length, solids of revolution, `trapz_vec`/`simpson_vec`, `taylor_exp/sin/cos` |
-| `units` | `60_units` | postfix `deg ° rad arcmin arcsec pct dB dBm`; length/mass/time/speed/pressure/energy/power unit groups; temperature conversions |
-| `conversions` | `65_conversions` | universal `in` operator, `to_<unit>` postfix conversions, pairwise `<u1>_to_<u2>` functions for distance/angle/mass/time/speed/pressure/energy/power |
-| `physics` | `70_physics` | CODATA constants; mechanics & SUVAT, gravity/orbital, circuits & EM, waves/optics, thermodynamics, quantum & relativity |
-| `chemistry` | `80_chemistry` | constants; stoichiometry, gas laws, colligative properties, pH/pOH & buffers, kinetics/decay, electrochemistry & solid state |
-| `biology` | `90_biology` | Hardy-Weinberg genetics, molecular biology & PCR, enzyme kinetics & Q10, plant water relations, microscopy, human physiology, ecology & diversity indices |
-
-## Usage (C API)
+### C API Usage
 
 ```c
 #include "math_engine.h"   /* + user_loader.h for user extensions */
@@ -516,92 +200,20 @@ Key entry points (`math_engine.h` + `user_loader.h`):
 | `user_compile_ext` | Raw `.math` text → hooks engine + returns `.mathc` bytes |
 | `user_load_mathc` | `.mathc` bytes → hooks engine in O(1) |
 
-## The `.mathc` Binary Format
-
-A `.mathc` image is a compact, ABI- and OS-neutral snapshot of the engine's
-permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
-version, type/module/symbol/constant counts, arena watermarks, module bitmask)
-followed by the payload. Because the header is fixed-width and the payload is
-copied verbatim, loading is a single `memcpy` — hence O(1) boot. Host-registered
-externs are intentionally *not* serialized; they are re-bound by the host after
-loading.
-
-## Example Expressions
-
-| Expression | Result | Type |
-| --- | --- | --- |
-| `2 ^ 3 ^ 2` | `512` | real |
-| `√16 + 5!` | `124` | real |
-| `ncr(10, 3) + npr(5, 2)` | `140` | real |
-| `mod_pow(2, 10, 1000)` | `24` | real |
-| `(3 + 4)i` | `7i` | iota |
-| `((3 + 4)i)i` | `-7` | real |
-| `(-5 + 10i) / (3 + 4i)` | `1 + 2i` | complex |
-| `x = { a := 3 ; b := 4 ; a^2 + b^2 } ; x` | `25` | real |
-| `x, y := 5 ; x, y += 3 ; x * 10 + y` | `88` | real |
-| `switch ("Au") { case "Au" : { 79 } else : { 0 } }` | `79` | real |
-| `s := 85 ; (s >= 90) ? 4 : (s >= 80) ? 3 : 2` | `3` | real |
-| `x := 5 ; x = x + 5i ; x` | `5 + 5i` | complex |
-| `cross3(vec3(1,0,0), vec3(0,1,0))` | `vec3(x=0, y=0, z=1)` | vec3 |
-| `solve_2x2(2, 3, 8, 5, -1, 3)` | `vec2(x=1, y=2)` | vec2 |
-| `quad_croot(1, 2, 5)` | `-1 + 2i` | complex |
-| `sin(30 deg) + cos(60°)` | `1` | real |
-| `1.5 km + 25000 cm + 500 mm` | `1750.5` | real |
-| `2 atm + 1 bar` | `302650` | real |
-| `100m / 10sec` | `10` | real *(speed)* |
-| `unit_of(100m / 10sec)` | `"speed"` | str |
-| `(2.5 km) in (1 m)` | `2500` | real |
-| `(180 deg) to_rad` | `3.141592654` | real |
-| `vec3(2,4,6)[1] += 5` | `9` | real |
-| `det([4, 7 ; 2, 6])` | `10` | real |
-| `inv([4, 7 ; 2, 6]) * [10, 10]` | `[-1, 2]` | mat |
-| `diff(x, x^3 + 2*x, 3)` | `29` | real |
-| `integrate(x, 3 * (x^2), 0, 2)` | `8` | real |
-| `lim(x, sin(x) / x, 0)` | `1` | real |
-| `sigma(k, k^2, 1, 5)` | `55` | real |
-| `solve(x, x^2 == 9, 2)` | `3` | real |
-| `fmin(x, (x - 3)^2 + 5, 0, 10)` | `3` | real |
-| `1...5` | `[1, 2, 3, 4, 5]` | vec |
-| `x := 4 ; 2x^2 + 3x + 1` | `45` | real |
-| `s := 0 ; (i in 1...5) { s += i } ; s` | `15` | real |
-| `r1, r2 := quad_roots(1, -5, 6) ; r1 * 10 + r2` | `32` | real |
-| `5.001 ~ 5` | `1` | real |
-| `ke(2 kg, 36 kph)` | `100` | real |
-| `lorentz_gamma(0.6 * c0)` | `1.25` | real |
-| `ph_from_h(0.001) + poh_from_ph(3)` | `14` | real |
-| `pcr_copies(10)` | `1024` | real |
-| `michaelis_menten(100, 5, 5)` | `50` | real |
-| `fx_rate("USD", "INR")` | `84` | real *(host extern)* |
-| `50 to_inr` | `4200` | real *(host extern)* |
-
-## Tutorial
-
-A full chapter-by-chapter guide lives in [`Tutorial/`](Tutorial/00_Index_and_Overview.md):
-
-1. Getting Started & Host API
-2. Grammar, Types & Operators
-3. Control Flow, Structs & Vectors
-4. Algebra, Polynomials & Matrices
-5. Units, Physics & Chemistry
-6. Host Extern Callbacks & Networking
-7. Unit Groups, Concrete Variable Locks & Generic Unit `T`
-8. Conversions, Array Indexing & Multidimensional Matrices
-9. Calculus, Commercial Arithmetic & Quantitative Sciences
-
-## Testing
+### Testing
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
 stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
-reload), registers host externs, prints an architecture report, and runs a
-**247-case** automated suite (stdlib + control flow + booleans + multi-var +
+reload), registers host externs, prints an architecture report, and runs an
+automated suite (stdlib + control flow + booleans + multi-var +
 concrete units + array/matrix + calculus + conversions + algebra + physics +
 chemistry + biology + host externs + ergonomics), followed by type-safety &
-reserved-keyword guardrails, O(1) module-toggling checks, and an **8-case audit regression
-suite** (unit constants in `.mathc`, transactional rollback, nesting-depth and
+reserved-keyword guardrails, O(1) module-toggling checks, and an audit regression
+suite (unit constants in `.mathc`, transactional rollback, nesting-depth and
 input-length guards, self-referential structs, pool integrity, headerless user
 extensions, and safe float→int indexing). Run it with `make run`.
 
-## Design Goals
+### Design Goals
 
 1. **Zero hardcoded math** — every type, operator, unit, and function comes from
    `.math`; the only hardcoded grammar/ergonomic rules are quarantined in
@@ -613,6 +225,450 @@ extensions, and safe float→int indexing). Run it with `make run`.
 6. **Host extensibility** — native callbacks via `@extern` with no core coupling.
 7. **Small footprint** — fixed-capacity arenas, compact 8-byte AST nodes.
 8. **Portability** — plain C11 + libm, ABI/OS-neutral binary format.
+
+---
+
+## Section 2 — MEP Language Specification
+
+*This section documents the complete MEP (Math Engine Language) specification, adapted from the canonical guidebook in `Test/Math Engine Language (MEP) — Complete Reference.md`.*
+
+### 2.1 Overview
+
+MEP is an extension-driven expression language and C11 engine for scientific and everyday math. A small C core provides memory, parsing, and evaluation; almost everything else (operators, units, types, functions) is defined in text extensions (`.math`) that are compiled into the engine at start-up.
+
+Key properties:
+
+- **Embeddable.** The engine is plain C11, makes zero `malloc` calls, never touches the filesystem, and runs from fixed-size arenas (`sizeof(Engine) ≈ 247 KB`, `sizeof(Value) == 8`, `sizeof(AstNode) == 8`). It targets the Android NDK but builds anywhere.
+- **Extensible.** Operators, precedences, types, unit groups, constants, and functions are all declared in `.math` source, not hard-coded in C.
+- **Unit-aware.** Every value carries an entity type (`real`, `complex`, `vec2`…) and an orthogonal unit tag (`distance`, `angle`, `mass`…). Mixing incompatible units is an error.
+- **Isolated evaluations.** Each call to `eng_eval` is a fresh script: variables you declare do not survive to the next call. Loaded extensions and host callbacks do.
+
+### 2.2 Lexical Structure
+
+**Source text** is UTF-8. Symbols such as `π`, `φ`, `ϕ`, `°`, and `√` are ordinary tokens.
+
+**Comments** start with `#` and run to the end of the line.
+
+**Numbers** are decimal: digits with an optional fractional part (`42`, `3.14159`). There is no exponent notation (`1e3` is read as `1` followed by the identifier `e3`) and no digit separators. Negative numbers are the unary minus operator applied to a literal. Results print with 10 significant digits (`1/3` prints `0.3333333333`; very large values use `1.23456789e+11`).
+
+**Strings** are double-quoted literals with no escapes (`"USD"`). They support `==`, `!=`, `type_of`, being returned from functions, being passed to host callbacks, and converting to/from typed values via the `"_"` operators.
+
+**Constants** `π` and `pi` (`3.141592654`), `e` (`2.718281828`), and `phi`, `φ`, and `ϕ` (golden ratio `1.618033989`) are predefined in `[arith]`.
+
+**Statements** are separated by a newline or by `;`:
+
+```text
+x := 10
+y := 20
+x + y            # 30   (newline acts as ';')
+
+x := 10 ; y := 20 ; x + y     # on one line, ';' is compulsory
+x := 10 y := 20               # ERROR: Unexpected trailing token 'y'
+```
+
+A line ending in an infix operator continues onto the next line. A line starting with a prefix-capable operator (`-x`, `!c`, `_"42"`) starts a new statement. Implicit multiplication never crosses a newline. A trailing `;` before `}`, `)`, `]` or end of input is ignored.
+
+**Reserved words** cannot be variable or parameter names: `if or then else default switch case jump run break continue return`. (`loop` can be used as a loop keyword or as a user scope tag `loop : { ... }`.)
+
+### 2.3 Types, Units and Variables
+
+#### 2.3.1 Entity Types
+
+| Type | Meaning | Example |
+| :-- | :-- | :-- |
+| `real` | 64-bit IEEE-754 float | `42`, `3.14` |
+| `iota` | pure imaginary scalar | `5i`, `(3 + 4)i` |
+| `complex` | complex struct (`re`, `im`) | `1 + 2i`, `5 into 5i` |
+| `str` | UTF-8 string slice | `"Euler"`, `42_` |
+| `vec` | growable homogeneous container (`vec<T>`, `list<T>`, `stack<T>`, `queue<T>`) | `vec<real>(1, 2, 3)` |
+| `mat` | 1D–4D dense tensor | `[1, 2 ; 3, 4]` |
+| `fn` | first-class lambda closure | `x => x^2` |
+| `vec2`, `vec3`, `circle`, `mat2` | fixed-layout structs | `vec2(1, 2)` |
+
+`type_of(x)` returns the entity type name as a string; `unit_of(x)` returns the unit group name (`"distance"`, or `"none"`).
+
+#### 2.3.2 Units
+
+Postfix unit operators bind at precedence 95 and normalise to SI base units, tagging the value with its unit group: `100 km` is `100000 [distance]`, `90 deg` is `1.5708 [angle]`. Addition and subtraction require matching groups: `50m + 20cm` gives `50.2 [distance]`, while `100cm + 60°` fails with `Unit mismatch for '+'`. Multiplying by a plain number keeps the unit; dividing across groups can produce a new one (`distance / time` gives `speed`). Groups are declared in `.math` files, so you can invent your own.
+
+Because postfix operators only fire after a complete operand, `m := 5 ; m + 10` treats `m` as a variable, while `50m` is fifty metres. `50im` and `50mi` both give `50i [distance]`.
+
+#### 2.3.3 Declaring and Assigning Variables
+
+`:=` declares, `=` assigns to an existing variable. Compound forms are `+= -= *= /= %= ^=`.
+
+| Declaration | Entity lock | Unit lock | Effect |
+| :-- | :-- | :-- | :-- |
+| `x := 5` | dynamic | dynamic | may become complex or change unit |
+| `x : real := 5` | `real` | dynamic | `x += 5i` is rejected |
+| `x : distance := 50m` | dynamic | `distance` | `x += 50im` promotes to `50 + 50i [distance]`; `x += 60°` is rejected |
+| `x : real, distance := 50m` | `real` | `distance` | `x += 10cm` gives `50.1`; unitless assignment is rejected |
+| `v : vec<vec2> := vec<vec2>()` | `vec` (elem `vec2`) | dynamic | locks variable to `$vec` |
+
+Multiple variables: `x, y := 5` broadcasts a scalar. Destructuring unpacks a struct, `vec` or `mat` in order: `r1, r2 := quad_roots(1, -5, 6)` gives `r1 = 3`, `r2 = 2`; `a, b, c := vec(10, 20, 30)`.
+
+#### 2.3.4 Scope and Lifetime
+
+`{ ... }` opens a lexical scope and evaluates to its last expression. `:=` inside it shadows an outer variable; `=` mutates it:
+
+```text
+x := 1 ; { x := 99 } ; x          # 1
+x := 1 ; { x = 99 } ; x           # 99
+{ a := 3 ; b := 4 ; a^2 + b^2 }   # 25
+```
+
+Variables live only for the current `eng_eval` call. `eng_eval("x := 10")` followed by `eng_eval("x")` fails with `Undefined symbol or constant 'x'`. Pass multi-step work as one script, or keep state in the host through extern callbacks.
+
+### 2.4 Operators and Precedence
+
+Higher numbers bind tighter. Everything here is declared in the library, so extensions can add to it.
+
+| Prec | Kind | Operators |
+| --: | :-- | :-- |
+| 95 | postfix / member | `.` field or UFCS call, `v[i]`, `f(x)`, `i` (imaginary), `_` (`@tostr` stringifier), unit suffixes (`km`, `deg`, `°`, `kg`, `hr`…) |
+| 90 | postfix | `!` factorial, `to_<unit>` conversions, `++ +++ -- ---` |
+| 85 | right infix, prefix | `^` exponent (`-x^2 = -(x^2)`, `2^3^2 = 512`); prefix `++ +++ -- ---`, prefix `_` (`@fromstr` string-to-type parser) |
+| 80 | prefix | `-`, `+`, `√`, `!` (boolean NOT) |
+| 60 | left infix | `*`, `/`, `%`, and implicit multiplication (`60 -> 65`) |
+| 55 | left/right infix | `in` (left, membership and unit conversion), `into` (right, composite constructor & container insert) |
+| 50 | left infix | `+`, `-` |
+| 45 | left infix | `..` (exclusive), `...` (inclusive), `..<` (right-open), `<..` (left-open), `plus`, `minus` |
+| 35 / 34 | left infix | `&`, `\|` (distributed combinators) |
+| 30 | left infix | `==  !=  <  <=  >  >=`, `~` (approximately equal) |
+| 25 | prefix | `not` |
+| 20 | left infix | `&&`, `and`, `nand`, and `**` (vec3 dot product) |
+| 18 / 15 | left infix | `xor`, `^^` / `\|\|`, `or`, `nor` |
+| 10 | right infix | `cond ? a : b` |
+| 8 | right infix | `=>` lambda |
+| 5 | right infix | `:=  =  +=  -=  *=  /=  %=  ^=` |
+| 3 | left infix | `??` while-loop |
+| 1 | left infix | `;` and newline |
+
+#### 2.4.1 Plain String Conversion Operators (`x_` and `_s`)
+
+- **Postfix `"_"` (`(x:T) "_" :95 -> str = @tostr(x)`)**:
+  Converts any runtime value (`real`, `iota`, `complex`, `vec2`, `vec3`, `circle`, `mat2`, `vec`, `mat`, `fn`, `str`) into its plain string (`$str`) representation:
+  ```text
+  42_                  # "42"
+  (3 + 4i)_            # "3 + 4i"
+  vec2(3, 4)_          # "vec2(x=3, y=4)"
+  vec(10, 20, 30)_     # "[10, 20, 30]"
+  [1, 2 ; 3, 4]_       # "[[1, 2], [3, 4]]"
+  ```
+- **Prefix `"_"` (`"_"(s:str) :85 -> T = @fromstr(s)`)**:
+  Parses and evaluates a plain string `$str` into its most appropriate non-string runtime type (`real`, `iota`, `complex`, structs like `vec2`/`vec3`/`circle`/`mat2`, 1D dynamic `vec`, multidimensional `mat`, or unit-tagged quantities like `"100 km"`). If the string cannot be converted into any valid non-string type, it raises `No compatible type found for '...'`:
+  ```text
+  _"42" + 8            # 50          (real)
+  _"3 + 4i"            # 3 + 4i      (complex)
+  _"vec2(3, 4)"        # vec2(x=3, y=4)
+  _"[10, 20, 30]"      # [10, 20, 30] (vec)
+  _"[[1, 2], [3, 4]]"  # [[1, 2], [3, 4]] (mat)
+  unit_of(_"100 km")   # "distance"
+  _(vec3(1, 2, 3)_)    # vec3(x=1, y=2, z=3) (lossless round-trip)
+  _"not_a_type"        # ERROR: No compatible type found for 'not_a_type'
+  ```
+
+#### 2.4.2 The `"into"` Insert & Composition Operator
+
+`"into"` is a right-associative infix operator (`:>55`) that inserts a component or element into another value and returns the resulting composite type or container:
+
+| Expression | Result Type | Behavior / Result |
+| :-- | :-- | :-- |
+| `5 into 5i`, `5i into 5`, `5 into 5` | `complex` | Combines real and imaginary parts into `5 + 5i` (`complex(5, 5)`) |
+| `2 into (3 + 4i)` | `complex` | Adds real component into complex: `5 + 4i` |
+| `3i into (3 + 4i)` | `complex` | Adds imaginary component into complex: `3 + 7i` |
+| `7 into vec2(3, 4)` or `vec2(3, 4) into 7` | `vec3` | Promotes 2D `vec2(x, y)` + `z` into 3D `vec3(x=3, y=4, z=7)` |
+| `item into v` (`v` is `vec`/`list`/`stack`/`queue`) | `vec` | Appends `item` into `v` (`@vpush(v, item)`), acting as an infix alternative to `v.push(item)` |
+
+Because `"into"` is right-associative, `10 into 20 into vec<real>()` chains naturally (`20` is pushed first, then `10`, yielding `[20, 10]`), and `v := vec<real>() ; 10 into v ; 20 into v` yields `[10, 20]`.
+
+#### 2.4.3 Implicit Multiplication, Booleans, Approximate Equality & Complex Numbers
+
+- **Implicit multiplication** inserts `*` when a value, variable, or `)` is directly followed by an identifier, `(`, or `√`: `x := 4 ; 2x^2 + 3x + 1` is `45` (the `^` binds first), `3(x+1)(x-1)` works, and `2 3` is a syntax error.
+- **Booleans** are reals: `0` is false, anything non-zero is true, and comparisons return `1` or `0`. Prefix `!` flips only `0` and `1`; `!5` raises `Operand 5 out of range for boolean negation '!': expected 0 or 1`. Use `not` or `!(x == 5)` for general conditions.
+- **Approximate equality** `a ~ b` is true when `|a - b| <= 0.001`: `5.001 ~ 5` is `1`, `5.01 ~ 5` is `0`.
+- **Distributed comparisons** let one comparison fan out over `&`, `|`, and `!`: `x == 1 | 3` means `(x == 1) | (x == 3)`, `(x & y == 1 | 2)` means `((x == 1) | (x == 2)) & ((y == 1) | (y == 2))`, and `x == !(1 | 2)` means `!((x == 1) | (x == 2))`.
+- **Complex numbers.** The postfix `i` makes an imaginary scalar and is typed by multiple dispatch: `1 + 1i` (`1 + 1i`), `(3 + 4)i` (`7i`), `((3 + 4)i)i` (`-7`), `(1 + 2i)i` (`-2 + 1i`), `(3 + 4i) / (1 - 2i)` (`-1 + 2i`).
+- **Four Range Operators.**
+  - `a..b` (2-dot): **exclusive–exclusive** `(a, b)` — `1..5` builds `[2, 3, 4]`.
+  - `a...b` (3-dot): **inclusive–inclusive** `[a, b]` — `1...5` builds `[1, 2, 3, 4, 5]`.
+  - `a..<b`: **inclusive–exclusive** `[a, b)` — `1..<5` builds `[1, 2, 3, 4]`.
+  - `a<..b`: **exclusive–inclusive** `(a, b]` — `1<..5` builds `[2, 3, 4, 5]`.
+
+### 2.5 Control Flow
+
+Every construct is an expression with a value.
+
+**Conditionals.** `if` takes `or` for else-if branches and `else` for the fallback; a 3-argument function form also exists.
+
+```text
+x := 7
+if (x < 5) { "small" } or (x < 10) { "medium" } else { "large" }   # "medium"
+if(1, 10, 20)                      # 10
+x == 7 ? "yes" : "no"              # ternary
+```
+
+**`switch`** matches exact values, inclusive/exclusive ranges, relational guards, and destructuring patterns; patterns combine with `,` and take an optional `if` guard. Cases end with `else`.
+
+```text
+switch (5) { case 1, 2 : { "low" }  case 3...10 : { "mid" }  case > 100 : { "high" }  else : { "other" } }   # "mid"
+
+p := vec2(0, 7)
+switch (p) {
+    case vec2(0, 0)           : { 0 }
+    case vec2(0, y)           : { y * 10 }       # binds y
+    case vec2(x, y) if x == y : { x * 100 }
+    else                      : { -1 }
+}                                                # 70
+```
+
+**Loops & Unparenthesized Iterator Variables.** Either a parenthesized header `(var in iterable) { ... }` or an **unparenthesized** header `var in iterable { ... }` (or `var in iterable ?? { ... }`) automatically declares `var` as the loop iterator variable and loops over a range, `vec`, or `mat`—while standalone `undef_var in 1...10` without a loop body still fails with `Undefined symbol or constant 'undef_var'`. `loop` accepts a range, a condition, or nothing. `(cond) ?? { ... }` is a lazy while.
+
+```text
+sum := 0 ; (i in 1...5) { sum += i } ; sum                  # 15
+sum := 0 ; i in 1...5 { sum += i } ; sum                    # 15 (unparenthesized iterator)
+sum := 0 ; k in 1..<4 ?? { sum += k * 10 } ; sum            # 60
+k := 0 ; loop (k < 4) { k += 1 } ; k                        # 4
+k := 0 ; loop { k += 1 ; if (k >= 7) { break } } ; k        # 7
+n := 0 ; (n < 5) ?? { n += 2 } ; n                          # 6
+```
+
+**Jumps.** `break`, `break expr`, `continue`, `return`, `return expr`. Loops evaluate to the value of `break expr`:
+
+```text
+found := (x in 1...20) { if (x^2 > 50) { break x } }   # 8
+```
+
+**Tagged scopes.** `Tag : loop-or-block` names a scope so inner code can target it with `break(Tag)`, `break(Tag, value)`, `continue(Tag)`, `jump(Tag)` and `run(Tag)` (or `Tag()`):
+
+```text
+res := Outer : (i in 1...5) {
+    (j in 1...5) { if (i * j == 12) { break(Outer, i * 100 + j) } }
+}                                   # 304
+```
+
+### 2.6 Collections, Matrices, Comprehensions & Lambdas
+
+#### 2.6.1 Parameterized Dynamic Vectors, Lists, Stacks & Queues
+
+All dynamic homogeneous 1D containers share the `$vec` runtime representation and support explicit `<T>` (and `<T, unit>`) type-parameterized nomenclature as well as untyped inference:
+
+| Container Form | Variations Supported | Description |
+| :-- | :-- | :-- |
+| `vec<T>(...)` / `vec(...)` | `vec<T>()`, `vec<T>(cap)`, `vec<T>(count, init)`, `vec<T>(a, b, c, ...)` | Growable homogeneous vector; locks element type to `T` (and optional unit in `vec<real, distance>(...)`) even when created empty |
+| `list<T>(...)` / `list(...)` | `list<T>()`, `list<T>(a)`, `list<T>(a, b, ...)` | Element-wise list constructor (1 or 2 args are elements, never capacity/fill) |
+| `stack<T>(...)` / `stack(...)` | `stack<T>()`, `stack<T>(a, b, ...)` | LIFO stack sublist supporting `.push(x)` / `x into s`, `.pop()`, `.peek()` / `.top()` / `.back()`, `.is_empty()` |
+| `queue<T>(...)` / `queue(...)` | `queue<T>()`, `queue<T>(a, b, ...)` | FIFO queue sublist supporting `.enqueue(x)` / `.push(x)` / `x into q`, `.dequeue()` / `.shift()` / `.pop_front()`, `.front()`, `.is_empty()` |
+
+All elements in a container must share the locked element type `T` (and unit lock, if specified):
+- `v := vec<vec2>() ; 10 into v` raises `Vector type mismatch: cannot push 'real' into vec<vec2>`.
+- `q := queue<real, distance>() ; q.enqueue(60 deg)` raises `Vector unit mismatch`.
+
+| Call / Operator | Result |
+| :-- | :-- |
+| `push(v, x)`, `v.push(x)`, `x into v` | append to back (mutates `v`) |
+| `pop(v)`, `v.pop()` | remove and return last element (LIFO pop) |
+| `peek(v)`, `top(v)`, `back(v)` | inspect last element without removing (`@vpeek(v, -1)`) |
+| `enqueue(q, x)`, `q.enqueue(x)` | append to back of queue (`@vpush(q, x)`) |
+| `dequeue(q)`, `shift(q)`, `pop_front(q)` | remove and return first element (`@vshift(q)`, FIFO dequeue) |
+| `front(q)`, `q.front()` | inspect first element without removing (`@vpeek(q, 0)`) |
+| `is_empty(v)`, `v.is_empty()` | returns `1` if `len(v) == 0`, else `0` |
+| `at(v, i)`, `set(v, i, x)`, `v[i]` | read / write; negative `i` counts from the end |
+| `len`, `cap`, `resize(v, n)`, `shrink`, `clear` | size and capacity management |
+| `sum`, `mean`, `variance`, `stddev`, `sma(v, w)` | statistical reductions (`variance` is population variance) |
+
+Slicing returns a new vector and also assigns: `v := vec(10, 20, 30, 40, 50) ; v[1...3]` is `[20, 30, 40]`, `v[0..4]` is `[20, 30, 40]`, `v[-3...-1]` is `[30, 40, 50]`, `v[3...1]` reverses, and `v[1...3] = 99` broadcasts.
+
+#### 2.6.2 Matrices (`mat`)
+
+Literals use `[...]`: `[1, 2, 3]` (1D), `[[1, 2], [3, 4]]` or `[1, 2 ; 3, 4]` (2D), and nested forms up to four dimensions. Index with `M[r, c]` or `M[r][c]`, and slice with ranges: `M[0...1, 1...2]` gives a submatrix, `M[2, 0...1]` a row.
+
+Arithmetic: `A + B`, `A - B`, `A * B` (matrix product), `s * A`, `A / s`, `-A`. Functions: `det`, `trace`, `transpose`, `inv` (Gauss–Jordan), `mat_zeros(r, c)`, `mat_ones(r, c)`, `mat_eye(n)`, `mat_fill(r, c, v)`, `mat_rows`, `mat_cols`, `mat_rank`, `mat_len`, `mat_shape`. Example: `[[1,2],[3,4]] * [[5,6],[7,8]]` is `[[19, 22], [43, 50]]`.
+
+#### 2.6.3 Comprehensions
+
+`[expr for x in iterable if cond]` builds a vector from a range, `vec` or `mat`:
+
+```text
+[x^2 for x in 1...5]                      # [1, 4, 9, 16, 25]
+pts := list<vec2>(vec2(1, 2), vec2(3, 4), vec2(5, 6))
+[p.x + p.y for p in pts if p.x > 1]       # [7, 11]
+```
+
+#### 2.6.4 Lambdas and Higher-Order Functions
+
+Lambdas are first-class closures: `x => x^2`, `(a, b) => a + b`, `() => 42`, or with a block body `(x) => { y := x * 2 ; y + 1 }`. They capture variables from the enclosing scope. Call with `f(5)`, `call(f, 5)`, or immediately: `((x) => x * 3)(7)` is `21`.
+
+```text
+k := 10 ; scale := x => x * k ; scale(7)       # 70
+```
+
+Higher-order methods work on both `vec` and `mat`: `map`, `filter`, `reduce(f)`, `reduce(init, f)` / `fold(init, f)`, `any`, `all`, `find`, `count_if`.
+
+```text
+(1...5).map(x => x^2).filter(x => x > 5).sum()     # 50
+(1...4).fold(10, (acc, x) => acc + x)              # 20
+vec(3,1,2).count_if(x => x >= 2)                   # 2
+[1,2;3,4].map(x => x * 10)                         # [[10, 20], [30, 40]]
+```
+
+**UFCS.** `obj.fn(a, b)` calls `fn(obj, a, b)` whenever `fn` is not a field of `obj`, so calls chain: `v.push(4).push(5).len()`, `[4, 7 ; 2, 6].transpose().det()` (`10`).
+
+### 2.7 Structs and Math Types
+
+| Type | Fields | Notes |
+| :-- | :-- | :-- |
+| `complex` | `re`, `im` | `conj`, `cabs`, `carg`, `cexp_i`, `polar`; full `+ - * /`; `into` composition |
+| `vec2` | `x`, `y` | `+`, `-`, scalar `*`; `dot`, `cross2`, `vec2_mag`, `vec2_dist`; `z into vec2` -> `vec3` |
+| `vec3` | `x`, `y`, `z` | as vec2, plus `a ** b` dot product, `cross3`, `dot3`, `lerp` |
+| `circle` | `center:vec2`, `radius` | `circle_area`, `circle_circum`, `move_circle` |
+| `mat2` | `a b c d` | `det`, `trace`, `transpose`, `inv_mat2`, `m * vec2` |
+
+Structs are built by calling the type name (`vec2(3, 4)`, `circle(vec2(3, 7), 5)`) and support field access (`v.x`) and C-style indexing for reading and writing, including nested access:
+
+```text
+v := vec3(2, 4, 6) ; v[0] = 10 ; v[1] += 5 ; v[2] *= 3 ; v     # vec3(x=10, y=9, z=18)
+c := circle(vec2(3, 7), 5) ; c[0][1] = 99 ; c[1] += 10 ; c     # circle(center=vec2(x=3, y=99), radius=15)
+```
+
+### 2.8 Unit Conversions & Dual Variable/Unit Disambiguation
+
+There are three ways to convert within a unit group; converting across groups is always an error.
+
+1. **The `in` operator** supports both bare unit names (`25km in m` -> `25000 [distance]`, preserving the unit group) and parenthesised unit quantities (`(2.5 km) in (1 m)` -> `2500 [none]`).
+   - **Dual Variable/Unit Disambiguation**: What if `m` or `km` is *also* declared as a local variable or vector?
+     - If `m := 5` (scalar), `25km in m` still converts `25km` to metres (`25000 [distance]`), and `(25km in m) * m` evaluates to `125000 [distance]`.
+     - If `km := vec(10, 25, 30)` (unitless vector) and the left side is `25m` (`distance`), `25m in km` sees that the vector's element unit (`none`) does not match `distance`, so it automatically resolves `km` as the unit (`0.025 [distance]`), whereas `25 in km` checks vector membership (`1`).
+     - If `km := vec(10m, 25m, 50m)` (a vector of distances!), `25m in km` checks vector membership (`1`), while writing `25m in 1km` explicitly forces unit conversion (`0.025`), and writing `25m in (km)` explicitly forces vector membership lookup.
+2. **Postfix `to_<unit>`** (precedence 90) converts and returns a plain number: `5 km to_m` is `5000`, `100 cm to_m` is `1`, `90 deg to_rad` is `1.570796327`, `10 kph to_mps` is `2.777777778`.
+3. **Pairwise functions** `<from>_to_<to>(x)`: `km_to_m`, `deg_to_rad`, `kg_to_g`, `hr_to_sec`, `atm_to_Pa`, `kWh_to_J` and about 100 more.
+
+Temperature uses functions rather than suffixes: `c_to_k`, `k_to_c`, `c_to_f`, `f_to_c`, `f_to_k`, `k_to_f`.
+
+**Unit suffixes by group** (all precedence 95, normalised to SI):
+
+| Group | Suffixes |
+| :-- | :-- |
+| angle (rad) | `deg`, `°`, `rad`, `arcmin`, `arcsec` |
+| distance (m) | `m`, `km`, `cm`, `mm`, `um`, `nm`, `mi`, `nmi`, `yd`, `ft`, `inch` |
+| mass (kg) | `kg`, `gram`, `mg`, `ton`, `lb`, `oz`, `amu` |
+| time (s) | `ms`, `us`, `ns`, `sec`, `min_t`, `hr`, `day` |
+| speed (m/s) | `mps`, `kph`, `mph`, `knots` |
+| pressure (Pa) | `Pa`, `kPa`, `MPa`, `bar`, `atm`, `psi`, `torr` |
+| energy (J) | `J`, `kJ`, `MJ`, `cal`, `kcal`, `Wh`, `kWh`, `eV` |
+| power (W) | `W`, `kW`, `MW`, `hp` |
+| unitless ratios | `pct` (x 0.01), `dB` (amplitude ratio), `dBm` (watts) |
+
+### 2.9 Standard Library Catalogue
+
+`eng_init` loads 14 named modules plus an implicit `default` module (where headerless user extensions land). Each module can be switched off and on in O(1) with `eng_set_module`; disabling `units` makes `100 km` fail with `Undefined symbol or constant 'km'`.
+
+| Module | Contents |
+| :-- | :-- |
+| `boot_syntax`, `boot_types`, `boot_control` | brackets, `$real $iota $str $vec $mat $fn`, assignment, loops, `if/switch`, jumps, `_` (`@tostr`/`@fromstr`), `into`, `vec<T>/list<T>/stack<T>/queue<T>`, sublist helpers (`enqueue`, `dequeue`, `shift`, `pop_front`, `peek`, `top`, `back`, `front`, `is_empty`), collection and calculus constructs, `type_of`, `unit_of`, `error`, `assert` |
+| `arith` | operators; `abs floor ceil round(x, digits = 0) trunc fract sign min max clamp abs_diff is_even is_odd is_close gcd lcm npr ncr fib is_prime mod_pow`; `sum mean variance stddev sma`; constants `π pi e phi φ ϕ`; commercial maths |
+| `trig` | `sin cos tan sec csc cot asin acos atan atan2 sinh cosh tanh asinh acosh atanh ln log10 log2 logb exp sqrt cbrt root hypot sigmoid` |
+| `complex_ext` | `complex`, `conj`, `cabs`, `carg`, `cexp_i`, `polar`, complex `into` overloads |
+| `geom_ext` | `vec2`, `vec3`, `circle`; `dot`, `cross2`, `cross3`, `dot3`, `vec2_mag`, `vec3_mag`, `vec2_dist`, `vec3_dist`, `lerp`, `circle_area`, `circle_circum`, `sphere_vol`, `sphere_area`, `vec2` -> `vec3` `into` overloads |
+| `algebra` | `mat2`, `det`, `trace`, `transpose`, `inv`, `inv_mat2`, `solve_2x2`, `quad_disc`, `quad_roots`, `quad_croot`, polynomial helpers, `mat_*` |
+| `calculus` | polynomial and geometric calculus |
+| `units`, `conversions` | unit groups and conversion operators |
+| `physics` | about 100 functions and constants |
+| `chemistry` | about 60 functions and constants |
+| `biology` | about 60 functions |
+
+### 2.10 Calculus and Solvers
+
+These are lazy constructs: the first argument names a variable, and the expression is re-evaluated for each sample of that variable.
+
+| Call | Meaning | Example |
+| :-- | :-- | :-- |
+| `diff(x, expr, x0)` | first derivative (5-point stencil) | `diff(x, x^3 + 2*x, 3)` is `29` |
+| `diff2(x, expr, x0)`, `diff_n(x, expr, x0, n)` | higher derivatives | `diff2(x, x^4, 2)` is `48` |
+| `integrate(x, expr, a, b[, steps])`, `ntg` | Simpson's rule | `integrate(x, 3*(x^2), 0, 2)` is `8` |
+| `lim`, `lim_left`, `lim_right` | limits with Richardson extrapolation | `lim(x, sin(x)/x, 0)` is `1` |
+| `sigma(k, expr, lo, hi)`, `prod(...)` | discrete sum and product | `sigma(k, k^2, 1, 5)` is `55` |
+| `solve(x, eq[, guess])`, `solve(x, eq, a, b)` | root finding | `solve(x, x^2 == 4, 1)` is `2` |
+| `fmin(x, expr, a, b)`, `fmax(...)` | extremum on an interval | `fmin(x, (x-2)^2, 0, 5)` is `2` |
+
+Two-sided `lim` rejects jump discontinuities with `Two-sided limit does not exist (left -1 != right 1)`.
+
+Polynomials are coefficient vectors `[c0, c1, ..., cn]`. `poly_val`, `poly_deriv`, `poly_integ`, `poly_add`, `poly_mul`, `poly_newton` are in `algebra`; `calculus` adds `poly_eval`, `poly_diff`, `poly_diff_at`, `poly_def_integ`, `tangent_slope`, `normal_slope`, `poly_curvature`, `quad_critical_x`, `poly_arc_length`, `poly_vol_disk`, `poly_vol_shell`, `trapz_vec`, `simpson_vec`, `taylor_exp`, `taylor_sin`, `taylor_cos`.
+
+### 2.11 Writing Extensions
+
+An extension is UTF-8 text with `#` comments. The host passes it to `user_compile_ext`; the engine does not care about file names or extensions. A compile error leaves the engine exactly as it was.
+
+| Declaration | Form |
+| :-- | :-- |
+| Module | `[my_ext]` header, then `<[arith]` for each dependency. Text without a header joins `default`. |
+| Constant | `tau_const = 2π` or `"name" : real = 3.14` |
+| Function (shorthand) | `hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)`. Untyped parameters are `real`, the result defaults to `real`, and each default value synthesises a shorter overload. |
+| Function (full) | `"area"(w:real, h:real) -> real = w * h`. The body can be a `{ ... }` block using `return`, `if`, loops. |
+| Prefix operator | `"√"(x:real) :80 -> real = @sqrt(x)` |
+| Postfix operator | `(n:real) "²" :95 -> real = n * n` |
+| Infix operator | `(a:real) "<>" (b:real) :<30 -> real = @ne(a, b)`, where `:<` is left-associative and `:>` is right-associative |
+| Struct type | `$point(px:real, py:real)`, constructed with `point(3, 4)`; self-referential structs are rejected |
+| Unit group | name a new group after the result type: `(x:real) "KB" :95 -> real, data_size = x * 1024` |
+| Unit-typed parameters | `(d:real, distance)`; the generic `T` accepts any group and preserves it: `"span"(a:real, T, b:real, T) -> real, T = @abs(a - b)` |
+
+### 2.12 Embedding API and Capacity Limits
+
+| Function | Purpose |
+| :-- | :-- |
+| `eng_init(&eng)` | boot all standard modules from the embedded image |
+| `eng_init_blank(&eng)` | empty engine with no types or operators (for tools and tests) |
+| `eng_eval(&eng, src, &out)` | evaluate a script; returns false and sets the error on failure |
+| `eng_format_value(&eng, v, buf, cap)` | render any value to text |
+| `eng_val_type`, `eng_type_name`, `eng_val_unit`, `eng_unit_name` | inspect a result |
+| `eng_last_error(&eng)` | last error message (127 characters max) |
+| `eng_set_module`, `eng_is_module_active` | toggle modules by name |
+| `eng_register_extern(&eng, name, fn, ctx)` | bind `@name(...)` to a C callback |
+| `user_compile_ext`, `user_load_mathc` | in-memory extension compile and cache load |
+
+**Capacity limits** (compile-time constants in `mem_arena.h` and `sym_table.h`):
+
+| Resource | Limit |
+| :-- | :-- |
+| Expression length | 65,534 bytes |
+| String pool | 32,768 bytes |
+| AST nodes | 8,192 |
+| Float pool (vectors, structs, matrices) | 8,192 doubles |
+| Call stack | 256 slots |
+| Evaluation depth / parse nesting | 128 |
+| Evaluation step budget | 2,000,000 per `eng_eval` |
+| Tagged scopes | 16 |
+| Modules / types / unit groups | 32 / 64 / 64 |
+| Overloads / symbols / constants / externs | 2,048 / 2,048 / 128 / 32 |
+
+### 2.13 Quirks and Notes
+
+- **`++`, `--`, `+++`, `---` do not modify variables.** They are pure operators returning `x + 1`, `x - 1`, `x + 2`, `x - 2`, in prefix or postfix form. `a := 5 ; a++ ; a` is `5`. Use `a += 1`.
+- **Variables do not persist between `eng_eval` calls.** Only extensions, constants and host state do.
+- **`**` is only the `vec3` dot product** and binds at 20, below `+`, so parenthesise it. For `vec2` use `dot(a, b)`.
+- **Prefix `!` vs `~`**: `~` is infix approximate equality (`<= 0.001`), and boolean NOT is `!` (or `not`).
+- **Golden ratio**: `phi`, `φ`, and `ϕ` are all defined and equal `1.618033989`.
+- **Ranges**: `1..5` is exclusive `[2, 3, 4]`, `1...5` is inclusive `[1, 2, 3, 4, 5]`, `1..<5` is `[1, 2, 3, 4]`, and `1<..5` is `[2, 3, 4, 5]`.
+
+### 2.14 Common Error Messages
+
+| Message | Cause |
+| :-- | :-- |
+| `Undefined symbol or constant 'x'` | unknown name, or a variable from an earlier `eng_eval` call |
+| `Unexpected trailing token 'y'` | two statements on one line without `;` |
+| `Unexpected token in expression` | incomplete expression such as `1 +` |
+| `No active overload for '**' with types (real, real)` | no definition matches the operand types |
+| `No compatible type found for 'xyz'` | prefix `_` string could not be parsed into any valid non-string type |
+| `Unit mismatch for '+' with (real [distance], real [angle])` | adding incompatible unit groups |
+| `Type mismatch: variable holds concrete type 'real', cannot assign 'complex'` | assigning against a type lock |
+| `Cannot use reserved keyword 'if' as a variable name` | keyword used as a name or tag |
+| `Vector type mismatch: cannot push 'vec2' into vec<real>` | heterogeneous vector or typed `vec<T>` violation |
+| `Vector unit mismatch: cannot push unit 'angle' into vec<real, distance>` | unit lock violation on `vec<T, unit>` |
+| `Matrix rows/sub-tensors must have matching dimensions` | jagged matrix literal |
+| `Operand 5 out of range for boolean negation '!': expected 0 or 1` | `!` on a non-boolean |
+| `Division by zero` | divisor is exactly zero |
+
+---
 
 ## License
 

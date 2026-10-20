@@ -1,13 +1,13 @@
 # =============================================================================
-# lib/00_bootstrap.math — Minimal Bootstrap Subset Hooked First by the C Core
+# Library/00_bootstrap.math — Minimal Bootstrap Subset Hooked First by the C Core
 # =============================================================================
 # Without this file, the engine does not know what parentheses `(` `)`, local
 # scope braces `{` `}`, commas `,`, struct member access `.`, numbers, strings,
-# dynamic vectors `$vec`, semicolons `;`, variable assignments `:=` / `=` / `+=`,
-# ternary `? :`, loops `??` / `(i in 1...5){}` / `loop`, `if`/`or`/`else`,
-# `switch`/`case`, `break`, tagged scope jumps `jump(Tag)` / `run(Tag)`, or
-# calculus & solver constructs are.
-# The C core loads this file first so subsequent `.math` files can use them.
+# dynamic vectors `$vec`, matrices `$mat`, first-class lambdas `$fn`, semicolons `;`,
+# variable assignments `:=` / `=` / `+=`, ternary `? :`, loops `??` / `(i in 1...5){}` / `loop`,
+# `if`/`or`/`else`, `switch`/`case`, `break`, `continue`, `return`, tagged scope jumps
+# `jump(Tag)` / `run(Tag)`, higher-order collection methods, or calculus & solver constructs are.
+# The C core loads this module first so subsequent modules can build on top of it.
 
 [boot_syntax]
 
@@ -24,14 +24,14 @@
 [boot_types]
 <[boot_syntax]
 
-# 2. Consuming Lexical Types, Scalar Imaginary Type ($iota) & Dynamic Vector ($vec)
-#    Note: `$iota` has no lexical regex pattern here — it is produced by the
-#    postfix `"i"` operator in `30_complex.math` (`5i`, `(3 + 4)i`, `sin(x)i`).
+# 2. Consuming Lexical Types, Scalar Imaginary Type ($iota), Dynamic Vector ($vec),
+#    Multidimensional Matrix ($mat) & First-Class Lambda Closure ($fn)
 $real ~ \d+ ("." \d+)?       => @f64
 $iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
 $mat  ~                      => @mat_type
+$fn   ~                      => @fn_type
 
 
 [boot_control]
@@ -42,8 +42,8 @@ $mat  ~                      => @mat_type
 (s:real) "." (f:real) :<95 -> real = @field(s, f)
 
 # 4. Multi-Instruction Sequencing `;` (Left-associative infix, precedence 1)
-#    Allows any `( stmt1 ; stmt2 ; final_expr )` or `{ stmt1 ; stmt2 ; final_expr }`
-#    to act as a multi-instruction block!
+#    Newline `\n` also acts as a default `;` separator for one-statement-per-line writing,
+#    while `;` remains compulsory when placing multiple statements on a single line.
 (a:real) ";" (b:real) :<1 -> real = @seq(a, b)
 
 # 5. Local Variable, Multi-Variable (`x, y := 5`), Destructuring (`r1, r2 := quad_roots(...)`)
@@ -58,16 +58,20 @@ $mat  ~                      => @mat_type
 (target:real) "%=" (val:real) :>5 -> real = @store(target, @mod(target, val))
 (target:real) "^=" (val:real) :>5 -> real = @store(target, @pow(target, val))
 
-# 6. Lazy While Loop Operator `??` (Left-associative infix, precedence 3)
+# 6. First-Class Lambda Arrow `=>` (Right-associative infix, precedence 8)
+#    Usage: `f := (x) => x^2 + 1`, `x => x * 2`, `(a, b) => a + b`, `() => 42`
+(params:real) "=>" (body:real) :>8 -> fn = @lambda(params, body)
+
+# 7. Lazy While Loop Operator `??` (Left-associative infix, precedence 3)
 #    Usage: `(cond) ?? { stmt1 ; stmt2 }` or `Outer : (cond) ?? { ... break(Outer) }`
 (cond:real) "??" (body:real) :<3 -> real = @while(cond, body)
 
-# 7. Standard Right-Associative Ternary Operator `cond ? x : y` (precedence 10)
+# 8. Standard Right-Associative Ternary Operator `cond ? x : y` (precedence 10)
 #    Also binds `:` for `Tag : { scope }` and `switch` case labels!
 (cond:real) "?" (branches:real) :>10 -> real = @ternary(cond, branches)
 (a:real)    ":" (b:real)        :>10 -> real = @colon(a, b)
 
-# 8. Strict Boolean-Condition Prefix NOT `!` (prec 80) & Distributed Combinators `&` and `|`
+# 9. Strict Boolean-Condition Prefix NOT `!` (prec 80) & Distributed Combinators `&` and `|`
 #    - Prefix `!` ONLY flips a boolean condition (`!(x == 5)`, `!(5.01 ~ 5)`, `(x == !(1 | 2))`);
 #      it is undefined for non-boolean values (`!5` is rejected as an error).
 #    - `&` (prec 35) and `|` (prec 34) distribute over comparisons (`(x & y == 1 | 2)`).
@@ -75,7 +79,8 @@ $mat  ~                      => @mat_type
 (a:real) "&" (b:real) :<35 -> real = @cand(a, b)
 (a:real) "|" (b:real) :<34 -> real = @cor(a, b)
 
-# 9. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `loop`, `break`, `jump` & `run`
+# 10. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `loop`, `break`,
+#     `continue`, `return`, `jump` & `run`
 "if"(cond:real, then_val:real, else_val:real) -> real = @if(cond, then_val, else_val)
 "or"(cond:real, body:real)                    -> real = @or_branch(cond, body)
 "then"(cond:real, body:real)                  -> real = @or_branch(cond, body)
@@ -83,13 +88,17 @@ $mat  ~                      => @mat_type
 "default"(body:real)                          -> real = @else_branch(body)
 "switch"(val:real, body:real)                 -> real = @switch_block(val, body)
 "case"(val:real, body:real)                   -> real = @case_branch(val, body)
-"loop"(iter:real, body:real)                  -> real = @loop_kw(iter, body)
 "jump"(tag:real)                              -> real = @jump_tag(tag)
 "run"(tag:real)                               -> real = @run_tag(tag)
 "break"()                                     -> real = @break_loop(0)
 "break"(tag:real)                             -> real = @break_loop(tag)
+"break"(tag:real, val:T)                      -> T    = @break_loop(tag, val)
+"continue"()                                  -> real = @continue_loop(0)
+"continue"(tag:real)                          -> real = @continue_loop(tag)
+"return"()                                    -> real = @return_fn(0)
+"return"(val:T)                               -> T    = @return_fn(val)
 
-# 10. Expression-Based High School Calculus, Equation Solver & Extrema Constructs
+# 11. Expression-Based High School Calculus, Equation Solver & Extrema Constructs
 "diff"(var_x:real, expr:real, x0:real)                         -> real = @calc_diff(var_x, expr, x0)
 "diff2"(var_x:real, expr:real, x0:real)                        -> real = @calc_diff2(var_x, expr, x0)
 "diff_n"(var_x:real, expr:real, x0:real, order:real)           -> real = @calc_diffn(var_x, expr, x0)
@@ -107,17 +116,36 @@ $mat  ~                      => @mat_type
 "fmin"(var_x:real, expr:real, a:real, b:real)                  -> real = @calc_fmin(var_x, expr, a)
 "fmax"(var_x:real, expr:real, a:real, b:real)                  -> real = @calc_fmax(var_x, expr, a)
 
-# 11. Dynamic Growable/Shrinkable Vector (`$vec` of any type `T`), Range `..` / `...` & `in`
-(a:real, T) ".."  (b:real, T) :<45 -> vec  = @vrange(a, b)
-(a:real, T) "..." (b:real, T) :<45 -> vec  = @vrange(a, b)
-(item:T)    "in"  (v:vec)     :<55 -> real = @vin(item, v)
+# 12. Dynamic Growable/Shrinkable Vector (`$vec`), Lists, Sublists (`stack`, `queue`),
+#     Range `..` / `...` / `..<` / `<..`, Membership `in` & Insert Operator `into`
+(a:real, T) "..." (b:real, T) :<45 -> vec  = @vrange(a, b, 0)
+(a:real, T) "..<" (b:real, T) :<45 -> vec  = @vrange(a, b, 1)
+(a:real, T) "<.." (b:real, T) :<45 -> vec  = @vrange(a, b, 2)
+(a:real, T) ".."  (b:real, T) :<45 -> vec  = @vrange(a, b, 3)
+(item:T)       "in"   (v:vec)    :<42 -> real = @vin(item, v)
+(item:real, T) "in"   (m:mat, T) :<42 -> real = @vin(item, m)
+(item:T)       "into" (v:vec)    :>55 -> vec  = @vpush(v, item)
 
 "vec"()                       -> vec  = @vnew(0)
 "vec"(cap:real)               -> vec  = @vnew(cap)
 "vec"(count:real, init:T)     -> vec  = @vfill(count, init)
+"list"()                      -> vec  = @vnew(0)
 "list"(item:T)                -> vec  = @vfill(1, item)
+"stack"()                     -> vec  = @vnew(0)
+"stack"(item:T)               -> vec  = @vfill(1, item)
+"queue"()                     -> vec  = @vnew(0)
+"queue"(item:T)               -> vec  = @vfill(1, item)
 "push"(v:vec, item:T)         -> vec  = @vpush(v, item)
 "pop"(v:vec)                  -> T    = @vpop(v)
+"enqueue"(q:vec, item:T)      -> vec  = @vpush(q, item)
+"dequeue"(q:vec)              -> T    = @vshift(q)
+"shift"(q:vec)                -> T    = @vshift(q)
+"pop_front"(q:vec)            -> T    = @vshift(q)
+"peek"(s:vec)                 -> T    = @vpeek(s, 0)
+"top"(s:vec)                  -> T    = @vpeek(s, 0)
+"back"(s:vec)                 -> T    = @vpeek(s, 0)
+"front"(q:vec)                -> T    = @vpeek(q, 1)
+"is_empty"(v:vec)             -> real = @eq(@vlen(v), 0)
 "at"(v:vec, idx:real)         -> T    = @vget(v, idx)
 "set"(v:vec, idx:real, val:T) -> vec  = @vset(v, idx, val)
 "len"(v:vec)                  -> real = @vlen(v)
@@ -126,10 +154,34 @@ $mat  ~                      => @mat_type
 "shrink"(v:vec)               -> vec  = @vshrink(v)
 "clear"(v:vec)                -> vec  = @vclear(v)
 
-# 12. Runtime Entity Type & Unit Type Introspection (`type_of(x)`, `unit_of(x)`)
+# 13. First-Class Function Invocation & Higher-Order Vector / Matrix Operations
+"call"(f:fn, a:T)             -> T    = @fcall(f, a, 0)
+"call"(f:fn, a:T, b:T)        -> T    = @fcall(f, a, b)
+"map"(v:vec, f:fn)            -> vec  = @vmap(v, f, 0)
+"map"(m:mat, f:fn)            -> mat  = @vmap(m, f, 0)
+"filter"(v:vec, f:fn)         -> vec  = @vfilter(v, f, 0)
+"filter"(m:mat, f:fn)         -> vec  = @vfilter(m, f, 0)
+"reduce"(v:vec, f:fn)         -> T    = @vreduce(v, f, 0)
+"reduce"(v:vec, init:T, f:fn) -> T    = @vreduce(v, init, f)
+"reduce"(m:mat, f:fn)         -> real = @vreduce(m, f, 0)
+"reduce"(m:mat, init:real, f:fn) -> real = @vreduce(m, init, f)
+"fold"(v:vec, init:T, f:fn)   -> T    = @vreduce(v, init, f)
+"fold"(m:mat, init:real, f:fn)-> real = @vreduce(m, init, f)
+"any"(v:vec, f:fn)            -> real = @vany(v, f, 0)
+"any"(m:mat, f:fn)            -> real = @vany(m, f, 0)
+"all"(v:vec, f:fn)            -> real = @vall(v, f, 0)
+"all"(m:mat, f:fn)            -> real = @vall(m, f, 0)
+"find"(v:vec, f:fn)           -> T    = @vfind(v, f, 0)
+"find"(m:mat, f:fn)           -> real = @vfind(m, f, 0)
+"count_if"(v:vec, f:fn)       -> real = @vcount(v, f, 0)
+"count_if"(m:mat, f:fn)       -> real = @vcount(m, f, 0)
+
+# 14. Runtime Entity/Unit Introspection & Plain String Conversion Operators `_`
 "type_of"(x:T) -> str = @type_name(x)
 "unit_of"(x:T) -> str = @unit_name(x)
+(x:T) "_"   :95 -> str = @tostr(x)
+"_" (s:str) :85 -> T   = @fromstr(s)
 
-# 13. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
+# 15. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
 "error"(msg:str)             -> real = @err(msg)
 "assert"(cond:real, msg:str) -> real = if(cond, 1, error(msg))

@@ -5,10 +5,10 @@
  *   Stores and queries extension modules (with O(1) bitmask toggling),
  *   consuming lexical types, physical/dimensional unit types (`distance`,
  *   `angle`, `mass`, `time`, `speed`, ...), flat C-style structs, dynamic
- *   vectors (`$vec`), generic entity & unit wildcards (`T` / `any`),
- *   operator/function overloads (with O(1) per-symbol chain indexing),
- *   global constants, private C intrinsic IDs, and host-registered extern
- *   callbacks (`@<extern_name>`).
+ *   vectors (`$vec`), multidimensional matrices (`$mat`), first-class lambdas
+ *   (`$fn`), generic entity & unit wildcards (`T` / `any`), operator/function
+ *   overloads (with O(1) per-symbol chain indexing), global constants,
+ *   private C intrinsic IDs, and host-registered extern callbacks (`@<extern_name>`).
  */
 
 #ifndef SYM_TABLE_H
@@ -52,6 +52,7 @@ typedef enum {
     INTR_PARSE_STR_SLICE,
     INTR_VEC_TYPE,  /* @vec_type (dynamic growable/shrinkable vector of any T) */
     INTR_MAT_TYPE,  /* @mat_type (multidimensional matrix/tensor `[...]`)      */
+    INTR_FN_TYPE,   /* @fn_type  (first-class anonymous function `(x) => ...`) */
 
     /* Bootstrap Expression Syntax Delimiters (`"sym" => @lparen`) */
     INTR_LPAREN,    /* @lparen */
@@ -62,52 +63,64 @@ typedef enum {
     INTR_RBRACK,    /* @rbrack */
     INTR_COMMA,     /* @comma  */
 
-    /* Bootstrap Meta / Lazy Control Intrinsics (`00_bootstrap.math`) */
-    INTR_SEQ,          /* @seq(a, b)          */
-    INTR_STORE,        /* @store(dst, v)      */
-    INTR_WHILE,        /* @while(c, body)     */
-    INTR_IF,           /* @if(c, t, e)        */
-    INTR_OR_BRANCH,    /* @or_branch(c, b) / @then_branch(c, b) */
-    INTR_ELSE_BRANCH,  /* @else_branch(b)     */
-    INTR_SWITCH_BLOCK, /* @switch_block(v, b) */
-    INTR_CASE_BRANCH,  /* @case_branch(v, b)  */
-    INTR_TERNARY,      /* @ternary(c, pair)   */
-    INTR_COLON,        /* @colon(a, b)        */
-    INTR_JUMP_TAG,     /* @jump_tag(tag)      */
-    INTR_RUN_TAG,      /* @run_tag(tag)       */
-    INTR_BREAK_LOOP,   /* @break_loop(tag)    */
-    INTR_LOOP_KW,      /* @loop_kw(iter, b)   */
-    INTR_CAND,         /* @cand(a, b) (`&` distributed/short-circuit AND) */
-    INTR_COR,          /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
-    INTR_CNOT,         /* @cnot(a)    (`!` strict boolean condition NOT)  */
-    INTR_CALC_DIFF,    /* @calc_diff(x, expr, x0)       */
-    INTR_CALC_DIFF2,   /* @calc_diff2(x, expr, x0)      */
-    INTR_CALC_DIFFN,   /* @calc_diffn(x, expr, x0, n)   */
-    INTR_CALC_INTEG,   /* @calc_integ(x, expr, a, b)    */
-    INTR_CALC_LIM,     /* @calc_lim(x, expr, x0)        */
-    INTR_CALC_LIM_L,   /* @calc_lim_l(x, expr, x0)      */
-    INTR_CALC_LIM_R,   /* @calc_lim_r(x, expr, x0)      */
-    INTR_CALC_SIGMA,   /* @calc_sigma(k, expr, lo, hi)  */
-    INTR_CALC_PROD,    /* @calc_prod(k, expr, lo, hi)   */
-    INTR_CALC_SOLVE,   /* @calc_solve(x, eq, guess)     */
-    INTR_CALC_FMIN,    /* @calc_fmin(x, expr, a, b)     */
-    INTR_CALC_FMAX,    /* @calc_fmax(x, expr, a, b)     */
-    INTR_FIELD,        /* @field(s, f)        */
+    /* Bootstrap Meta / Lazy Control Intrinsics */
+    INTR_SEQ,           /* @seq(a, b)            */
+    INTR_STORE,         /* @store(dst, v)        */
+    INTR_WHILE,         /* @while(c, body)       */
+    INTR_IF,            /* @if(c, t, e)          */
+    INTR_OR_BRANCH,     /* @or_branch(c, b) / @then_branch(c, b) */
+    INTR_ELSE_BRANCH,   /* @else_branch(b)       */
+    INTR_SWITCH_BLOCK,  /* @switch_block(v, b)   */
+    INTR_CASE_BRANCH,   /* @case_branch(v, b)    */
+    INTR_TERNARY,       /* @ternary(c, pair)     */
+    INTR_COLON,         /* @colon(a, b)          */
+    INTR_JUMP_TAG,      /* @jump_tag(tag)        */
+    INTR_RUN_TAG,       /* @run_tag(tag)         */
+    INTR_BREAK_LOOP,    /* @break_loop(tag)      */
+    INTR_CONTINUE_LOOP, /* @continue_loop(tag)   */
+    INTR_RETURN_FN,     /* @return_fn(val)       */
+    INTR_LAMBDA,        /* @lambda(params, body) */
+    INTR_CAND,          /* @cand(a, b) (`&` distributed/short-circuit AND) */
+    INTR_COR,           /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
+    INTR_CNOT,          /* @cnot(a)    (`!` strict boolean condition NOT)  */
+    INTR_CALC_DIFF,     /* @calc_diff(x, expr, x0)       */
+    INTR_CALC_DIFF2,    /* @calc_diff2(x, expr, x0)      */
+    INTR_CALC_DIFFN,    /* @calc_diffn(x, expr, x0, n)   */
+    INTR_CALC_INTEG,    /* @calc_integ(x, expr, a, b)    */
+    INTR_CALC_LIM,      /* @calc_lim(x, expr, x0)        */
+    INTR_CALC_LIM_L,    /* @calc_lim_l(x, expr, x0)      */
+    INTR_CALC_LIM_R,    /* @calc_lim_r(x, expr, x0)      */
+    INTR_CALC_SIGMA,    /* @calc_sigma(k, expr, lo, hi)  */
+    INTR_CALC_PROD,     /* @calc_prod(k, expr, lo, hi)   */
+    INTR_CALC_SOLVE,    /* @calc_solve(x, eq, guess)     */
+    INTR_CALC_FMIN,     /* @calc_fmin(x, expr, a, b)     */
+    INTR_CALC_FMAX,     /* @calc_fmax(x, expr, a, b)     */
+    INTR_FIELD,         /* @field(s, f)          */
 
-    /* Dynamic Vector Intrinsics (`$vec` of any `T` type) */
-    INTR_VNEW,      /* @vnew(cap)          */
-    INTR_VFILL,     /* @vfill(cnt, init)   */
-    INTR_VPUSH,     /* @vpush(v, item)     */
-    INTR_VPOP,      /* @vpop(v)            */
-    INTR_VGET,      /* @vget(v, idx)       */
-    INTR_VSET,      /* @vset(v, idx, item) */
-    INTR_VLEN,      /* @vlen(v)            */
-    INTR_VCAP,      /* @vcap(v)            */
-    INTR_VRESIZE,   /* @vresize(v, n)      */
-    INTR_VSHRINK,   /* @vshrink(v)         */
-    INTR_VCLEAR,    /* @vclear(v)          */
-    INTR_VRANGE,    /* @vrange(a, b) (`a..b` / `a...b` inclusive range) */
-    INTR_VIN,       /* @vin(item, v) (`x in v` vector membership check) */
+    /* Dynamic Vector, Stack, Queue & Higher-Order Functional Intrinsics (`$vec`, `$fn`) */
+    INTR_VNEW,      /* @vnew(cap)            */
+    INTR_VFILL,     /* @vfill(cnt, init)     */
+    INTR_VPUSH,     /* @vpush(v, item)       */
+    INTR_VPOP,      /* @vpop(v)              */
+    INTR_VSHIFT,    /* @vshift(v) (FIFO queue dequeue / pop_front)       */
+    INTR_VPEEK,     /* @vpeek(v, mode) (0 = top/back, 1 = front)         */
+    INTR_VGET,      /* @vget(v, idx)         */
+    INTR_VSET,      /* @vset(v, idx, item)   */
+    INTR_VLEN,      /* @vlen(v)              */
+    INTR_VCAP,      /* @vcap(v)              */
+    INTR_VRESIZE,   /* @vresize(v, n)        */
+    INTR_VSHRINK,   /* @vshrink(v)           */
+    INTR_VCLEAR,    /* @vclear(v)            */
+    INTR_VRANGE,    /* @vrange(a, b, mode) (`a...b`, `a..<b`, `a<..b`, `a..b`) */
+    INTR_VIN,       /* @vin(item, v) (`x in v` vector membership check)  */
+    INTR_FCALL,     /* @fcall(f, a, b)       */
+    INTR_VMAP,      /* @vmap(v, f)           */
+    INTR_VFILTER,   /* @vfilter(v, f)        */
+    INTR_VREDUCE,   /* @vreduce(v, init, f)  */
+    INTR_VANY,      /* @vany(v, f)           */
+    INTR_VALL,      /* @vall(v, f)           */
+    INTR_VFIND,     /* @vfind(v, f)          */
+    INTR_VCOUNT,    /* @vcount(v, f)         */
 
     /* Multidimensional Matrix Intrinsics (`$mat`) */
     INTR_MZERO,     /* @mzero(r, c)        */
@@ -174,11 +187,13 @@ typedef enum {
     INTR_LNOR,
     INTR_LNAND,
 
-    /* Type & Unit Introspection / Conversion Intrinsics */
+    /* Type & Unit Introspection / String Conversion Intrinsics */
     INTR_RAW,
     INTR_TYPE_NAME, /* @type_name(x) -> $str */
     INTR_UNIT_NAME, /* @unit_name(x) -> $str */
-    INTR_ERR,       /* @err(msg:str) -> raises custom error */
+    INTR_TOSTR,     /* @tostr(x)   -> $str (postfix `_` operator) */
+    INTR_FROMSTR,   /* @fromstr(s) -> T    (prefix `_` operator)  */
+    INTR_ERR,       /* @err(msg:str) -> raises custom error       */
     INTR_COUNT
 } IntrinsicId;
 
@@ -195,15 +210,19 @@ typedef enum {
     AST_CONSTRUCT,
     AST_EXTERN,        /* Host-registered callback `@<extern_name>(args...)`    */
     AST_TERNARY,       /* Lazy branch `cond ? then_ast : else_ast` & `if/or`    */
-    AST_SWITCH_EQ,     /* Value equality check for `switch` cases (num & str)   */
+    AST_SWITCH_EQ,     /* Pattern/value match for `switch` cases                */
     AST_TAGGED_SCOPE,  /* Labeled scope/loop `Tag : { body }` (sub = label_id)  */
     AST_JUMP,          /* Jump to labeled scope `jump(Tag)` (sub = label_id)    */
     AST_RUN_TAG,       /* Inline reuse of labeled scope `run(Tag)`              */
-    AST_BREAK,         /* Break out of loop/scope `break` / `break(Tag)`        */
+    AST_BREAK,         /* Break out of loop/scope `break [val]` / `break(Tag)`  */
+    AST_CONTINUE,      /* Continue next iteration `continue` / `continue(Tag)`  */
+    AST_RETURN,        /* Early return from function/eval `return [val]`        */
     AST_MAT_LIT,       /* Multidimensional matrix literal `[...]`               */
-    AST_INDEX,         /* C-style subscript `base[i]` / `base[r, c]`            */
-    AST_FOR_IN,        /* Range/collection loop `(i in a..b) { ... }` / `loop`  */
-    AST_UNPACK_ELEM    /* Multi-variable destructuring / scalar broadcast       */
+    AST_INDEX,         /* C-style subscript & slicing `base[i]`, `base[a..b]`   */
+    AST_FOR_IN,        /* Range/collection loop & comprehension `[e for x in v]`*/
+    AST_UNPACK_ELEM,   /* Multi-variable destructuring / scalar broadcast       */
+    AST_LAMBDA,        /* First-class anonymous function `(x) => expr`          */
+    AST_FN_CALL        /* Direct invocation of a `$fn` handle `f(args...)`      */
 } AstKind;
 
 /* ============================================================================
@@ -278,8 +297,15 @@ typedef struct {
     uint8_t  type_id;
     uint8_t  unit_id;
     uint8_t  val_idx;
-    uint16_t pool_idx;       /* Index into MemArena.f64_pool for ABI-neutral .mathc */
+    uint16_t pool_idx;       /* Index into MemArena.f64_pool for ABI-neutral binary image */
 } ConstDef;
+
+_Static_assert(sizeof(StrSlice)   == 4,  "StrSlice must be strictly 4 bytes");
+_Static_assert(sizeof(PatElem)    == 6,  "PatElem must be strictly 6 bytes");
+_Static_assert(sizeof(FieldDef)   == 8,  "FieldDef must be strictly 8 bytes");
+_Static_assert(sizeof(TypeDef)    == 12, "TypeDef must be strictly 12 bytes");
+_Static_assert(sizeof(OpOverload) == 28, "OpOverload must be strictly 28 bytes");
+_Static_assert(sizeof(ConstDef)   == 8,  "ConstDef must be strictly 8 bytes");
 
 struct SymTable;
 
@@ -288,7 +314,7 @@ typedef bool (*EngExternFn)(MemArena *mem, const struct SymTable *tab,
                             void *user_ctx, Value *out_val);
 
 typedef struct {
-    char        name[32];    /* Self-contained name (survives .mathc reloads) */
+    char        name[32];    /* Self-contained name (survives binary reloads) */
     EngExternFn fn;
     void       *user_ctx;
 } ExternDef;
@@ -329,7 +355,7 @@ typedef struct SymTable {
     Value       const_vals[SYM_MAX_CONSTS];
     uint8_t     const_count;
 
-    /* Host-registered runtime callbacks (not serialized into `.mathc` files) */
+    /* Host-registered runtime callbacks (not serialized into binary images) */
     ExternDef   externs[SYM_MAX_EXTERNS];
     uint8_t     extern_count;
 } SymTable;

@@ -1,9 +1,9 @@
 /*
  * math_engine.c — Top-Level Engine Wrapper Implementation
  *
- * Internally loads the precompiled bootstrap and standard `.math` modules
+ * Internally loads the precompiled bootstrap and standard library modules
  * (`stdlib_precompiled.h`) in O(1) `memcpy` time inside `eng_init()` with
- * zero filesystem or directory dependencies.
+ * zero filesystem, directory, or file extension dependencies.
  */
 
 #include "math_engine.h"
@@ -12,11 +12,13 @@
 #include <string.h>
 
 void eng_init_blank(Engine *eng) {
+    if (!eng) return;
     mem_init(&eng->mem);
     sym_init(&eng->sym);
 }
 
 bool eng_init(Engine *eng) {
+    if (!eng) return false;
     eng_init_blank(eng);
     return ext_load_mathc_mem(&eng->mem, &eng->sym, k_stdlib_mathc, sizeof(k_stdlib_mathc));
 }
@@ -28,14 +30,17 @@ bool eng_register_extern(Engine *eng, const char *name,
 }
 
 bool eng_set_module(Engine *eng, const char *mod_name, bool enabled) {
+    if (!eng || !mod_name) return false;
     return sym_set_module(&eng->sym, &eng->mem, mod_name, enabled);
 }
 
 bool eng_is_module_active(const Engine *eng, const char *mod_name) {
+    if (!eng || !mod_name) return false;
     return sym_is_module_active(&eng->sym, &eng->mem, mod_name);
 }
 
 bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
+    if (!eng) return false;
     mem_clear_err(&eng->mem);
     mem_rewind_scratch(&eng->mem);
 
@@ -81,9 +86,12 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
     }
 
     Value res = eval_ast(&eng->mem, &eng->sym, root, frame_base, 0);
-    if (eng->mem.jump_active && !eng->mem.has_error) {
+    if (eng->mem.jump_active == JUMP_RETURN) {
+        res = eng->mem.jump_val;
+        eng->mem.jump_active = JUMP_NONE;
+    } else if (eng->mem.jump_active && !eng->mem.has_error) {
         eng->mem.jump_active = 0;
-        mem_err(&eng->mem, "Unhandled jump to scope tag outside active sequence");
+        mem_err(&eng->mem, "Unhandled jump, break, or continue outside active loop/scope");
     }
     if (P.local_count > 0) {
         mem_pop_frame(&eng->mem, frame_base);
@@ -94,22 +102,33 @@ bool eng_eval(Engine *eng, const char *expr, Value *out_val) {
 }
 
 uint16_t eng_val_type(const Engine *eng, Value v) {
+    if (!eng) return MEM_TYPE_VOID;
     return val_get_type(&eng->mem, v);
 }
 
 uint8_t eng_val_unit(const Engine *eng, Value v) {
+    if (!eng) return MEM_UNIT_NONE;
     return val_get_unit(&eng->mem, v);
 }
 
 const char *eng_type_name(const Engine *eng, uint16_t type_id, char *buf, size_t cap) {
+    if (!eng) {
+        if (buf && cap > 0) buf[0] = '\0';
+        return "";
+    }
     return sym_type_name(&eng->sym, &eng->mem, type_id, buf, cap);
 }
 
 const char *eng_unit_name(const Engine *eng, uint8_t unit_id, char *buf, size_t cap) {
+    if (!eng) {
+        if (buf && cap > 0) buf[0] = '\0';
+        return "";
+    }
     return sym_unit_name(&eng->sym, &eng->mem, unit_id, buf, cap);
 }
 
 const char *eng_last_error(const Engine *eng) {
+    if (!eng) return "Null engine pointer";
     return eng->mem.err_msg;
 }
 
@@ -150,7 +169,7 @@ static void format_mat_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t
     uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 2);
     uint16_t dims[4]  = { 0, 0, 0, 0 };
     for (uint8_t i = 0; i < 4; ++i) {
-        dims[i] = (i < rank) ? (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 4 + i) : 0;
+        dims[i] = (i < rank) ? (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 4u + i)) : 0;
     }
     if (rank == 0) {
         snprintf(buf, cap, "[]");
@@ -210,6 +229,11 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         format_mat_at(eng, pool_idx, buf, cap);
         return;
     }
+    if (type_id == eng->mem.fn_type_id && type_id != 0) {
+        unsigned pcnt = (unsigned)mem_read_pool(&eng->mem, pool_idx + 1);
+        snprintf(buf, cap, "<fn/%u>", pcnt);
+        return;
+    }
 
     const TypeDef *td = &eng->sym.types[type_id];
     char tname[32];
@@ -245,6 +269,7 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
 }
 
 void eng_format_value(const Engine *eng, Value val, char *buf, size_t buf_cap) {
+    if (!eng || !buf || buf_cap == 0) return;
     uint16_t tid = eng_val_type(eng, val);
     if (tid == 0 || tid >= eng->sym.type_count) {
         snprintf(buf, buf_cap, "<void>");

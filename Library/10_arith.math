@@ -26,6 +26,8 @@
 #    - Prefix `!` (in `00_bootstrap.math`) flips boolean conditions (`!(x == 5)`).
 (a:real)    "==" (b:real)    :<30 -> real = @eq(a, b)
 (a:real)    "!=" (b:real)    :<30 -> real = @ne(a, b)
+(a:str)     "==" (b:str)     :<30 -> real = @eq(a, b)
+(a:str)     "!=" (b:str)     :<30 -> real = @ne(a, b)
 (a:real)    "<"  (b:real)    :<30 -> real = @lt(a, b)
 (a:real)    "<=" (b:real)    :<30 -> real = @le(a, b)
 (a:real)    ">"  (b:real)    :<30 -> real = @gt(a, b)
@@ -215,7 +217,7 @@
 "sum_sq_n"(n:real)   -> real = n * (n + 1) * (2 * n + 1) / 6
 "sum_cube_n"(n:real) -> real = (n * (n + 1) / 2) ^ 2
 
-# 14. Vector Statistics & Time-Series Functions (`vec_sum`, `mean`, `variance`, `stddev`, `sma`)
+# 14. Vector Statistics & Time-Series Functions (`vec_sum`, `sum`, `mean`, `variance`, `stddev`, `sma`)
 "vec_sum"(v:vec) -> real = (
     s := 0;
     idx := 0;
@@ -226,6 +228,8 @@
     );
     s
 )
+
+"sum"(v:vec) -> real = vec_sum(v)
 
 "mean"(v:vec) -> real = vec_sum(v) / len(v)
 
@@ -262,3 +266,5 @@
 "pi"  : real = 3.141592653589793
 "e"   : real = 2.718281828459045
 "phi" : real = 1.618033988749895
+"φ"   : real = 1.618033988749895
+"ϕ"   : real = 1.618033988749895

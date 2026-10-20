@@ -1,0 +1,8 @@
+CompileFlags:
+  Add:
+    - -ICore/Headers
+    - -ICore/lib/delegate
+    - -ICore/lib/hardcode
+    - -std=c11
+    - -Wall
+    - -Wextra

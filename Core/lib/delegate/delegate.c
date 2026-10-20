@@ -8,137 +8,156 @@
  */
 
 #include "delegate.h"
+#include "../../Headers/parser.h"
 #include <math.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ============================================================================
  * 1. `@` INTRINSIC NAME -> OPCODE REGISTRY
  * ============================================================================ */
 
+/*Below section is the C's native lookup table and resolver for operator/function delegates @<intrinsic>*/
+/*Construct @f64, @lparen, @seq, @store, @add, @sin, @vnew, @vshift, @vpeek, @mmul, @calc_diff, @tostr, @fromstr*/
 typedef struct {
     const char *name;
     IntrinsicId id;
 } IntrEntry;
 
 static const IntrEntry k_delegate_intrinsics[] = {
-    { "f64",          INTR_PARSE_F64 },
-    { "f64_trim1",    INTR_PARSE_F64_TRIM1 },
-    { "i64",          INTR_PARSE_I64 },
-    { "str_slice",    INTR_PARSE_STR_SLICE },
-    { "vec_type",     INTR_VEC_TYPE },
-    { "mat_type",     INTR_MAT_TYPE },
-    { "lparen",       INTR_LPAREN },
-    { "rparen",       INTR_RPAREN },
-    { "lbrace",       INTR_LBRACE },
-    { "rbrace",       INTR_RBRACE },
-    { "lbrack",       INTR_LBRACK },
-    { "rbrack",       INTR_RBRACK },
-    { "comma",        INTR_COMMA },
-    { "seq",          INTR_SEQ },
-    { "store",        INTR_STORE },
-    { "while",        INTR_WHILE },
-    { "if",           INTR_IF },
-    { "or_branch",    INTR_OR_BRANCH },
-    { "then_branch",  INTR_OR_BRANCH },
-    { "else_branch",  INTR_ELSE_BRANCH },
-    { "switch_block", INTR_SWITCH_BLOCK },
-    { "case_branch",  INTR_CASE_BRANCH },
-    { "ternary",      INTR_TERNARY },
-    { "colon",        INTR_COLON },
-    { "jump_tag",     INTR_JUMP_TAG },
-    { "run_tag",      INTR_RUN_TAG },
-    { "break_loop",   INTR_BREAK_LOOP },
-    { "loop_kw",      INTR_LOOP_KW },
-    { "cand",         INTR_CAND },
-    { "cor",          INTR_COR },
-    { "cnot",         INTR_CNOT },
-    { "calc_diff",    INTR_CALC_DIFF },
-    { "calc_diff2",   INTR_CALC_DIFF2 },
-    { "calc_diffn",   INTR_CALC_DIFFN },
-    { "calc_integ",   INTR_CALC_INTEG },
-    { "calc_lim",     INTR_CALC_LIM },
-    { "calc_lim_l",   INTR_CALC_LIM_L },
-    { "calc_lim_r",   INTR_CALC_LIM_R },
-    { "calc_sigma",   INTR_CALC_SIGMA },
-    { "calc_prod",    INTR_CALC_PROD },
-    { "calc_solve",   INTR_CALC_SOLVE },
-    { "calc_fmin",    INTR_CALC_FMIN },
-    { "calc_fmax",    INTR_CALC_FMAX },
-    { "field",        INTR_FIELD },
-    { "vnew",         INTR_VNEW },
-    { "vfill",        INTR_VFILL },
-    { "vpush",        INTR_VPUSH },
-    { "vpop",         INTR_VPOP },
-    { "vget",         INTR_VGET },
-    { "vset",         INTR_VSET },
-    { "vlen",         INTR_VLEN },
-    { "vcap",         INTR_VCAP },
-    { "vresize",      INTR_VRESIZE },
-    { "vshrink",      INTR_VSHRINK },
-    { "vclear",       INTR_VCLEAR },
-    { "vrange",       INTR_VRANGE },
-    { "vin",          INTR_VIN },
-    { "mzero",        INTR_MZERO },
-    { "mones",        INTR_MONES },
-    { "meye",         INTR_MEYE },
-    { "mfill",        INTR_MFILL },
-    { "mrows",        INTR_MROWS },
-    { "mcols",        INTR_MCOLS },
-    { "mrank",        INTR_MRANK },
-    { "mlen",         INTR_MLEN },
-    { "mshape",       INTR_MSHAPE },
-    { "madd",         INTR_MADD },
-    { "msub",         INTR_MSUB },
-    { "mscal",        INTR_MSCAL },
-    { "mmul",         INTR_MMUL },
-    { "mtrans",       INTR_MTRANS },
-    { "mtrace",       INTR_MTRACE },
-    { "mdet",         INTR_MDET },
-    { "minv",         INTR_MINV },
-    { "add",          INTR_ADD },
-    { "sub",          INTR_SUB },
-    { "mul",          INTR_MUL },
-    { "div",          INTR_DIV },
-    { "mod",          INTR_MOD },
-    { "neg",          INTR_NEG },
-    { "abs",          INTR_ABS },
-    { "floor",        INTR_FLOOR },
-    { "ceil",         INTR_CEIL },
-    { "pow",          INTR_POW },
-    { "sqrt",         INTR_SQRT },
-    { "cbrt",         INTR_CBRT },
-    { "exp",          INTR_EXP },
-    { "ln",           INTR_LN },
-    { "log10",        INTR_LOG10 },
-    { "sin",          INTR_SIN },
-    { "cos",          INTR_COS },
-    { "tan",          INTR_TAN },
-    { "asin",         INTR_ASIN },
-    { "acos",         INTR_ACOS },
-    { "atan",         INTR_ATAN },
-    { "atan2",        INTR_ATAN2 },
-    { "sinh",         INTR_SINH },
-    { "cosh",         INTR_COSH },
-    { "tanh",         INTR_TANH },
-    { "eq",           INTR_EQ },
-    { "ne",           INTR_NE },
-    { "lt",           INTR_LT },
-    { "le",           INTR_LE },
-    { "gt",           INTR_GT },
-    { "ge",           INTR_GE },
-    { "approx",       INTR_APPROX },
-    { "land",         INTR_LAND },
-    { "lor",          INTR_LOR },
-    { "lnot",         INTR_LNOT },
-    { "lxor",         INTR_LXOR },
-    { "lnor",         INTR_LNOR },
-    { "lnand",        INTR_LNAND },
-    { "raw",          INTR_RAW },
-    { "type_name",    INTR_TYPE_NAME },
-    { "unit_name",    INTR_UNIT_NAME },
-    { "err",          INTR_ERR },
-    { NULL,           INTR_NONE }
+    { "f64",           INTR_PARSE_F64 },
+    { "f64_trim1",     INTR_PARSE_F64_TRIM1 },
+    { "i64",           INTR_PARSE_I64 },
+    { "str_slice",     INTR_PARSE_STR_SLICE },
+    { "vec_type",      INTR_VEC_TYPE },
+    { "mat_type",      INTR_MAT_TYPE },
+    { "fn_type",       INTR_FN_TYPE },
+    { "lparen",        INTR_LPAREN },
+    { "rparen",        INTR_RPAREN },
+    { "lbrace",        INTR_LBRACE },
+    { "rbrace",        INTR_RBRACE },
+    { "lbrack",        INTR_LBRACK },
+    { "rbrack",        INTR_RBRACK },
+    { "comma",         INTR_COMMA },
+    { "seq",           INTR_SEQ },
+    { "store",         INTR_STORE },
+    { "while",         INTR_WHILE },
+    { "if",            INTR_IF },
+    { "or_branch",     INTR_OR_BRANCH },
+    { "then_branch",   INTR_OR_BRANCH },
+    { "else_branch",   INTR_ELSE_BRANCH },
+    { "switch_block",  INTR_SWITCH_BLOCK },
+    { "case_branch",   INTR_CASE_BRANCH },
+    { "ternary",       INTR_TERNARY },
+    { "colon",         INTR_COLON },
+    { "jump_tag",      INTR_JUMP_TAG },
+    { "run_tag",       INTR_RUN_TAG },
+    { "break_loop",    INTR_BREAK_LOOP },
+    { "continue_loop", INTR_CONTINUE_LOOP },
+    { "return_fn",     INTR_RETURN_FN },
+    { "lambda",        INTR_LAMBDA },
+    { "cand",          INTR_CAND },
+    { "cor",           INTR_COR },
+    { "cnot",          INTR_CNOT },
+    { "calc_diff",     INTR_CALC_DIFF },
+    { "calc_diff2",    INTR_CALC_DIFF2 },
+    { "calc_diffn",    INTR_CALC_DIFFN },
+    { "calc_integ",    INTR_CALC_INTEG },
+    { "calc_lim",      INTR_CALC_LIM },
+    { "calc_lim_l",    INTR_CALC_LIM_L },
+    { "calc_lim_r",    INTR_CALC_LIM_R },
+    { "calc_sigma",    INTR_CALC_SIGMA },
+    { "calc_prod",     INTR_CALC_PROD },
+    { "calc_solve",    INTR_CALC_SOLVE },
+    { "calc_fmin",     INTR_CALC_FMIN },
+    { "calc_fmax",     INTR_CALC_FMAX },
+    { "field",         INTR_FIELD },
+    { "vnew",          INTR_VNEW },
+    { "vfill",         INTR_VFILL },
+    { "vpush",         INTR_VPUSH },
+    { "vpop",          INTR_VPOP },
+    { "vshift",        INTR_VSHIFT },
+    { "vpeek",         INTR_VPEEK },
+    { "vget",          INTR_VGET },
+    { "vset",          INTR_VSET },
+    { "vlen",          INTR_VLEN },
+    { "vcap",          INTR_VCAP },
+    { "vresize",       INTR_VRESIZE },
+    { "vshrink",       INTR_VSHRINK },
+    { "vclear",        INTR_VCLEAR },
+    { "vrange",        INTR_VRANGE },
+    { "vin",           INTR_VIN },
+    { "fcall",         INTR_FCALL },
+    { "vmap",          INTR_VMAP },
+    { "vfilter",       INTR_VFILTER },
+    { "vreduce",       INTR_VREDUCE },
+    { "vany",          INTR_VANY },
+    { "vall",          INTR_VALL },
+    { "vfind",         INTR_VFIND },
+    { "vcount",        INTR_VCOUNT },
+    { "mzero",         INTR_MZERO },
+    { "mones",         INTR_MONES },
+    { "meye",          INTR_MEYE },
+    { "mfill",         INTR_MFILL },
+    { "mrows",         INTR_MROWS },
+    { "mcols",         INTR_MCOLS },
+    { "mrank",         INTR_MRANK },
+    { "mlen",          INTR_MLEN },
+    { "mshape",        INTR_MSHAPE },
+    { "madd",          INTR_MADD },
+    { "msub",          INTR_MSUB },
+    { "mscal",         INTR_MSCAL },
+    { "mmul",          INTR_MMUL },
+    { "mtrans",        INTR_MTRANS },
+    { "mtrace",        INTR_MTRACE },
+    { "mdet",          INTR_MDET },
+    { "minv",          INTR_MINV },
+    { "add",           INTR_ADD },
+    { "sub",           INTR_SUB },
+    { "mul",           INTR_MUL },
+    { "div",           INTR_DIV },
+    { "mod",           INTR_MOD },
+    { "neg",           INTR_NEG },
+    { "abs",           INTR_ABS },
+    { "floor",         INTR_FLOOR },
+    { "ceil",          INTR_CEIL },
+    { "pow",           INTR_POW },
+    { "sqrt",          INTR_SQRT },
+    { "cbrt",          INTR_CBRT },
+    { "exp",           INTR_EXP },
+    { "ln",            INTR_LN },
+    { "log10",         INTR_LOG10 },
+    { "sin",           INTR_SIN },
+    { "cos",           INTR_COS },
+    { "tan",           INTR_TAN },
+    { "asin",          INTR_ASIN },
+    { "acos",          INTR_ACOS },
+    { "atan",          INTR_ATAN },
+    { "atan2",         INTR_ATAN2 },
+    { "sinh",          INTR_SINH },
+    { "cosh",          INTR_COSH },
+    { "tanh",          INTR_TANH },
+    { "eq",            INTR_EQ },
+    { "ne",            INTR_NE },
+    { "lt",            INTR_LT },
+    { "le",            INTR_LE },
+    { "gt",            INTR_GT },
+    { "ge",            INTR_GE },
+    { "approx",        INTR_APPROX },
+    { "land",          INTR_LAND },
+    { "lor",           INTR_LOR },
+    { "lnot",          INTR_LNOT },
+    { "lxor",          INTR_LXOR },
+    { "lnor",          INTR_LNOR },
+    { "lnand",         INTR_LNAND },
+    { "raw",           INTR_RAW },
+    { "type_name",     INTR_TYPE_NAME },
+    { "unit_name",     INTR_UNIT_NAME },
+    { "tostr",         INTR_TOSTR },
+    { "fromstr",       INTR_FROMSTR },
+    { "err",           INTR_ERR },
+    { NULL,            INTR_NONE }
 };
 
 IntrinsicId delegate_lookup_intrinsic(const char *s, uint16_t len) {
@@ -152,58 +171,63 @@ IntrinsicId delegate_lookup_intrinsic(const char *s, uint16_t len) {
 }
 
 /* ============================================================================
- * 2. UNIT & INTEGER VALIDATION HELPERS FOR DELEGATES
+ * 2. SCALAR & UNIT VALIDATION HELPERS
  * ============================================================================ */
 
+/*Below section is the C's native unit compatibility and integer validation helpers for operator delegates @add, @sub, @eq..@approx*/
+/*Construct unit-aware + / - / comparisons (universal 0 rule) and exact-integer index/dimension validation*/
 bool delegate_is_zero_unitless_scalar(const MemArena *mem, const SymTable *tab, Value v) {
-    if (val_get_unit(mem, v) != MEM_UNIT_NONE) return false;
     uint16_t tid = val_get_type(mem, v);
     if (tid == 0 || tid >= tab->type_count || !tab->types[tid].is_consuming) return false;
     if (tid == mem->str_type_id) return false;
+    if (val_get_unit(mem, v) != MEM_UNIT_NONE) return false;
     return fabs(val_get_f64(mem, v)) <= 1e-15;
 }
 
 bool delegate_check_additive_unit_compat(MemArena *mem, const SymTable *tab,
                                          const char *op_name, int op_len,
                                          Value a, Value b, uint8_t *out_unit) {
-    uint8_t u1 = val_get_unit(mem, a);
-    uint8_t u2 = val_get_unit(mem, b);
-    if (u1 == u2) {
-        if (out_unit) *out_unit = u1;
+    uint8_t ua = val_get_unit(mem, a);
+    uint8_t ub = val_get_unit(mem, b);
+    if (ua == ub) {
+        if (out_unit) *out_unit = ua;
         return true;
     }
-    if (delegate_is_zero_unitless_scalar(mem, tab, a)) {
-        if (out_unit) *out_unit = u2;
+    if (ua == MEM_UNIT_NONE && delegate_is_zero_unitless_scalar(mem, tab, a)) {
+        if (out_unit) *out_unit = ub;
         return true;
     }
-    if (delegate_is_zero_unitless_scalar(mem, tab, b)) {
-        if (out_unit) *out_unit = u1;
+    if (ub == MEM_UNIT_NONE && delegate_is_zero_unitless_scalar(mem, tab, b)) {
+        if (out_unit) *out_unit = ua;
         return true;
     }
-    char u1_buf[32], u2_buf[32];
-    sym_unit_name(tab, mem, u1, u1_buf, sizeof(u1_buf));
-    sym_unit_name(tab, mem, u2, u2_buf, sizeof(u2_buf));
-    mem_err(mem, "Unit mismatch in '%.*s': cannot combine '%s' and '%s'",
-            op_len, op_name, u1_buf, u2_buf);
+
+    char t1[32], t2[32], u1[32], u2[32];
+    sym_type_name(tab, mem, val_get_type(mem, a), t1, sizeof(t1));
+    sym_type_name(tab, mem, val_get_type(mem, b), t2, sizeof(t2));
+    sym_unit_name(tab, mem, ua, u1, sizeof(u1));
+    sym_unit_name(tab, mem, ub, u2, sizeof(u2));
+    mem_err(mem, "Unit mismatch for '%.*s' with (%s [%s], %s [%s])",
+            op_len, op_name, t1, u1, t2, u2);
     return false;
 }
 
 bool delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
                                const char *ctx, int *out_int) {
     uint16_t tid = val_get_type(mem, v);
-    if (tid == 0 || tid >= tab->type_count || !tab->types[tid].is_consuming ||
-        tid == mem->str_type_id) {
-        mem_err(mem, "Expected integer scalar for %s", ctx);
+    if (tid == 0 || tid >= tab->type_count ||
+        !tab->types[tid].is_consuming || tid == mem->str_type_id) {
+        mem_err(mem, "Invalid non-numeric %s", ctx);
         return false;
     }
     double d = val_get_f64(mem, v);
-    if (!isfinite(d) || d < -2147483648.0 || d > 2147483647.0) {
-        mem_err(mem, "Out-of-range or non-finite %s (%g)", ctx, d);
+    if (!isfinite(d) || d < -2147483647.0 || d > 2147483647.0) {
+        mem_err(mem, "Out-of-range %s (%.6g)", ctx, d);
         return false;
     }
     double r = floor(d + 0.5);
     if (fabs(d - r) > 1e-9) {
-        mem_err(mem, "Non-integer %s (%g)", ctx, d);
+        mem_err(mem, "Non-integer %s (%.6g)", ctx, d);
         return false;
     }
     *out_int = (int)r;
@@ -211,9 +235,86 @@ bool delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
 }
 
 /* ============================================================================
- * 3. DYNAMIC VECTOR (`$vec`) DELEGATE INTRINSICS (`@vnew` .. `@vin`)
+ * 2b. FIRST-CLASS LAMBDA (`$fn`) INVOCATION DELEGATE
  * ============================================================================ */
 
+/*Below section is the C's native for operator delegate @lambda and function delegate @fcall*/
+/*Construct (x) => expr, (a, b) => expr, () => expr, f(x), call(f, x)*/
+Value delegate_call_fn(MemArena *mem, const SymTable *tab,
+                       Value fn_val, uint8_t argc, const Value *args) {
+    if (mem->fn_type_id == 0 || val_get_type(mem, fn_val) != mem->fn_type_id) {
+        mem_err(mem, "Expected function ($fn) handle");
+        return val_void();
+    }
+    uint16_t hdr_idx    = val_get_pool_idx(fn_val);
+    uint16_t body_ast   = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+    uint8_t  param_cnt  = (uint8_t)mem_read_pool(mem, hdr_idx + 1);
+    uint32_t packed_slt = (uint32_t)mem_read_pool(mem, hdr_idx + 2);
+    uint16_t fbase      = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+
+    if (argc != param_cnt) {
+        mem_err(mem, "Lambda expects %u argument(s), got %u",
+                (unsigned)param_cnt, (unsigned)argc);
+        return val_void();
+    }
+
+    uint8_t slots[4] = {
+        (uint8_t)(packed_slt & 0xFFu),
+        (uint8_t)((packed_slt >> 8)  & 0xFFu),
+        (uint8_t)((packed_slt >> 16) & 0xFFu),
+        (uint8_t)((packed_slt >> 24) & 0xFFu)
+    };
+
+    uint16_t saved_sp = mem->sp;
+    uint16_t max_needed = fbase;
+    for (uint8_t k = 0; k < param_cnt; ++k) {
+        uint16_t pos = (uint16_t)(fbase + slots[k] + 1);
+        if (pos > max_needed) max_needed = pos;
+    }
+    if (max_needed > MEM_MAX_CALL_STACK) {
+        mem_err(mem, "Call stack overflow in lambda invocation");
+        return val_void();
+    }
+    if (mem->sp < max_needed) {
+        mem->sp = max_needed;
+    }
+
+    Value   saved_vals[4];
+    uint8_t saved_ltype[4];
+    uint8_t saved_lunit[4];
+    for (uint8_t k = 0; k < param_cnt; ++k) {
+        uint16_t abs_s = (uint16_t)(fbase + slots[k]);
+        saved_vals[k]  = mem->stack[abs_s];
+        saved_ltype[k] = mem->slot_locked_type[abs_s];
+        saved_lunit[k] = mem->slot_locked_unit[abs_s];
+        mem->slot_locked_type[abs_s] = 0;
+        mem->slot_locked_unit[abs_s] = 0;
+        mem->stack[abs_s]            = args[k];
+    }
+
+    Value res = eval_ast(mem, tab, body_ast, fbase, 0);
+    if (mem->jump_active == JUMP_RETURN) {
+        res = mem->jump_val;
+        mem->jump_val    = val_void();
+        mem->jump_active = JUMP_NONE;
+    }
+
+    for (uint8_t k = 0; k < param_cnt; ++k) {
+        uint16_t abs_s = (uint16_t)(fbase + slots[k]);
+        mem->stack[abs_s]            = saved_vals[k];
+        mem->slot_locked_type[abs_s] = saved_ltype[k];
+        mem->slot_locked_unit[abs_s] = saved_lunit[k];
+    }
+    mem->sp = saved_sp;
+    return res;
+}
+
+/* ============================================================================
+ * 3. DYNAMIC VECTOR, LIST, STACK & QUEUE (`$vec`) DELEGATE INTRINSICS
+ * ============================================================================ */
+
+/*Below section is the C's native element read/write helpers for container delegates @vnew..@vcount*/
+/*Construct vec<T>, list<T>, stack<T>, queue<T> element storage and retrieval*/
 void delegate_vec_write_elem(MemArena *mem, const SymTable *tab,
                              uint16_t elem_tid, uint16_t dst_pidx, Value item) {
     if (elem_tid == mem->str_type_id && elem_tid != 0) {
@@ -246,13 +347,192 @@ Value delegate_vec_read_elem(MemArena *mem, const SymTable *tab,
     }
 }
 
+static bool seq_coll_len(const MemArena *mem, Value coll, uint16_t *out_len) {
+    uint16_t tid = val_get_type(mem, coll);
+    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
+        uint16_t hdr_idx = val_get_pool_idx(coll);
+        *out_len = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+        return true;
+    }
+    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
+        uint16_t tot_len = 0, dims[4] = { 0 };
+        delegate_mat_get_info(mem, coll, NULL, &tot_len, NULL, dims);
+        *out_len = tot_len;
+        return true;
+    }
+    return false;
+}
+
+static Value seq_coll_get(MemArena *mem, const SymTable *tab, Value coll, uint16_t idx) {
+    uint16_t tid = val_get_type(mem, coll);
+    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
+        uint16_t hdr_idx  = val_get_pool_idx(coll);
+        uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+        uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+        uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8) & 0xFFu);
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+        uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
+                            ? tab->types[elem_tid].flat_size : 1;
+        return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
+                                      (uint16_t)(data_idx + idx * stride));
+    }
+    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
+        uint16_t data_idx = 0, dims[4] = { 0 };
+        delegate_mat_get_info(mem, coll, NULL, NULL, &data_idx, dims);
+        uint8_t u = val_get_unit(mem, coll);
+        return val_make_f64_unit(mem, mem->fast_real_type, u, mem_read_pool(mem, data_idx + idx));
+    }
+    return val_void();
+}
+
+/*Below section is the C's native for operator/function delegates @fcall, @vmap, @vfilter, @vreduce, @vany, @vall, @vfind, @vcount, @vnew, @vfill, @vrange, @vin, @vpush, @vpop, @vshift, @vpeek, @vget, @vset, @vlen, @vcap, @vresize, @vshrink, @vclear*/
+/*Construct call(f, ...), map, filter, reduce, fold, any, all, find, count_if, vec/list/stack/queue, .., ..., ..<, <.., in, into, push, pop, enqueue, dequeue, shift, peek, top, front, back*/
 Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
                                   IntrinsicId intr, Value a, Value b, Value c) {
+    /*Below section is the C's native for operator delegate @fcall*/
+    /*Construct call(f, a) and call(f, a, b)*/
+    if (intr == INTR_FCALL) {
+        if (mem->fn_type_id == 0 || val_get_type(mem, a) != mem->fn_type_id) {
+            mem_err(mem, "First argument to call() must be a function ($fn)");
+            return val_void();
+        }
+        uint16_t hdr_idx   = val_get_pool_idx(a);
+        uint8_t  param_cnt = (uint8_t)mem_read_pool(mem, hdr_idx + 1);
+        Value args[2] = { b, c };
+        return delegate_call_fn(mem, tab, a, param_cnt, args);
+    }
+
     if (mem->vec_type_id == 0) {
         mem_err(mem, "Dynamic vector type ($vec) is not loaded");
         return val_void();
     }
 
+    /*Below section is the C's native for operator delegates @vmap, @vfilter, @vreduce, @vany, @vall, @vfind, @vcount*/
+    /*Construct map(v, f), filter(v, f), reduce(v, f), fold(v, init, f), any(v, f), all(v, f), find(v, f), count_if(v, f)*/
+    if (intr >= INTR_VMAP && intr <= INTR_VCOUNT) {
+        uint16_t len = 0;
+        if (!seq_coll_len(mem, a, &len)) {
+            mem_err(mem, "Expected vector ($vec) or matrix ($mat) as first argument");
+            return val_void();
+        }
+        if (intr == INTR_VMAP) {
+            if (val_get_type(mem, a) == mem->mat_type_id && mem->mat_type_id != 0) {
+                uint8_t  rank = 0;
+                uint16_t tot_len = 0, dat_in = 0, dims[4] = { 0 };
+                delegate_mat_get_info(mem, a, &rank, &tot_len, &dat_in, dims);
+                uint16_t out_tot = 0, out_dat = 0;
+                uint16_t out_hdr = mem_mat_alloc_hdr(mem, rank, dims, &out_tot, &out_dat);
+                if (mem->has_error) return val_void();
+                uint8_t out_u = MEM_UNIT_NONE;
+                for (uint16_t i = 0; i < tot_len && !mem->has_error; ++i) {
+                    Value item   = seq_coll_get(mem, tab, a, i);
+                    Value mapped = delegate_call_fn(mem, tab, b, 1, &item);
+                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                    if (i == 0) out_u = val_get_unit(mem, mapped);
+                    mem_write_pool(mem, (uint16_t)(out_dat + i), val_get_f64(mem, mapped));
+                }
+                return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, out_hdr, MEM_MAT_HDR_SLOTS), out_u);
+            }
+            uint16_t out_hdr = mem_vec_alloc_hdr(mem, 0, len);
+            if (mem->has_error) return val_void();
+            Value out_vec = val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item   = seq_coll_get(mem, tab, a, i);
+                Value mapped = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, mapped, val_void());
+            }
+            return out_vec;
+        }
+        if (intr == INTR_VFILTER) {
+            uint16_t out_hdr = mem_vec_alloc_hdr(mem, 0, len);
+            if (mem->has_error) return val_void();
+            Value out_vec = val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item = seq_coll_get(mem, tab, a, i);
+                Value keep = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, keep)) > 1e-15) {
+                    (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, item, val_void());
+                }
+            }
+            return out_vec;
+        }
+        if (intr == INTR_VREDUCE) {
+            bool is_two_arg = (val_get_type(mem, b) == mem->fn_type_id && mem->fn_type_id != 0);
+            if (is_two_arg) {
+                if (len == 0) {
+                    mem_err(mem, "Cannot reduce an empty collection without an initial value");
+                    return val_void();
+                }
+                Value acc = seq_coll_get(mem, tab, a, 0);
+                for (uint16_t i = 1; i < len && !mem->has_error; ++i) {
+                    Value item = seq_coll_get(mem, tab, a, i);
+                    Value call_args[2] = { acc, item };
+                    acc = delegate_call_fn(mem, tab, b, 2, call_args);
+                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                }
+                return acc;
+            } else {
+                Value acc = b;
+                for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                    Value item = seq_coll_get(mem, tab, a, i);
+                    Value call_args[2] = { acc, item };
+                    acc = delegate_call_fn(mem, tab, c, 2, call_args);
+                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                }
+                return acc;
+            }
+        }
+        if (intr == INTR_VANY) {
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item = seq_coll_get(mem, tab, a, i);
+                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
+                    return val_make_f64(mem, mem->fast_real_type, 1.0);
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, 0.0);
+        }
+        if (intr == INTR_VALL) {
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item = seq_coll_get(mem, tab, a, i);
+                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cond)) <= 1e-15) {
+                    return val_make_f64(mem, mem->fast_real_type, 0.0);
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, 1.0);
+        }
+        if (intr == INTR_VFIND) {
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item = seq_coll_get(mem, tab, a, i);
+                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
+                    return item;
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, 0.0);
+        }
+        if (intr == INTR_VCOUNT) {
+            uint16_t hits = 0;
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value item = seq_coll_get(mem, tab, a, i);
+                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
+                    hits++;
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, (double)hits);
+        }
+    }
+
+    /*Below section is the C's native for operator delegate @vnew*/
+    /*Construct vec(), vec(cap), list(), stack(), queue()*/
     if (intr == INTR_VNEW) {
         int cap_in = 0;
         if (val_get_type(mem, a) != MEM_TYPE_VOID) {
@@ -267,6 +547,8 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
         return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
     }
 
+    /*Below section is the C's native for operator delegate @vfill*/
+    /*Construct vec(count, init), list(item), stack(item), queue(item)*/
     if (intr == INTR_VFILL) {
         int count = 0;
         if (!delegate_val_to_exact_int(mem, tab, a, "vector fill count", &count)) return val_void();
@@ -276,7 +558,7 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
         }
         uint16_t elem_tid = val_get_type(mem, b);
         uint8_t  elem_uid = val_get_unit(mem, b);
-        uint16_t packed_t = (uint16_t)(((uint16_t)elem_uid << 8) | (elem_tid & 0xFFu));
+        uint16_t packed_t = (uint16_t)(((uint32_t)elem_uid << 8u) | ((uint32_t)elem_tid & 0xFFu));
         uint16_t stride   = (elem_tid < tab->type_count) ? tab->types[elem_tid].flat_size : 1;
         uint16_t hdr_idx  = mem_vec_alloc_hdr(mem, packed_t, (uint16_t)count);
         if (mem->has_error) return val_void();
@@ -291,6 +573,8 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
         return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
     }
 
+    /*Below section is the C's native for operator delegate @vrange*/
+    /*Construct a...b (inclusive), a..<b (right-open), a<..b (left-open), a..b (open)*/
     if (intr == INTR_VRANGE) {
         int lo = 0, hi = 0;
         if (!delegate_val_to_exact_int(mem, tab, a, "range start", &lo) ||
@@ -301,31 +585,61 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
         if (!delegate_check_additive_unit_compat(mem, tab, "..", 2, a, b, &elem_uid)) {
             return val_void();
         }
+        int mode = (val_get_type(mem, c) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, c) : 0;
         int step = (lo <= hi) ? 1 : -1;
-        long long cnt_ll = (lo <= hi)
-                           ? ((long long)hi - (long long)lo + 1LL)
-                           : ((long long)lo - (long long)hi + 1LL);
+        if (mode & 2) lo += step; /* bit 1: exclude start */
+        if (mode & 1) hi -= step; /* bit 0: exclude end   */
+
+        long long cnt_ll = 0;
+        if ((step == 1 && lo <= hi) || (step == -1 && lo >= hi)) {
+            cnt_ll = (step == 1)
+                     ? ((long long)hi - (long long)lo + 1LL)
+                     : ((long long)lo - (long long)hi + 1LL);
+        }
         if (cnt_ll > (long long)MEM_MAX_F64_POOL) {
             mem_err(mem, "Range length (%lld) exceeds pool capacity", cnt_ll);
             return val_void();
         }
         uint16_t count    = (uint16_t)cnt_ll;
         uint16_t elem_tid = mem->fast_real_type;
-        uint16_t packed_t = (uint16_t)(((uint16_t)elem_uid << 8) | (elem_tid & 0xFFu));
+        uint16_t packed_t = (uint16_t)(((uint32_t)elem_uid << 8u) | ((uint32_t)elem_tid & 0xFFu));
         uint16_t hdr_idx  = mem_vec_alloc_hdr(mem, packed_t, count);
         if (mem->has_error) return val_void();
-        if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
-        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
-        for (uint16_t i = 0; i < count; ++i) {
-            mem_write_pool(mem, data_idx + i, (double)(lo + (int)i * step));
+        if (count > 0) {
+            if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            for (uint16_t i = 0; i < count; ++i) {
+                mem_write_pool(mem, (uint16_t)(data_idx + i), (double)(lo + (int)i * step));
+            }
+            mem_write_pool(mem, hdr_idx + 1, (double)count);
         }
-        mem_write_pool(mem, hdr_idx + 1, (double)count);
         return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
     }
 
+    /*Below section is the C's native for operator delegate @vin*/
+    /*Construct item in vec, item in mat, item in a...b*/
     if (intr == INTR_VIN) {
+        if (val_get_type(mem, b) == mem->mat_type_id && mem->mat_type_id != 0) {
+            uint8_t  rank = 0;
+            uint16_t tot_len = 0, data_idx = 0, dims[4] = { 0 };
+            if (!delegate_mat_get_info(mem, b, &rank, &tot_len, &data_idx, dims)) {
+                return val_void();
+            }
+            uint8_t mat_u  = val_get_unit(mem, b);
+            uint8_t item_u = val_get_unit(mem, a);
+            if (val_get_type(mem, a) != mem->fast_real_type || mat_u != item_u) {
+                return val_make_f64(mem, mem->fast_real_type, 0.0);
+            }
+            double target = val_get_f64(mem, a);
+            for (uint16_t i = 0; i < tot_len; ++i) {
+                if (fabs(mem_read_pool(mem, (uint16_t)(data_idx + i)) - target) <= 1e-12) {
+                    return val_make_f64(mem, mem->fast_real_type, 1.0);
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, 0.0);
+        }
         if (val_get_type(mem, b) != mem->vec_type_id) {
-            mem_err(mem, "Right operand of 'in' must be a vector ($vec) or matching unit");
+            mem_err(mem, "Right operand of 'in' must be a range, vector ($vec), matrix ($mat), or unit");
             return val_void();
         }
         uint16_t hdr_idx  = val_get_pool_idx(b);
@@ -379,6 +693,8 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
                         ? tab->types[elem_tid].flat_size : 1;
 
     switch (intr) {
+        /*Below section is the C's native for operator delegates @vlen, @vcap, @vclear, @vshrink*/
+        /*Construct len(v), cap(v), clear(v), shrink(v)*/
         case INTR_VLEN:
             return val_make_f64(mem, mem->fast_real_type, (double)len);
         case INTR_VCAP:
@@ -389,14 +705,24 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
         case INTR_VSHRINK:
             mem_vec_shrink_to_fit(mem, hdr_idx, stride);
             return a;
+
+        /*Below section is the C's native for operator delegate @vpush*/
+        /*Construct push(v, x), enqueue(q, x), and x into v*/
         case INTR_VPUSH: {
             uint16_t item_tid = val_get_type(mem, b);
             uint8_t  item_uid = val_get_unit(mem, b);
             if (elem_tid == 0) {
+                if (elem_uid != 0 && elem_uid != item_uid) {
+                    char exp_u[32], got_u[32];
+                    sym_unit_name(tab, mem, elem_uid, exp_u, sizeof(exp_u));
+                    sym_unit_name(tab, mem, item_uid, got_u, sizeof(got_u));
+                    mem_err(mem, "Vector unit mismatch: cannot push '[%s]' into vec<[%s]>", got_u, exp_u);
+                    return val_void();
+                }
                 elem_tid = item_tid;
                 elem_uid = item_uid;
                 stride   = (elem_tid < tab->type_count) ? tab->types[elem_tid].flat_size : 1;
-                uint16_t packed_t = (uint16_t)(((uint16_t)elem_uid << 8) | (elem_tid & 0xFFu));
+                uint16_t packed_t = (uint16_t)(((uint32_t)elem_uid << 8u) | ((uint32_t)elem_tid & 0xFFu));
                 mem_write_pool(mem, hdr_idx + 0, (double)packed_t);
             } else if (elem_tid != item_tid || elem_uid != item_uid) {
                 char exp_t[32], got_t[32];
@@ -413,6 +739,9 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
             mem_write_pool(mem, hdr_idx + 1, (double)(len + 1));
             return a;
         }
+
+        /*Below section is the C's native for operator delegate @vpop*/
+        /*Construct pop(v) (LIFO stack/vector pop from back)*/
         case INTR_VPOP: {
             if (len == 0) {
                 mem_err(mem, "Cannot pop from an empty vector");
@@ -423,6 +752,48 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
             mem_write_pool(mem, hdr_idx + 1, (double)new_len);
             return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid, (uint16_t)(data_idx + new_len * stride));
         }
+
+        /*Below section is the C's native for operator delegate @vshift*/
+        /*Construct dequeue(q), shift(q), pop_front(q) (FIFO queue pop from front)*/
+        case INTR_VSHIFT: {
+            if (len == 0) {
+                mem_err(mem, "Cannot dequeue/shift from an empty vector");
+                return val_void();
+            }
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            Value first = delegate_vec_read_elem(mem, tab, elem_tid, elem_uid, data_idx);
+            if (elem_tid != 0 && elem_tid < tab->type_count &&
+                !tab->types[elem_tid].is_consuming &&
+                elem_tid != mem->vec_type_id && elem_tid != mem->mat_type_id &&
+                elem_tid != mem->fn_type_id) {
+                first = val_clone_comp(mem, first, stride);
+                if (mem->has_error) return val_void();
+            }
+            uint16_t new_len = (uint16_t)(len - 1);
+            if (new_len > 0) {
+                memmove(&mem->f64_pool[data_idx],
+                        &mem->f64_pool[data_idx + stride],
+                        (size_t)(new_len * stride) * sizeof(double));
+            }
+            mem_write_pool(mem, hdr_idx + 1, (double)new_len);
+            return first;
+        }
+
+        /*Below section is the C's native for operator delegate @vpeek*/
+        /*Construct peek(s), top(s), back(s) (mode 0) and front(q) (mode 1)*/
+        case INTR_VPEEK: {
+            if (len == 0) {
+                mem_err(mem, "Cannot peek into an empty vector");
+                return val_void();
+            }
+            int mode = (val_get_type(mem, b) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, b) : 0;
+            uint16_t idx = (mode == 1) ? 0u : (uint16_t)(len - 1);
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid, (uint16_t)(data_idx + idx * stride));
+        }
+
+        /*Below section is the C's native for operator delegates @vget and @vset*/
+        /*Construct at(v, i), set(v, i, x)*/
         case INTR_VGET: {
             int raw_idx = 0;
             if (!delegate_val_to_exact_int(mem, tab, b, "vector index", &raw_idx)) return val_void();
@@ -455,6 +826,9 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
             delegate_vec_write_elem(mem, tab, elem_tid, (uint16_t)(data_idx + (uint16_t)idx * stride), c);
             return a;
         }
+
+        /*Below section is the C's native for operator delegate @vresize*/
+        /*Construct resize(v, new_len)*/
         case INTR_VRESIZE: {
             int new_len_in = 0;
             if (!delegate_val_to_exact_int(mem, tab, b, "vector resize length", &new_len_in)) return val_void();
@@ -486,6 +860,8 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
  * 4. MULTIDIMENSIONAL MATRIX (`$mat`) DELEGATE INTRINSICS (`@mzero` .. `@minv`)
  * ============================================================================ */
 
+/*Below section is the C's native for operator/function delegates @mzero, @mones, @meye, @mfill, @mrows, @mcols, @mrank, @mlen, @mshape, @madd, @msub, @mscal, @mmul, @mtrans, @mtrace, @mdet, @minv*/
+/*Construct mat_zeros, mat_ones, mat_eye, mat_fill, mat_rows, mat_cols, mat_rank, mat_len, mat_shape, A + B, A - B, s * A, A * B, transpose(A), trace(A), det(A), inv(A)*/
 bool delegate_mat_get_info(const MemArena *mem, Value v,
                            uint8_t *out_rank, uint16_t *out_total_len,
                            uint16_t *out_data_idx, uint16_t dims[4]) {
@@ -497,7 +873,7 @@ bool delegate_mat_get_info(const MemArena *mem, Value v,
     uint16_t tot_len = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
     uint16_t dat_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
     for (uint8_t i = 0; i < 4; ++i) {
-        dims[i] = (i < rank) ? (uint16_t)mem_read_pool(mem, hdr_idx + 4 + i) : 0;
+        dims[i] = (i < rank) ? (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 4u + i)) : 0;
     }
     if (out_rank)      *out_rank      = rank;
     if (out_total_len) *out_total_len = tot_len;
@@ -833,18 +1209,360 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
 }
 
 /* ============================================================================
+ * 4b. STRING CONVERSION DELEGATES `@tostr` (POSTFIX `_`) & `@fromstr` (PREFIX `_`)
+ * ============================================================================ */
+
+/*Below section is the C's native for operator delegates @tostr (postfix "_") and @fromstr (prefix "_")*/
+/*Construct x_ (plain string representation of any value/type) and _s (convert plain string into most appropriate type)*/
+static void delegate_format_struct_at(const MemArena *mem, const SymTable *tab,
+                                      uint16_t type_id, uint16_t pool_idx,
+                                      uint8_t depth, char *buf, size_t cap);
+
+static void delegate_format_mat_slice(const MemArena *mem, uint16_t data_idx,
+                                      const uint16_t *dims, uint8_t rank, uint8_t axis,
+                                      char *buf, size_t cap, size_t *used) {
+    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "[");
+    if (axis + 1 >= rank) {
+        uint16_t n = dims[axis];
+        for (uint16_t i = 0; i < n && *used < cap; ++i) {
+            double v = mem_read_pool(mem, (uint16_t)(data_idx + i));
+            if (v == 0.0) v = 0.0;
+            *used += (size_t)snprintf(buf + *used, cap - *used, "%s%.6g",
+                                      (i > 0 ? ", " : ""), v);
+        }
+    } else {
+        uint16_t stride = 1;
+        for (uint8_t a = (uint8_t)(axis + 1); a < rank; ++a) {
+            stride = (uint16_t)(stride * dims[a]);
+        }
+        uint16_t n = dims[axis];
+        for (uint16_t i = 0; i < n && *used < cap; ++i) {
+            if (i > 0 && *used < cap) {
+                *used += (size_t)snprintf(buf + *used, cap - *used, ", ");
+            }
+            delegate_format_mat_slice(mem, (uint16_t)(data_idx + i * stride),
+                                      dims, rank, (uint8_t)(axis + 1), buf, cap, used);
+        }
+    }
+    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "]");
+}
+
+static void delegate_format_vec_at(const MemArena *mem, const SymTable *tab,
+                                   uint16_t hdr_idx, uint8_t depth,
+                                   char *buf, size_t cap) {
+    if (depth > 16) {
+        snprintf(buf, cap, "[...]");
+        return;
+    }
+    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+    uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+    uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
+                        ? tab->types[elem_tid].flat_size : 1;
+
+    size_t used = (size_t)snprintf(buf, cap, "[");
+    for (uint16_t i = 0; i < len && used < cap; ++i) {
+        uint16_t elem_pidx = (uint16_t)(data_idx + i * stride);
+        char elem_str[96];
+        if (elem_tid == mem->str_type_id && elem_tid != 0) {
+            uint32_t packed = (uint32_t)mem_read_pool(mem, elem_pidx);
+            StrSlice s = { (uint16_t)(packed >> 16), (uint16_t)(packed & 0xFFFFu) };
+            snprintf(elem_str, sizeof(elem_str), "\"%.*s\"",
+                     (int)s.len, mem_str_ptr(mem, s));
+        } else if (elem_tid == mem->vec_type_id && elem_tid != 0) {
+            delegate_format_vec_at(mem, tab, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+        } else if (elem_tid > 0 && elem_tid < tab->type_count &&
+                   !tab->types[elem_tid].is_consuming) {
+            delegate_format_struct_at(mem, tab, elem_tid, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+        } else {
+            snprintf(elem_str, sizeof(elem_str), "%.6g", mem_read_pool(mem, elem_pidx));
+        }
+        used += (size_t)snprintf(buf + used, cap - used, "%s%s",
+                                 (i > 0 ? ", " : ""), elem_str);
+    }
+    if (used < cap) snprintf(buf + used, cap - used, "]");
+}
+
+static void delegate_format_struct_at(const MemArena *mem, const SymTable *tab,
+                                      uint16_t type_id, uint16_t pool_idx,
+                                      uint8_t depth, char *buf, size_t cap) {
+    if (depth > 16) {
+        snprintf(buf, cap, "<...>");
+        return;
+    }
+    if (type_id == mem->vec_type_id && type_id != 0) {
+        delegate_format_vec_at(mem, tab, pool_idx, depth, buf, cap);
+        return;
+    }
+    if (type_id == mem->mat_type_id && type_id != 0) {
+        uint8_t  rank     = (uint8_t)mem_read_pool(mem, pool_idx + 0);
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, pool_idx + 2);
+        uint16_t dims[4]  = { 0, 0, 0, 0 };
+        for (uint8_t i = 0; i < 4; ++i) {
+            dims[i] = (i < rank) ? (uint16_t)mem_read_pool(mem, (uint16_t)(pool_idx + 4u + i)) : 0;
+        }
+        if (rank == 0) {
+            snprintf(buf, cap, "[]");
+            return;
+        }
+        size_t used = 0;
+        delegate_format_mat_slice(mem, data_idx, dims, rank, 0, buf, cap, &used);
+        return;
+    }
+    if (type_id == mem->fn_type_id && type_id != 0) {
+        unsigned pcnt = (unsigned)mem_read_pool(mem, pool_idx + 1);
+        snprintf(buf, cap, "<fn/%u>", pcnt);
+        return;
+    }
+
+    const TypeDef *td = &tab->types[type_id];
+    char tname[32];
+    sym_type_name(tab, mem, type_id, tname, sizeof(tname));
+
+    if (strcmp(tname, "complex") == 0 && td->flat_size == 2) {
+        double re = mem_read_pool(mem, pool_idx);
+        double im = mem_read_pool(mem, pool_idx + 1);
+        if (im >= 0.0) {
+            snprintf(buf, cap, "%.6g + %.6gi", re, im);
+        } else {
+            snprintf(buf, cap, "%.6g - %.6gi", re, -im);
+        }
+        return;
+    }
+
+    size_t used = (size_t)snprintf(buf, cap, "%s(", tname);
+    for (uint8_t i = 0; i < td->field_count && used < cap; ++i) {
+        const FieldDef *fd = &tab->fields[td->start_idx + i];
+        char f_str[64];
+        if (!tab->types[fd->type_id].is_consuming) {
+            delegate_format_struct_at(mem, tab, fd->type_id, (uint16_t)(pool_idx + fd->flat_offset),
+                                      (uint8_t)(depth + 1), f_str, sizeof(f_str));
+        } else {
+            snprintf(f_str, sizeof(f_str), "%.6g", mem_read_pool(mem, (uint16_t)(pool_idx + fd->flat_offset)));
+        }
+        used += (size_t)snprintf(buf + used, cap - used, "%s%.*s=%s",
+                                 (i > 0 ? ", " : ""),
+                                 (int)fd->name.len, mem_str_ptr(mem, fd->name),
+                                 f_str);
+    }
+    if (used < cap) snprintf(buf + used, cap - used, ")");
+}
+
+static Value delegate_eval_tostr(MemArena *mem, const SymTable *tab, Value val) {
+    uint16_t tid = val_get_type(mem, val);
+    if (tid == mem->str_type_id && tid != 0) {
+        return val;
+    }
+    char buf[256];
+    if (tid == 0 || tid >= tab->type_count) {
+        snprintf(buf, sizeof(buf), "<void>");
+        return val_from_cstr(mem, buf);
+    }
+    const TypeDef *td = &tab->types[tid];
+    if (td->is_consuming) {
+        if (td->parser_intr == INTR_PARSE_F64_TRIM1) {
+            snprintf(buf, sizeof(buf), "%.6gi", val_get_f64(mem, val));
+        } else {
+            snprintf(buf, sizeof(buf), "%.10g", val_get_f64(mem, val));
+        }
+    } else {
+        delegate_format_struct_at(mem, tab, tid, val_get_pool_idx(val), 0, buf, sizeof(buf));
+    }
+    return val_from_cstr(mem, buf);
+}
+
+static Value delegate_eval_fromstr(MemArena *mem, const SymTable *tab, Value str_val) {
+    if (mem->str_type_id == 0 || val_get_type(mem, str_val) != mem->str_type_id) {
+        mem_err(mem, "No compatible type found");
+        return val_void();
+    }
+    StrSlice raw_slice = val_get_str(mem, str_val);
+    char raw_buf[512];
+    uint16_t copy_len = (raw_slice.len < sizeof(raw_buf) - 1)
+                        ? raw_slice.len : (uint16_t)(sizeof(raw_buf) - 1);
+    if (copy_len > 0) {
+        memcpy(raw_buf, mem_str_ptr(mem, raw_slice), copy_len);
+    }
+    raw_buf[copy_len] = '\0';
+
+    /* Trim leading and trailing whitespace */
+    uint16_t start = 0;
+    while (start < copy_len &&
+           (raw_buf[start] == ' ' || raw_buf[start] == '\t' ||
+            raw_buf[start] == '\r' || raw_buf[start] == '\n')) {
+        start++;
+    }
+    uint16_t end = copy_len;
+    while (end > start &&
+           (raw_buf[end - 1] == ' ' || raw_buf[end - 1] == '\t' ||
+            raw_buf[end - 1] == '\r' || raw_buf[end - 1] == '\n')) {
+        end--;
+    }
+
+    const char *trimmed = raw_buf + start;
+    uint16_t    tlen    = (uint16_t)(end - start);
+    if (tlen == 0 || trimmed[0] == '"') {
+        mem_err(mem, "No compatible type found for '%.*s'", (int)copy_len, raw_buf);
+        return val_void();
+    }
+    for (uint16_t i = 0; i < tlen; ++i) {
+        if (trimmed[i] == '\n') {
+            mem_err(mem, "No compatible type found for '%.*s'", (int)copy_len, raw_buf);
+            return val_void();
+        }
+    }
+
+    /* Normalize struct `field=` labels inside `(...)` (e.g. `vec2(x=3, y=4)` -> `vec2(3, 4)`)
+       and convert 1D bracketed lists `[a, b, ...]` (without `;` or nested `[` at depth 1) to `list(...)`
+       when they represent vectors. */
+    char norm_buf[512];
+    uint16_t nlen = 0;
+    int  pdepth = 0;
+    bool at_arg_start = false;
+    bool rewrite_1d_vec = false;
+
+    if (tlen >= 2 && trimmed[0] == '[' && trimmed[tlen - 1] == ']') {
+        bool has_semi_or_sub = false;
+        int  bdepth = 0;
+        for (uint16_t i = 1; i + 1 < tlen; ++i) {
+            char ch = trimmed[i];
+            if (ch == '(' || ch == '{') bdepth++;
+            else if (ch == ')' || ch == '}') bdepth--;
+            else if (ch == '[' && bdepth == 0) { has_semi_or_sub = true; break; }
+            else if (ch == ';' && bdepth == 0) { has_semi_or_sub = true; break; }
+            else if (i + 3 <= tlen && bdepth == 0 && memcmp(trimmed + i, "for", 3) == 0) {
+                has_semi_or_sub = true;
+                break;
+            }
+        }
+        if (!has_semi_or_sub) {
+            rewrite_1d_vec = true;
+        }
+    }
+
+    uint16_t i = 0;
+    uint16_t limit = tlen;
+    if (rewrite_1d_vec) {
+        /* Empty `[]` -> `vec()`, non-empty `[a, b]` -> `list(a, b)` */
+        uint16_t inner_p = 1;
+        while (inner_p + 1 < tlen && (trimmed[inner_p] == ' ' || trimmed[inner_p] == '\t')) inner_p++;
+        if (inner_p + 1 >= tlen) {
+            memcpy(norm_buf, "vec()", 5);
+            nlen = 5;
+            i = tlen;
+        } else {
+            memcpy(norm_buf, "list(", 5);
+            nlen = 5;
+            pdepth = 1;
+            at_arg_start = true;
+            i = 1;
+            limit = (uint16_t)(tlen - 1);
+        }
+    }
+
+    while (i < limit && (size_t)nlen + 2u < sizeof(norm_buf)) {
+        char c = trimmed[i];
+        if (c == '(') {
+            pdepth++;
+            at_arg_start = true;
+            norm_buf[nlen++] = c;
+            i++;
+            continue;
+        }
+        if (c == ')') {
+            if (pdepth > 0) pdepth--;
+            at_arg_start = false;
+            norm_buf[nlen++] = c;
+            i++;
+            continue;
+        }
+        if (c == ',' && pdepth > 0) {
+            at_arg_start = true;
+            norm_buf[nlen++] = c;
+            i++;
+            continue;
+        }
+        if (pdepth > 0 && at_arg_start) {
+            while (i < limit && (trimmed[i] == ' ' || trimmed[i] == '\t')) i++;
+            if (i >= limit) break;
+            unsigned char uc = (unsigned char)trimmed[i];
+            if ((uc >= 'a' && uc <= 'z') || (uc >= 'A' && uc <= 'Z')) {
+                uint16_t scan = i;
+                while (scan < limit) {
+                    unsigned char sc = (unsigned char)trimmed[scan];
+                    if ((sc >= 'a' && sc <= 'z') || (sc >= 'A' && sc <= 'Z') ||
+                        (sc >= '0' && sc <= '9') || sc == '_') {
+                        scan++;
+                    } else {
+                        break;
+                    }
+                }
+                uint16_t ws = scan;
+                while (ws < limit && (trimmed[ws] == ' ' || trimmed[ws] == '\t')) ws++;
+                if (ws < limit && trimmed[ws] == '=' &&
+                    !(ws + 1 < limit && (trimmed[ws + 1] == '=' || trimmed[ws + 1] == '>'))) {
+                    i = (uint16_t)(ws + 1);
+                    continue;
+                }
+            }
+            at_arg_start = false;
+        }
+        norm_buf[nlen++] = trimmed[i++];
+    }
+    if (rewrite_1d_vec && nlen > 0 && norm_buf[0] == 'l' && (size_t)nlen + 1u < sizeof(norm_buf)) {
+        norm_buf[nlen++] = ')';
+    }
+    norm_buf[nlen] = '\0';
+
+    uint16_t saved_sp = mem->sp;
+    Parser P;
+    parser_init(&P, mem, tab, norm_buf, nlen, 0, false, false);
+    lex_next(&P.lex);
+
+    uint16_t root = MEM_NO_IDX;
+    if (!mem->has_error && P.lex.cur.kind != TOK_EOF) {
+        root = parser_parse_expr(&P, 0);
+    }
+
+    if (mem->has_error || root == MEM_NO_IDX ||
+        P.lex.cur.kind != TOK_EOF || P.local_count != 0) {
+        mem->sp = saved_sp;
+        mem_clear_err(mem);
+        mem_err(mem, "No compatible type found for '%.*s'", (int)copy_len, raw_buf);
+        return val_void();
+    }
+
+    Value res = eval_ast(mem, tab, root, saved_sp, 0);
+    uint16_t rtid = val_get_type(mem, res);
+    if (mem->has_error || mem->jump_active != JUMP_NONE ||
+        rtid == MEM_TYPE_VOID || rtid == mem->str_type_id) {
+        mem->sp          = saved_sp;
+        mem->jump_active = JUMP_NONE;
+        mem_clear_err(mem);
+        mem_err(mem, "No compatible type found for '%.*s'", (int)copy_len, raw_buf);
+        return val_void();
+    }
+    return res;
+}
+
+/* ============================================================================
  * 5. SCALAR ARITHMETIC, BOOLEAN LOGIC & TRANSCENDENTAL DELEGATES
  * ============================================================================ */
 
+/*Below section is the C's native top-level dispatcher for operator/function delegates @add..@err, @tostr, @fromstr*/
+/*Construct +, -, *, /, %, ^, √, sin..tanh, ==..~, &&..nand, type_of, unit_of, x_, _s, error*/
 Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
                               IntrinsicId intr, Value a, Value b, Value c, uint8_t ret_type) {
-    if (intr >= INTR_VNEW && intr <= INTR_VIN) {
+    if (intr >= INTR_VNEW && intr <= INTR_VCOUNT) {
         return delegate_eval_vec_intrinsic(mem, tab, intr, a, b, c);
     }
     if (intr >= INTR_MZERO && intr <= INTR_MINV) {
         return delegate_eval_mat_intrinsic(mem, tab, intr, a, b, c);
     }
 
+    /*Below section is the C's native for operator delegates @type_name, @unit_name, @tostr, @fromstr, @err*/
+    /*Construct type_of(x), unit_of(x), x_ (postfix "_"), _s (prefix "_"), error(msg)*/
     if (intr == INTR_TYPE_NAME) {
         char tbuf[32];
         sym_type_name(tab, mem, val_get_type(mem, a), tbuf, sizeof(tbuf));
@@ -854,6 +1572,12 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
         char ubuf[32];
         sym_unit_name(tab, mem, val_get_unit(mem, a), ubuf, sizeof(ubuf));
         return val_from_cstr(mem, ubuf);
+    }
+    if (intr == INTR_TOSTR) {
+        return delegate_eval_tostr(mem, tab, a);
+    }
+    if (intr == INTR_FROMSTR) {
+        return delegate_eval_fromstr(mem, tab, a);
     }
     if (intr == INTR_ERR) {
         char ebuf[120];
@@ -877,6 +1601,8 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
     double res = 0.0;
 
     switch (intr) {
+        /*Below section is the C's native for operator delegates @add, @sub, @mul, @div, @mod, @neg, @abs, @floor, @ceil, @pow, @sqrt, @cbrt, @exp, @ln, @log10*/
+        /*Construct +, -, *, /, %, unary -, abs, floor, ceil, ^, √ / sqrt, cbrt, exp, ln, log10*/
         case INTR_ADD:
             if (!delegate_check_additive_unit_compat(mem, tab, "+", 1, a, b, &ruid)) return val_void();
             res = da + db;
@@ -908,6 +1634,9 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
         case INTR_EXP:   res = exp(da); break;
         case INTR_LN:    res = log(da); break;
         case INTR_LOG10: res = log10(da); break;
+
+        /*Below section is the C's native for operator delegates @sin, @cos, @tan, @asin, @acos, @atan, @atan2, @sinh, @cosh, @tanh*/
+        /*Construct sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh*/
         case INTR_SIN:   res = sin(da); break;
         case INTR_COS:   res = cos(da); break;
         case INTR_TAN:   res = tan(da); break;
@@ -918,11 +1647,22 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
         case INTR_SINH:  res = sinh(da); break;
         case INTR_COSH:  res = cosh(da); break;
         case INTR_TANH:  res = tanh(da); break;
+
+        /*Below section is the C's native for operator delegates @eq, @ne, @lt, @le, @gt, @ge, @approx, @land, @lor, @cnot, @lnot, @lxor, @lnor, @lnand, @raw*/
+        /*Construct ==, !=, <, <=, >, >=, ~, && / and, || / or, !, not, xor / ^^, nor, nand, i (iota)*/
         case INTR_EQ:
+            if (val_get_type(mem, a) == mem->str_type_id && val_get_type(mem, b) == mem->str_type_id && mem->str_type_id != 0) {
+                res = mem_slice_eq(mem, val_get_str(mem, a), val_get_str(mem, b)) ? 1.0 : 0.0;
+                break;
+            }
             if (!delegate_check_additive_unit_compat(mem, tab, "==", 2, a, b, NULL)) return val_void();
             res = (fabs(da - db) <= 1e-12) ? 1.0 : 0.0;
             break;
         case INTR_NE:
+            if (val_get_type(mem, a) == mem->str_type_id && val_get_type(mem, b) == mem->str_type_id && mem->str_type_id != 0) {
+                res = mem_slice_eq(mem, val_get_str(mem, a), val_get_str(mem, b)) ? 0.0 : 1.0;
+                break;
+            }
             if (!delegate_check_additive_unit_compat(mem, tab, "!=", 2, a, b, NULL)) return val_void();
             res = (fabs(da - db) >  1e-12) ? 1.0 : 0.0;
             break;
@@ -972,6 +1712,8 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
  * 6. CALCULUS, SOLVER & EXTREMA DELEGATES (`@calc_diff` .. `@calc_fmax`)
  * ============================================================================ */
 
+/*Below section is the C's native for operator/function delegates @calc_diff, @calc_diff2, @calc_diffn, @calc_integ, @calc_lim, @calc_lim_l, @calc_lim_r, @calc_sigma, @calc_prod, @calc_solve, @calc_fmin, @calc_fmax*/
+/*Construct diff, diff2, diff_n, integrate, ntg, lim, lim_left, lim_right, sigma, prod, solve, fmin, fmax*/
 static double eval_calc_point(MemArena *mem, const SymTable *tab,
                               uint8_t var_slot, uint16_t expr_ast,
                               uint16_t frame_base, uint8_t cur_ret_type, double x_val) {

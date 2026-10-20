@@ -4,7 +4,10 @@
  * Purpose:
  *   Tokenizes input UTF-8 streams using ONLY active consuming `$type` patterns,
  *   active `[boot_syntax]` delimiters (`@lparen`, `@rparen`, `@lbrace`, `@rbrace`,
- *   `@comma`), and active operator symbols registered in `SymTable`.
+ *   `@lbrack`, `@rbrack`, `@comma`), and active operator symbols registered in
+ *   `SymTable`. Tracks whether a token is preceded by a line break (`had_newline`)
+ *   so `\n` acts as a default `;` statement separator while keeping `;`
+ *   compulsory for multiple statements on a single line.
  */
 
 #ifndef LEXER_H
@@ -29,11 +32,12 @@ typedef enum {
     TOK_LBRACK,     /* Matched by an active `@lbrack` syntax symbol `[` in SymTable  */
     TOK_RBRACK,     /* Matched by an active `@rbrack` syntax symbol `]` in SymTable  */
     TOK_COMMA,      /* Matched by an active `@comma`  syntax symbol in SymTable      */
-    TOK_AT          /* @ (private C intrinsic hook, valid only in .math definitions) */
+    TOK_AT          /* @ (private C intrinsic/extern hook inside extension bodies)   */
 } TokKind;
 
 typedef struct {
     TokKind  kind;
+    bool     had_newline;
     uint16_t off;
     uint16_t len;
     uint16_t sym_id;

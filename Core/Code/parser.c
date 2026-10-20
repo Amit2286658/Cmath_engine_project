@@ -2,17 +2,28 @@
  * parser.c — Standalone Pratt Parser & AST Builder Implementation
  *
  * Supports:
+ *   - Default newline `;` statement separator both inside and outside `{ ... }` / `( ... )`
+ *     for one-statement-per-line writing, while keeping `;` compulsory when placing
+ *     multiple statements on a single line
  *   - Lexical `{ ... }` scope blocks (value-returning and void/isolated blocks)
  *   - Multi-branch `if ... or ... else` statements (one `if`, many `or` else-if
  *     branches, optional single `else`, plus legacy `if(c, t, e)`)
- *   - `switch (expr) { case v1 : { ... } ... else : { ... } }` blocks
+ *   - Pattern-matched `switch (expr) { ... }` blocks (exact values, `a..b` / `a...b`
+ *     ranges, relational guards `case > 10:`, struct destructuring `case vec2(0, y):`,
+ *     vector destructuring `case [0, y]:`, and optional `if <cond>` guards)
  *   - Standard right-associative ternary `cond ? x : y`
  *   - Colon-tagged scopes/loops `Tag : { ... }`, `Tag : (cond) ?? { ... }`, and
- *     `Tag : (i in 1...5) { ... }` with `jump(Tag)`, `run(Tag)`, and `break(Tag)`
- *   - Keywordless range/collection loops `(i in 1...5) { ... }`, `(i in 1..5) { ... }`,
+ *     `Tag : (i in 1...5) { ... }` with `jump(Tag)`, `run(Tag)`, `break(Tag)`,
+ *     `break(Tag, val)`, `break val`, `continue`, `continue(Tag)`, and `return val`
+ *   - Keywordless range/collection loops `(i in 1...5) { ... }`, `i in 1...5 { ... }`,
  *     `(v in vec) { ... }` as well as `loop (i in ...) { ... }` and `loop (cond) { ... }`
+ *   - Parameterized container constructors `vec<T>(...)`, `list<T>(...)`,
+ *     `stack<T>(...)`, `queue<T>(...)`
+ *   - Vector comprehensions `[x^2 for x in 1...5]` and `[x^2 for x in 1...10 if x % 2 == 0]`
+ *   - First-class anonymous lambdas `(x) => x^2`, `x => x^2`, `(a, b) => a + b`, `() => 42`
+ *     and direct `$fn` call syntax `f(x)` / `((x) => x^2)(5)`
  *   - Implicit multiplication (`2x`, `2π`, `3(x + 1)`, `(x + 1)(x - 1)`, `2 sin(x)`)
- *   - Uniform Function Call / dot-chaining syntax (`v.push(10)`, `M.transpose().det()`)
+ *   - Uniform Function Call / dot-chaining syntax (`v.push(10)`, `v.map(x => x^2)`)
  *   - Multi-variable declarations (`x, y := 5`), struct/vector/matrix destructuring
  *     (`r1, r2 := quad_roots(1, -5, 6)`), and compound assignments (`+=`, `-=`, etc.)
  *   - Concrete Entity Type & Concrete Unit Type variable annotations
@@ -178,6 +189,15 @@ static bool lex_peek_is_lparen(const Lexer *lex) {
     return lex_at_is_syntax(lex, lex->pos, INTR_LPAREN);
 }
 
+static bool lex_peek_is_ident_in(const Parser *P) {
+    uint16_t p = skip_raw_ws(P->lex.src, P->lex.pos, P->lex.len);
+    if (p >= P->lex.len || !lex_is_ident_start((unsigned char)P->lex.src[p])) return false;
+    while (p < P->lex.len && lex_is_ident_cont((unsigned char)P->lex.src[p])) p++;
+    p = skip_raw_ws(P->lex.src, p, P->lex.len);
+    return (p + 2 <= P->lex.len && P->lex.src[p] == 'i' && P->lex.src[p + 1] == 'n' &&
+             (p + 2 == P->lex.len || !lex_is_ident_cont((unsigned char)P->lex.src[p + 2])));
+}
+
 static bool lex_peek_is_branch_kw(const Parser *P) {
     uint16_t p = skip_raw_ws(P->lex.src, P->lex.pos, P->lex.len);
     if (p >= P->lex.len || !lex_is_ident_start((unsigned char)P->lex.src[p])) return false;
@@ -199,21 +219,11 @@ static int find_active_meta_sym(const SymTable *tab, uint8_t target_meta) {
     return -1;
 }
 
-/*
- * Check if `(` at `P->lex.cur` is a `(var in iterable) { ... }` loop header.
- * Returns true if inside `(` is `<ident> in <expr>)` followed by `{` (or `??`),
- * or if `allow_any_body` is true (when preceded by the `loop` keyword).
- */
-
-/*
- * Check if `v0, v1, ...` is a multi-variable assignment (`x, y := 5`,
- * `x, y : real, distance := 50m`, or `x, y += 1`).
- */
 static bool lex_is_multi_lhs(const Parser *P) {
     const Lexer    *lex = &P->lex;
     const SymTable *tab = lex->tab;
     const MemArena *mem = lex->mem;
-    uint16_t p = lex->pos; /* Position right after the first ',' */
+    uint16_t p = lex->pos;
 
     while (p < lex->len) {
         p = skip_raw_ws(lex->src, p, lex->len);
@@ -257,6 +267,16 @@ static bool lex_is_multi_lhs(const Parser *P) {
     return (m == INTR_STORE || m == INTR_COLON);
 }
 
+static uint16_t resolve_annot_type(const SymTable *tab, const MemArena *mem,
+                                   const char *name, uint16_t len) {
+    if (mem->vec_type_id != 0 &&
+        ((len == 4 && memcmp(name, "list", 4) == 0) ||
+         (len == 5 && memcmp(name, "stack", 5) == 0) ||
+         (len == 5 && memcmp(name, "queue", 5) == 0))) {
+        return mem->vec_type_id;
+    }
+    return sym_find_type(tab, mem, name, len);
+}
 
 static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t *out_lock_unit) {
     MemArena       *mem = P->lex.mem;
@@ -274,6 +294,22 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
     uint16_t    s1_len = P->lex.cur.len;
     lex_next(&P->lex);
 
+    /* Optional `<T>` on container variable type annotation `v : vec<real> := ...` */
+    if (P->lex.cur.kind == TOK_OP &&
+        tab->syms[P->lex.cur.sym_id].len == 1 &&
+        mem_str_ptr(mem, tab->syms[P->lex.cur.sym_id])[0] == '<') {
+        lex_next(&P->lex); /* consume '<' */
+        while (!mem->has_error && P->lex.cur.kind != TOK_EOF) {
+            if (P->lex.cur.kind == TOK_OP &&
+                tab->syms[P->lex.cur.sym_id].len == 1 &&
+                mem_str_ptr(mem, tab->syms[P->lex.cur.sym_id])[0] == '>') {
+                lex_next(&P->lex);
+                break;
+            }
+            lex_next(&P->lex);
+        }
+    }
+
     if (P->lex.cur.kind == TOK_COMMA) {
         lex_next(&P->lex); /* consume ',' */
         if (P->lex.cur.kind != TOK_IDENT &&
@@ -285,7 +321,7 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
         uint16_t    s2_len = P->lex.cur.len;
         lex_next(&P->lex);
 
-        uint16_t tid = sym_find_type(tab, mem, s1_ptr, s1_len);
+        uint16_t tid = resolve_annot_type(tab, mem, s1_ptr, s1_len);
         if (tid == MEM_TYPE_VOID) {
             mem_err(mem, "Unknown entity type '%.*s' in variable declaration", (int)s1_len, s1_ptr);
             return false;
@@ -296,7 +332,7 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
         return !mem->has_error;
     }
 
-    uint16_t tid = sym_find_type(tab, mem, s1_ptr, s1_len);
+    uint16_t tid = resolve_annot_type(tab, mem, s1_ptr, s1_len);
     if (tid == SYM_TYPE_ANY) {
         *out_lock_type = 0;
         *out_lock_unit = 0;
@@ -324,8 +360,12 @@ static uint16_t build_store_or_compound(Parser *P, uint16_t op_sym_id,
     if (hardcode_is_plain_store_sym(mem, tab, op_sym_id, &is_colon_eq)) {
         const AstNode *ln = mem_get_ast(mem, lhs_ast);
         const AstNode *rn = mem_get_ast(mem, rhs_ast);
-        if (ln->kind == AST_SLOT_LOAD && rn->kind == AST_CONSTRUCT && ln->left == 0) {
-            P->slot_types[ln->sub] = rn->ref;
+        if (ln->kind == AST_SLOT_LOAD && ln->left == 0) {
+            if (rn->kind == AST_CONSTRUCT) {
+                P->slot_types[ln->sub] = rn->ref;
+            } else if (rn->kind == AST_LAMBDA && mem->fn_type_id != 0) {
+                P->slot_types[ln->sub] = mem->fn_type_id;
+            }
         }
         return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_RIGHT, op_sym_id, lhs_ast, rhs_ast);
     }
@@ -349,7 +389,6 @@ static uint16_t build_store_or_compound(Parser *P, uint16_t op_sym_id,
     return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_RIGHT,
                          (uint16_t)store_sym, lhs_ast, comb_rhs);
 }
-
 
 static uint8_t ast_cand_cor_meta(const MemArena *mem, const SymTable *tab,
                                  uint16_t idx, uint16_t *out_sym) {
@@ -520,7 +559,7 @@ static uint16_t parse_field_step(Parser *P, uint16_t left) {
 }
 
 /* ============================================================================
- * 2b. MULTIDIMENSIONAL MATRIX LITERAL `[...]` & C-STYLE SUBSCRIPTING `v[i]`
+ * 2b. MATRIX LITERAL `[...]`, COMPREHENSIONS `[expr for x in ...]` & `v[i]`
  * ============================================================================ */
 
 static bool cur_is_seq_semicolon(const Parser *P) {
@@ -530,6 +569,7 @@ static bool cur_is_seq_semicolon(const Parser *P) {
 
 static uint16_t parse_mat_literal(Parser *P) {
     MemArena *mem = P->lex.mem;
+
     lex_next(&P->lex); /* consume '[' */
 
     uint8_t saved_ternary = P->in_ternary_then;
@@ -539,6 +579,81 @@ static uint16_t parse_mat_literal(Parser *P) {
         P->in_ternary_then = saved_ternary;
         lex_next(&P->lex);
         return mem_alloc_ast(mem, AST_MAT_LIT, 0, 0, MEM_NO_IDX, MEM_NO_IDX);
+    }
+
+    const char *comp_vname = NULL;
+    uint16_t    comp_vlen  = 0;
+    if (hardcode_scan_comprehension_var(P, &comp_vname, &comp_vlen)) {
+        uint8_t saved_vis = P->vis_count;
+        P->scope_depth++;
+        int var_slot = parser_add_local(P, comp_vname, comp_vlen, mem->fast_real_type);
+        if (mem->has_error) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            P->in_ternary_then = saved_ternary;
+            return MEM_NO_IDX;
+        }
+
+        uint16_t map_expr = parser_parse_expr(P, 2);
+        if (mem->has_error || map_expr == MEM_NO_IDX) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            P->in_ternary_then = saved_ternary;
+            return MEM_NO_IDX;
+        }
+
+        if (P->lex.cur.len != 3 || memcmp(P->lex.src + P->lex.cur.off, "for", 3) != 0) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            P->in_ternary_then = saved_ternary;
+            mem_err(mem, "Expected 'for' in vector comprehension");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex); /* consume 'for' */
+
+        lex_next(&P->lex); /* consume loop variable name */
+
+        if (P->lex.cur.len != 2 || memcmp(P->lex.src + P->lex.cur.off, "in", 2) != 0) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            P->in_ternary_then = saved_ternary;
+            mem_err(mem, "Expected 'in' after comprehension variable '%.*s'", (int)comp_vlen, comp_vname);
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex); /* consume 'in' */
+
+        uint16_t iter_ast = parser_parse_expr(P, 2);
+        if (mem->has_error || iter_ast == MEM_NO_IDX) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            P->in_ternary_then = saved_ternary;
+            return MEM_NO_IDX;
+        }
+
+        /* Optional `if <filter_cond>` clause inside `[expr for x in iter if cond]` */
+        uint16_t cond_ast = MEM_NO_IDX;
+        if (token_func_meta(P, P->lex.cur) == INTR_IF) {
+            lex_next(&P->lex); /* consume 'if' */
+            cond_ast = parser_parse_expr(P, 2);
+            if (mem->has_error || cond_ast == MEM_NO_IDX) {
+                P->vis_count = saved_vis;
+                P->scope_depth--;
+                P->in_ternary_then = saved_ternary;
+                return MEM_NO_IDX;
+            }
+        }
+
+        P->vis_count = saved_vis;
+        P->scope_depth--;
+        P->in_ternary_then = saved_ternary;
+
+        if (P->lex.cur.kind != TOK_RBRACK) {
+            mem_err(mem, "Expected closing ']' after vector comprehension");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+        uint16_t pair_ast = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, map_expr, cond_ast);
+        return mem_alloc_ast(mem, AST_FOR_IN, (uint8_t)var_slot, 0x8000u, iter_ast, pair_ast);
     }
 
     uint16_t row0_head = MEM_NO_IDX;
@@ -671,8 +786,43 @@ static uint16_t parse_index_step(Parser *P, uint16_t left) {
     return mem_alloc_ast(mem, AST_INDEX, argc, 0, left, idx_head);
 }
 
+static uint16_t parse_fn_call_step(Parser *P, uint16_t fn_ast) {
+    MemArena *mem = P->lex.mem;
+    lex_next(&P->lex); /* consume '(' */
+
+    uint8_t saved_ternary = P->in_ternary_then;
+    P->in_ternary_then = 0;
+
+    uint16_t head = MEM_NO_IDX;
+    uint16_t tail = MEM_NO_IDX;
+    uint8_t  argc = 0;
+
+    if (P->lex.cur.kind != TOK_RPAREN) {
+        while (!mem->has_error) {
+            uint16_t arg  = parser_parse_expr(P, 0);
+            uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, arg, MEM_NO_IDX);
+            if (head == MEM_NO_IDX) head = link;
+            else mem_get_ast_mut(mem, tail)->right = link;
+            tail = link;
+            argc++;
+            if (P->lex.cur.kind == TOK_COMMA) {
+                lex_next(&P->lex);
+            } else {
+                break;
+            }
+        }
+    }
+    P->in_ternary_then = saved_ternary;
+    if (P->lex.cur.kind != TOK_RPAREN) {
+        mem_err(mem, "Expected ')' after function call arguments");
+        return MEM_NO_IDX;
+    }
+    lex_next(&P->lex);
+    return mem_alloc_ast(mem, AST_FN_CALL, argc, 0, fn_ast, head);
+}
+
 /* ============================================================================
- * 3. LEXICAL SCOPE BLOCKS `{ ... }`, `if/or/else`, `switch`, AND LOOPS
+ * 3. LEXICAL SCOPE BLOCKS `{ ... }`, LAMBDAS `=>`, `if/or/else`, `switch`, LOOPS
  * ============================================================================ */
 
 static uint16_t parse_scope_block(Parser *P) {
@@ -723,106 +873,118 @@ static uint16_t parse_branch_body(Parser *P) {
     return parser_parse_expr(P, 16);
 }
 
-/*
- * Parse `(i in 1...5) { ... }`, `(i in 1..5) { ... }`, or `(v in vec) { ... }`.
- */
-static uint16_t parse_for_in_loop(Parser *P) {
-    MemArena *mem = P->lex.mem;
-    if (P->lex.cur.kind != TOK_LPAREN) {
-        mem_err(mem, "Expected '(' to start loop header");
-        return MEM_NO_IDX;
-    }
+static uint16_t parse_lambda_from_paren(Parser *P) {
+    MemArena       *mem = P->lex.mem;
+    const SymTable *tab = P->lex.tab;
     lex_next(&P->lex); /* consume '(' */
 
-    if (P->lex.cur.kind != TOK_IDENT &&
-        !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
-        mem_err(mem, "Expected loop variable name before 'in'");
-        return MEM_NO_IDX;
-    }
-    const char *vname = P->lex.src + P->lex.cur.off;
-    uint16_t    vlen  = P->lex.cur.len;
-    int var_slot = parser_add_local(P, vname, vlen, mem->fast_real_type);
-    if (mem->has_error) return MEM_NO_IDX;
-    lex_next(&P->lex);
-
-    if (P->lex.cur.len != 2 || memcmp(P->lex.src + P->lex.cur.off, "in", 2) != 0) {
-        mem_err(mem, "Expected 'in' after loop variable '%.*s'", (int)vlen, vname);
-        return MEM_NO_IDX;
-    }
-    lex_next(&P->lex); /* consume 'in' */
-
-    uint8_t saved_ternary = P->in_ternary_then;
-    P->in_ternary_then = 0;
-    uint16_t iter_ast = parser_parse_expr(P, 0);
-    P->in_ternary_then = saved_ternary;
-    if (mem->has_error || iter_ast == MEM_NO_IDX) return MEM_NO_IDX;
+    const char *pnames[4] = { NULL, NULL, NULL, NULL };
+    uint16_t    plens[4]  = { 0, 0, 0, 0 };
+    uint16_t    ptypes[4] = { 0, 0, 0, 0 };
+    uint8_t     pcnt      = 0;
 
     if (P->lex.cur.kind != TOK_RPAREN) {
-        mem_err(mem, "Expected ')' after loop iterable");
+        while (!mem->has_error) {
+            if (pcnt >= 4) {
+                mem_err(mem, "Lambda functions support at most 4 parameters");
+                return MEM_NO_IDX;
+            }
+            if (P->lex.cur.kind != TOK_IDENT &&
+                !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
+                mem_err(mem, "Expected parameter name in lambda header");
+                return MEM_NO_IDX;
+            }
+            pnames[pcnt] = P->lex.src + P->lex.cur.off;
+            plens[pcnt]  = P->lex.cur.len;
+            ptypes[pcnt] = mem->fast_real_type;
+            lex_next(&P->lex);
+
+            if (cur_op_meta(P) == INTR_COLON) {
+                lex_next(&P->lex);
+                if (P->lex.cur.kind != TOK_IDENT &&
+                    !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
+                    mem_err(mem, "Expected type name after ':' in lambda parameter");
+                    return MEM_NO_IDX;
+                }
+                uint16_t tid = sym_find_type(tab, mem, P->lex.src + P->lex.cur.off, P->lex.cur.len);
+                if (tid == MEM_TYPE_VOID) {
+                    mem_err(mem, "Unknown lambda parameter type '%.*s'",
+                            (int)P->lex.cur.len, P->lex.src + P->lex.cur.off);
+                    return MEM_NO_IDX;
+                }
+                ptypes[pcnt] = (tid == SYM_TYPE_ANY) ? mem->fast_real_type : tid;
+                lex_next(&P->lex);
+            }
+            pcnt++;
+
+            if (P->lex.cur.kind == TOK_COMMA) {
+                lex_next(&P->lex);
+            } else {
+                break;
+            }
+        }
+    }
+
+    if (P->lex.cur.kind != TOK_RPAREN) {
+        mem_err(mem, "Expected ')' after lambda parameters");
         return MEM_NO_IDX;
     }
     lex_next(&P->lex); /* consume ')' */
 
-    /* Allow optional `??` between `(i in ...)` and `{ ... }` */
-    if (cur_op_meta(P) == INTR_WHILE) {
-        lex_next(&P->lex);
+    if (cur_op_meta(P) != INTR_LAMBDA) {
+        mem_err(mem, "Expected '=>' after lambda parameter list");
+        return MEM_NO_IDX;
+    }
+    lex_next(&P->lex); /* consume '=>' */
+
+    uint8_t saved_vis = P->vis_count;
+    P->scope_depth++;
+    uint8_t pslots[4] = { 0, 0, 0, 0 };
+    for (uint8_t i = 0; i < pcnt; ++i) {
+        int s = parser_add_local(P, pnames[i], plens[i], ptypes[i]);
+        if (mem->has_error) {
+            P->vis_count = saved_vis;
+            P->scope_depth--;
+            return MEM_NO_IDX;
+        }
+        pslots[i] = (uint8_t)s;
     }
 
-    uint16_t body_ast = parse_branch_body(P);
+    uint16_t body_ast = (P->lex.cur.kind == TOK_LBRACE)
+                        ? parse_scope_block(P)
+                        : parser_parse_expr(P, 8);
+    P->vis_count = saved_vis;
+    P->scope_depth--;
+    P->last_was_block = false;
     if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
-    P->last_was_block = true;
-    return mem_alloc_ast(mem, AST_FOR_IN, (uint8_t)var_slot, 0, iter_ast, body_ast);
+
+    uint16_t packed_01 = (uint16_t)((uint32_t)pslots[0] | ((uint32_t)pslots[1] << 8u));
+    uint16_t packed_23 = (uint16_t)((uint32_t)pslots[2] | ((uint32_t)pslots[3] << 8u));
+    return mem_alloc_ast(mem, AST_LAMBDA, pcnt, body_ast, packed_01, packed_23);
 }
 
-/*
- * Parse `loop (i in 1...5) { ... }`, `loop (cond) { ... }`, or `loop { ... }`.
- */
-static uint16_t parse_loop_construct(Parser *P) {
-    MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+static uint16_t parse_lambda_from_ident(Parser *P, const char *id_str, uint16_t id_len) {
+    MemArena *mem = P->lex.mem;
+    lex_next(&P->lex); /* consume '=>' */
 
-    if (hardcode_is_paren_for_in(P, true)) {
-        return parse_for_in_loop(P);
-    }
-
-    int while_sym = find_active_meta_sym(tab, INTR_WHILE);
-    if (while_sym < 0) {
-        mem_err(mem, "'loop' requires active while intrinsic in [boot_control]");
+    uint8_t saved_vis = P->vis_count;
+    P->scope_depth++;
+    int pslot = parser_add_local(P, id_str, id_len, mem->fast_real_type);
+    if (mem->has_error) {
+        P->vis_count = saved_vis;
+        P->scope_depth--;
         return MEM_NO_IDX;
     }
 
-    /* `loop { ... }` -> unconditional loop (exited via `break`) */
-    if (P->lex.cur.kind == TOK_LBRACE) {
-        uint16_t pidx = mem_alloc_pool(mem, 1);
-        if (mem->has_error) return MEM_NO_IDX;
-        mem_write_pool(mem, pidx, 1.0);
-        uint16_t one_ast  = mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, pidx, 0, 0);
-        uint16_t body_ast = parse_scope_block(P);
-        P->last_was_block = true;
-        return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
-                             (uint16_t)while_sym, one_ast, body_ast);
-    }
+    uint16_t body_ast = (P->lex.cur.kind == TOK_LBRACE)
+                        ? parse_scope_block(P)
+                        : parser_parse_expr(P, 8);
+    P->vis_count = saved_vis;
+    P->scope_depth--;
+    P->last_was_block = false;
+    if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
 
-    /* `loop (cond) { ... }` -> conditional loop */
-    uint16_t cond_ast = MEM_NO_IDX;
-    if (P->lex.cur.kind == TOK_LPAREN) {
-        lex_next(&P->lex);
-        cond_ast = parser_parse_expr(P, 0);
-        if (P->lex.cur.kind != TOK_RPAREN) {
-            mem_err(mem, "Expected ')' after 'loop' condition");
-            return MEM_NO_IDX;
-        }
-        lex_next(&P->lex);
-    } else {
-        cond_ast = parser_parse_expr(P, 16);
-    }
-    if (cur_op_meta(P) == INTR_WHILE) {
-        lex_next(&P->lex);
-    }
-    uint16_t body_ast = parse_branch_body(P);
-    P->last_was_block = true;
-    return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
-                         (uint16_t)while_sym, cond_ast, body_ast);
+    return mem_alloc_ast(mem, AST_LAMBDA, 1, body_ast, (uint16_t)pslot, 0);
 }
 
 static uint16_t parse_if_construct(Parser *P, uint16_t if_sym_id) {
@@ -831,7 +993,9 @@ static uint16_t parse_if_construct(Parser *P, uint16_t if_sym_id) {
 
     if (P->lex.cur.kind == TOK_LPAREN) {
         lex_next(&P->lex);
+        P->in_cond_expr++;
         cond1 = parser_parse_expr(P, 0);
+        P->in_cond_expr--;
         if (P->lex.cur.kind == TOK_COMMA) {
             lex_next(&P->lex);
             uint16_t then_val = parser_parse_expr(P, 0);
@@ -857,7 +1021,9 @@ static uint16_t parse_if_construct(Parser *P, uint16_t if_sym_id) {
         }
         lex_next(&P->lex);
     } else {
+        P->in_cond_expr++;
         cond1 = parser_parse_expr(P, 16);
+        P->in_cond_expr--;
     }
 
     if (mem->has_error || cond1 == MEM_NO_IDX) return MEM_NO_IDX;
@@ -898,14 +1064,18 @@ static uint16_t parse_if_construct(Parser *P, uint16_t if_sym_id) {
             uint16_t c_next = MEM_NO_IDX;
             if (P->lex.cur.kind == TOK_LPAREN) {
                 lex_next(&P->lex);
+                P->in_cond_expr++;
                 c_next = parser_parse_expr(P, 0);
+                P->in_cond_expr--;
                 if (P->lex.cur.kind != TOK_RPAREN) {
                     mem_err(mem, "Expected ')' after 'or' condition");
                     return MEM_NO_IDX;
                 }
                 lex_next(&P->lex);
             } else {
+                P->in_cond_expr++;
                 c_next = parser_parse_expr(P, 16);
+                P->in_cond_expr--;
             }
 
             uint16_t b_next = parse_branch_body(P);
@@ -944,12 +1114,192 @@ static uint16_t parse_if_construct(Parser *P, uint16_t if_sym_id) {
     return acc;
 }
 
+static bool tok_is_underscore(const Parser *P, Token t) {
+    return (t.len == 1 && P->lex.src[t.off] == '_' &&
+            (t.kind == TOK_IDENT || t.kind == TOK_OP));
+}
+
+static bool is_pattern_bind_ident(const Parser *P, const char *name, uint16_t len, uint8_t end_syn) {
+    const MemArena *mem = P->lex.mem;
+    const SymTable *tab = P->lex.tab;
+
+    if (!lex_at_is_syntax(&P->lex, P->lex.pos, INTR_COMMA) &&
+        !lex_at_is_syntax(&P->lex, P->lex.pos, end_syn)) {
+        return false;
+    }
+    if (len == 1 && name[0] == '_') return true;
+    if (find_local_idx(P, name, len) >= 0) return false;
+    int sid = sym_find(tab, mem, name, len);
+    if (sid >= 0) {
+        for (uint8_t i = 0; i < tab->const_count; ++i) {
+            if (tab->consts[i].sym_id == (uint16_t)sid && sym_mod_enabled(tab, tab->consts[i].mod_id)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+static uint16_t parse_single_switch_pattern(Parser *P, uint16_t slot_ast, uint8_t sw_slot,
+                                            int cand_sym) {
+    MemArena       *mem = P->lex.mem;
+    const SymTable *tab = P->lex.tab;
+
+    /* 1. Relational guard pattern: `case > 10 :`, `case <= 0 :`, `case != 5 :`, `case ~ 3.14 :` */
+    if (P->lex.cur.kind == TOK_OP && hardcode_is_rel_comparison_op(mem, tab, P->lex.cur.sym_id)) {
+        uint16_t op_sym = P->lex.cur.sym_id;
+        lex_next(&P->lex);
+        P->in_ternary_then++;
+        uint16_t rhs_ast = parser_parse_expr(P, 35);
+        P->in_ternary_then--;
+        if (mem->has_error || rhs_ast == MEM_NO_IDX) return MEM_NO_IDX;
+        return mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT, op_sym, slot_ast, rhs_ast);
+    }
+
+    /* 2. Struct destructuring pattern: `case vec2(0, y) :`, `case vec3(x, 0, z) :` */
+    if (P->lex.cur.kind == TOK_IDENT && lex_peek_is_lparen(&P->lex)) {
+        const char *tname = P->lex.src + P->lex.cur.off;
+        uint16_t    tlen  = P->lex.cur.len;
+        uint16_t    st_tid = sym_find_type(tab, mem, tname, tlen);
+        if (st_tid != MEM_TYPE_VOID && st_tid < tab->type_count &&
+            !tab->types[st_tid].is_consuming && tab->types[st_tid].parser_intr == INTR_NONE &&
+            tab->types[st_tid].field_count > 0) {
+            const TypeDef *td = &tab->types[st_tid];
+            lex_next(&P->lex); /* consume struct type name */
+            lex_next(&P->lex); /* consume '(' */
+
+            uint16_t cond = mem_alloc_ast(mem, AST_SWITCH_EQ, 1, st_tid, slot_ast, MEM_NO_IDX);
+            uint8_t  f_idx = 0;
+
+            while (!mem->has_error && P->lex.cur.kind != TOK_RPAREN && f_idx < td->field_count) {
+                const FieldDef *fd = &tab->fields[td->start_idx + f_idx];
+                uint16_t field_ast = mem_alloc_ast(mem, AST_FIELD_LOAD, (uint8_t)fd->type_id,
+                                                   fd->flat_offset, slot_ast, sw_slot);
+                uint16_t step_cond = MEM_NO_IDX;
+
+                if ((P->lex.cur.kind == TOK_IDENT || tok_is_underscore(P, P->lex.cur)) &&
+                    is_pattern_bind_ident(P, P->lex.src + P->lex.cur.off, P->lex.cur.len, INTR_RPAREN)) {
+                    const char *vname = P->lex.src + P->lex.cur.off;
+                    uint16_t    vlen  = P->lex.cur.len;
+                    lex_next(&P->lex);
+                    if (!(vlen == 1 && vname[0] == '_')) {
+                        int pslot = parser_add_local(P, vname, vlen, fd->type_id);
+                        if (mem->has_error) return MEM_NO_IDX;
+                        step_cond = mem_alloc_ast(mem, AST_SWITCH_EQ, 2, (uint16_t)pslot, field_ast, MEM_NO_IDX);
+                    }
+                } else {
+                    P->in_ternary_then++;
+                    uint16_t f_expr = parser_parse_expr(P, 11);
+                    P->in_ternary_then--;
+                    if (mem->has_error || f_expr == MEM_NO_IDX) return MEM_NO_IDX;
+                    step_cond = mem_alloc_ast(mem, AST_SWITCH_EQ, 0, 0, field_ast, f_expr);
+                }
+
+                if (step_cond != MEM_NO_IDX && cand_sym >= 0) {
+                    cond = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
+                                         (uint16_t)cand_sym, cond, step_cond);
+                }
+                f_idx++;
+                if (P->lex.cur.kind == TOK_COMMA) {
+                    lex_next(&P->lex);
+                } else {
+                    break;
+                }
+            }
+
+            if (P->lex.cur.kind != TOK_RPAREN) {
+                mem_err(mem, "Expected ')' after struct pattern in 'case'");
+                return MEM_NO_IDX;
+            }
+            lex_next(&P->lex);
+            return cond;
+        }
+    }
+
+    /* 3. Vector / 1D Matrix destructuring pattern: `case [0, y] :`, `case [a, b] :` */
+    if (P->lex.cur.kind == TOK_LBRACK) {
+        lex_next(&P->lex); /* consume '[' */
+        uint16_t elem_checks[16];
+        uint8_t  elem_cnt = 0;
+
+        while (!mem->has_error && P->lex.cur.kind != TOK_RBRACK && elem_cnt < 16) {
+            uint16_t k_pidx = mem_alloc_pool(mem, 1);
+            if (mem->has_error) return MEM_NO_IDX;
+            mem_write_pool(mem, k_pidx, (double)elem_cnt);
+            uint16_t k_lit    = mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, k_pidx, 0, 0);
+            uint16_t k_link   = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, k_lit, MEM_NO_IDX);
+            uint16_t elem_ast = mem_alloc_ast(mem, AST_INDEX, 1, 0, slot_ast, k_link);
+
+            if ((P->lex.cur.kind == TOK_IDENT || tok_is_underscore(P, P->lex.cur)) &&
+                is_pattern_bind_ident(P, P->lex.src + P->lex.cur.off, P->lex.cur.len, INTR_RBRACK)) {
+                const char *vname = P->lex.src + P->lex.cur.off;
+                uint16_t    vlen  = P->lex.cur.len;
+                lex_next(&P->lex);
+                if (vlen == 1 && vname[0] == '_') {
+                    elem_checks[elem_cnt] = MEM_NO_IDX;
+                } else {
+                    int pslot = parser_add_local(P, vname, vlen, mem->fast_real_type);
+                    if (mem->has_error) return MEM_NO_IDX;
+                    elem_checks[elem_cnt] = mem_alloc_ast(mem, AST_SWITCH_EQ, 2, (uint16_t)pslot, elem_ast, MEM_NO_IDX);
+                }
+            } else {
+                P->in_ternary_then++;
+                uint16_t e_expr = parser_parse_expr(P, 11);
+                P->in_ternary_then--;
+                if (mem->has_error || e_expr == MEM_NO_IDX) return MEM_NO_IDX;
+                elem_checks[elem_cnt] = mem_alloc_ast(mem, AST_SWITCH_EQ, 0, 0, elem_ast, e_expr);
+            }
+
+            elem_cnt++;
+            if (P->lex.cur.kind == TOK_COMMA) {
+                lex_next(&P->lex);
+            } else {
+                break;
+            }
+        }
+
+        if (P->lex.cur.kind != TOK_RBRACK) {
+            mem_err(mem, "Expected ']' after vector pattern in 'case'");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+
+        uint16_t cond = mem_alloc_ast(mem, AST_SWITCH_EQ, 3, elem_cnt, slot_ast, MEM_NO_IDX);
+        for (uint8_t k = 0; k < elem_cnt; ++k) {
+            if (elem_checks[k] != MEM_NO_IDX && cand_sym >= 0) {
+                cond = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
+                                     (uint16_t)cand_sym, cond, elem_checks[k]);
+            }
+        }
+        return cond;
+    }
+
+    /* 4. Wildcard `_` or Standard Value / Range Pattern (`case 1..5 :`, `case 42 :`) */
+    if (tok_is_underscore(P, P->lex.cur) &&
+        (lex_at_is_syntax(&P->lex, P->lex.pos, INTR_COMMA) ||
+         cur_op_meta(P) == INTR_COLON ||
+         (P->lex.pos < P->lex.len && P->lex.src[skip_raw_ws(P->lex.src, P->lex.pos, P->lex.len)] == ':'))) {
+        lex_next(&P->lex);
+        uint16_t one_pidx = mem_alloc_pool(mem, 1);
+        if (mem->has_error) return MEM_NO_IDX;
+        mem_write_pool(mem, one_pidx, 1.0);
+        return mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, one_pidx, 0, 0);
+    }
+
+    P->in_ternary_then++;
+    uint16_t v_ast = parser_parse_expr(P, 11);
+    P->in_ternary_then--;
+    if (mem->has_error || v_ast == MEM_NO_IDX) return MEM_NO_IDX;
+    return mem_alloc_ast(mem, AST_SWITCH_EQ, 0, 0, slot_ast, v_ast);
+}
+
 static uint16_t parse_switch_construct(Parser *P) {
     MemArena       *mem = P->lex.mem;
     const SymTable *tab = P->lex.tab;
 
     int store_sym = find_active_meta_sym(tab, INTR_STORE);
     int seq_sym   = find_active_meta_sym(tab, INTR_SEQ);
+    int cand_sym  = find_active_meta_sym(tab, INTR_CAND);
     if (store_sym < 0 || seq_sym < 0) {
         mem_err(mem, "Switch requires active assignment and sequence operators in [boot_control]");
         return MEM_NO_IDX;
@@ -958,14 +1308,18 @@ static uint16_t parse_switch_construct(Parser *P) {
     uint16_t target_expr = MEM_NO_IDX;
     if (P->lex.cur.kind == TOK_LPAREN) {
         lex_next(&P->lex);
+        P->in_cond_expr++;
         target_expr = parser_parse_expr(P, 0);
+        P->in_cond_expr--;
         if (P->lex.cur.kind != TOK_RPAREN) {
             mem_err(mem, "Expected ')' after 'switch' expression");
             return MEM_NO_IDX;
         }
         lex_next(&P->lex);
     } else {
+        P->in_cond_expr++;
         target_expr = parser_parse_expr(P, 2);
+        P->in_cond_expr--;
     }
 
     if (P->lex.cur.kind != TOK_LBRACE) {
@@ -1010,18 +1364,42 @@ static uint16_t parse_switch_construct(Parser *P) {
             lex_next(&P->lex);
         }
 
-        uint16_t case_vals[8];
+        uint8_t case_saved_vis = P->vis_count;
+        P->scope_depth++;
+
+        uint16_t case_conds[8];
         uint8_t  val_cnt = 0;
         while (!mem->has_error && val_cnt < 8) {
-            P->in_ternary_then++;
-            uint16_t v_ast = parser_parse_expr(P, 11);
-            P->in_ternary_then--;
-            if (mem->has_error || v_ast == MEM_NO_IDX) return MEM_NO_IDX;
-            case_vals[val_cnt++] = v_ast;
+            uint16_t c_ast = parse_single_switch_pattern(P, slot_ast, sw_slot, cand_sym);
+            if (mem->has_error || c_ast == MEM_NO_IDX) {
+                P->vis_count = case_saved_vis;
+                P->scope_depth--;
+                return MEM_NO_IDX;
+            }
+            case_conds[val_cnt++] = c_ast;
             if (P->lex.cur.kind == TOK_COMMA) {
                 lex_next(&P->lex);
             } else {
                 break;
+            }
+        }
+
+        /* Optional `if <guard_expr>` clause on `case ... if <guard> :` */
+        if (token_func_meta(P, P->lex.cur) == INTR_IF) {
+            lex_next(&P->lex); /* consume 'if' */
+            P->in_ternary_then++;
+            uint16_t guard_ast = parser_parse_expr(P, 11);
+            P->in_ternary_then--;
+            if (mem->has_error || guard_ast == MEM_NO_IDX) {
+                P->vis_count = case_saved_vis;
+                P->scope_depth--;
+                return MEM_NO_IDX;
+            }
+            if (cand_sym >= 0) {
+                for (uint8_t k = 0; k < val_cnt; ++k) {
+                    case_conds[k] = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
+                                                  (uint16_t)cand_sym, case_conds[k], guard_ast);
+                }
             }
         }
 
@@ -1030,12 +1408,15 @@ static uint16_t parse_switch_construct(Parser *P) {
         }
 
         uint16_t body_ast = parse_branch_body(P);
+        P->vis_count = case_saved_vis;
+        P->scope_depth--;
+
         for (uint8_t k = 0; k < val_cnt; ++k) {
             if (case_cnt >= 32) {
                 mem_err(mem, "Too many cases in 'switch' block (max 32)");
                 return MEM_NO_IDX;
             }
-            conds[case_cnt]  = mem_alloc_ast(mem, AST_SWITCH_EQ, 0, 0, slot_ast, case_vals[k]);
+            conds[case_cnt]  = case_conds[k];
             bodies[case_cnt] = body_ast;
             case_cnt++;
         }
@@ -1087,17 +1468,102 @@ static uint16_t parse_tag_op(Parser *P, AstKind kind, const char *op_name) {
     return mem_alloc_ast(mem, (uint8_t)kind, (uint8_t)label_id, 0, MEM_NO_IDX, MEM_NO_IDX);
 }
 
+static bool can_follow_jump_value_expr(const Parser *P) {
+    if (P->lex.cur.had_newline) return false;
+    TokKind k = P->lex.cur.kind;
+    if (k == TOK_EOF || k == TOK_RBRACE || k == TOK_RPAREN || k == TOK_RBRACK || k == TOK_COMMA) {
+        return false;
+    }
+    if (cur_op_meta(P) == INTR_SEQ || cur_op_meta(P) == INTR_COLON) {
+        return false;
+    }
+    uint8_t kw = token_func_meta(P, P->lex.cur);
+    if (kw == INTR_OR_BRANCH || kw == INTR_ELSE_BRANCH || kw == INTR_CASE_BRANCH) {
+        return false;
+    }
+    return true;
+}
+
 static uint16_t parse_break_construct(Parser *P) {
     MemArena *mem = P->lex.mem;
-    if (P->lex.cur.kind == TOK_LPAREN) {
+    if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LPAREN) {
         lex_next(&P->lex);
         if (P->lex.cur.kind == TOK_RPAREN) {
             lex_next(&P->lex);
             return mem_alloc_ast(mem, AST_BREAK, 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX);
         }
+        /* Check if the first token inside `break(...)` is a scope/loop tag followed by `)` or `,` */
+        if ((P->lex.cur.kind == TOK_IDENT ||
+             (P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) &&
+            (lex_at_is_syntax(&P->lex, P->lex.pos, INTR_RPAREN) ||
+             lex_at_is_syntax(&P->lex, P->lex.pos, INTR_COMMA))) {
+            const char *tname = P->lex.src + P->lex.cur.off;
+            uint16_t    tlen  = P->lex.cur.len;
+            bool is_tag = (find_label_id(P, tname, tlen) >= 0) ||
+                          (find_local_idx(P, tname, tlen) < 0 &&
+                           sym_find(P->lex.tab, mem, tname, tlen) < 0) ||
+                          lex_at_is_syntax(&P->lex, P->lex.pos, INTR_COMMA);
+            if (is_tag) {
+                int label_id = parser_get_or_add_label(P, tname, tlen);
+                if (mem->has_error) return MEM_NO_IDX;
+                lex_next(&P->lex);
+                uint16_t val_ast = MEM_NO_IDX;
+                if (P->lex.cur.kind == TOK_COMMA) {
+                    lex_next(&P->lex);
+                    val_ast = parser_parse_expr(P, 0);
+                    if (mem->has_error || val_ast == MEM_NO_IDX) return MEM_NO_IDX;
+                }
+                if (P->lex.cur.kind != TOK_RPAREN) {
+                    mem_err(mem, "Expected ')' after 'break(%.*s...)'", (int)tlen, tname);
+                    return MEM_NO_IDX;
+                }
+                lex_next(&P->lex);
+                if (val_ast == MEM_NO_IDX && can_follow_jump_value_expr(P)) {
+                    val_ast = parser_parse_expr(P, 2);
+                }
+                return mem_alloc_ast(mem, AST_BREAK, (uint8_t)label_id, 0, val_ast, MEM_NO_IDX);
+            }
+        }
+        /* Otherwise `break(expr)` is a value-returning anonymous break */
+        uint16_t val_ast = parser_parse_expr(P, 0);
+        if (mem->has_error || val_ast == MEM_NO_IDX) return MEM_NO_IDX;
+        if (P->lex.cur.kind != TOK_RPAREN) {
+            mem_err(mem, "Expected ')' after break value expression");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+        return mem_alloc_ast(mem, AST_BREAK, 0xFFu, 0, val_ast, MEM_NO_IDX);
+    }
+
+    if (can_follow_jump_value_expr(P)) {
+        if (P->lex.cur.kind == TOK_IDENT && token_func_meta(P, P->lex.cur) == 0 &&
+            find_label_id(P, P->lex.src + P->lex.cur.off, P->lex.cur.len) >= 0) {
+            int label_id = find_label_id(P, P->lex.src + P->lex.cur.off, P->lex.cur.len);
+            lex_next(&P->lex);
+            uint16_t val_ast = MEM_NO_IDX;
+            if (can_follow_jump_value_expr(P)) {
+                val_ast = parser_parse_expr(P, 2);
+            }
+            return mem_alloc_ast(mem, AST_BREAK, (uint8_t)label_id, 0, val_ast, MEM_NO_IDX);
+        }
+        uint16_t val_ast = parser_parse_expr(P, 2);
+        return mem_alloc_ast(mem, AST_BREAK, 0xFFu, 0, val_ast, MEM_NO_IDX);
+    }
+
+    return mem_alloc_ast(mem, AST_BREAK, 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX);
+}
+
+static uint16_t parse_continue_construct(Parser *P) {
+    MemArena *mem = P->lex.mem;
+    if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LPAREN) {
+        lex_next(&P->lex);
+        if (P->lex.cur.kind == TOK_RPAREN) {
+            lex_next(&P->lex);
+            return mem_alloc_ast(mem, AST_CONTINUE, 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX);
+        }
         if (P->lex.cur.kind != TOK_IDENT &&
             !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
-            mem_err(mem, "Expected loop/scope tag name inside 'break(...)'");
+            mem_err(mem, "Expected loop tag name inside 'continue(...)'");
             return MEM_NO_IDX;
         }
         const char *tname = P->lex.src + P->lex.cur.off;
@@ -1106,23 +1572,48 @@ static uint16_t parse_break_construct(Parser *P) {
         if (mem->has_error) return MEM_NO_IDX;
         lex_next(&P->lex);
         if (P->lex.cur.kind != TOK_RPAREN) {
-            mem_err(mem, "Expected ')' after tag in 'break(%.*s)'", (int)tlen, tname);
+            mem_err(mem, "Expected ')' after tag in 'continue(%.*s)'", (int)tlen, tname);
             return MEM_NO_IDX;
         }
         lex_next(&P->lex);
-        return mem_alloc_ast(mem, AST_BREAK, (uint8_t)label_id, 0, MEM_NO_IDX, MEM_NO_IDX);
+        return mem_alloc_ast(mem, AST_CONTINUE, (uint8_t)label_id, 0, MEM_NO_IDX, MEM_NO_IDX);
     }
 
-    if (P->lex.cur.kind == TOK_IDENT && token_func_meta(P, P->lex.cur) == 0) {
-        const char *tname = P->lex.src + P->lex.cur.off;
-        uint16_t    tlen  = P->lex.cur.len;
-        int label_id = parser_get_or_add_label(P, tname, tlen);
-        if (mem->has_error) return MEM_NO_IDX;
+    if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_IDENT &&
+        token_func_meta(P, P->lex.cur) == 0 &&
+        find_label_id(P, P->lex.src + P->lex.cur.off, P->lex.cur.len) >= 0) {
+        int label_id = find_label_id(P, P->lex.src + P->lex.cur.off, P->lex.cur.len);
         lex_next(&P->lex);
-        return mem_alloc_ast(mem, AST_BREAK, (uint8_t)label_id, 0, MEM_NO_IDX, MEM_NO_IDX);
+        return mem_alloc_ast(mem, AST_CONTINUE, (uint8_t)label_id, 0, MEM_NO_IDX, MEM_NO_IDX);
     }
 
-    return mem_alloc_ast(mem, AST_BREAK, 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX);
+    return mem_alloc_ast(mem, AST_CONTINUE, 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX);
+}
+
+static uint16_t parse_return_construct(Parser *P) {
+    MemArena *mem = P->lex.mem;
+    if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LPAREN) {
+        lex_next(&P->lex);
+        if (P->lex.cur.kind == TOK_RPAREN) {
+            lex_next(&P->lex);
+            return mem_alloc_ast(mem, AST_RETURN, 0, 0, MEM_NO_IDX, MEM_NO_IDX);
+        }
+        uint16_t val_ast = parser_parse_expr(P, 0);
+        if (mem->has_error || val_ast == MEM_NO_IDX) return MEM_NO_IDX;
+        if (P->lex.cur.kind != TOK_RPAREN) {
+            mem_err(mem, "Expected ')' after 'return(...)'");
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+        return mem_alloc_ast(mem, AST_RETURN, 0, 0, val_ast, MEM_NO_IDX);
+    }
+
+    if (can_follow_jump_value_expr(P)) {
+        uint16_t val_ast = parser_parse_expr(P, 2);
+        return mem_alloc_ast(mem, AST_RETURN, 0, 0, val_ast, MEM_NO_IDX);
+    }
+
+    return mem_alloc_ast(mem, AST_RETURN, 0, 0, MEM_NO_IDX, MEM_NO_IDX);
 }
 
 static uint16_t resolve_var_for_assign(Parser *P, const char *name, uint16_t len,
@@ -1187,20 +1678,53 @@ static uint16_t parse_nud(Parser *P) {
         }
     }
 
-    /* 2. Parenthesized Expression `( ... )` OR Keywordless Loop `(i in 1...5) { ... }` */
+    /* 2. Parenthesized Expression `( ... )`, Lambda `(x, y) => ...`, OR Loop `(i in 1...5) { ... }` */
     if (t.kind == TOK_LPAREN) {
-        if (hardcode_is_paren_for_in(P, false)) {
-            return parse_for_in_loop(P);
+        if (hardcode_is_paren_lambda(P)) {
+            return parse_lambda_from_paren(P);
         }
         lex_next(&P->lex);
         uint8_t saved_ternary = P->in_ternary_then;
         P->in_ternary_then = 0;
+        P->in_paren_expr++;
+        while (cur_op_meta(P) == INTR_SEQ) {
+            lex_next(&P->lex);
+        }
         uint16_t inner = parser_parse_expr(P, 0);
+        while (cur_op_meta(P) == INTR_SEQ) {
+            lex_next(&P->lex);
+        }
+        P->in_paren_expr--;
         P->in_ternary_then = saved_ternary;
         if (P->lex.cur.kind != TOK_RPAREN) {
             mem_err(mem, "Expected closing delimiter ')'");
-        } else {
-            lex_next(&P->lex);
+            return MEM_NO_IDX;
+        }
+        lex_next(&P->lex);
+
+        if (inner != MEM_NO_IDX && !mem->has_error) {
+            const AstNode *in_node = mem_get_ast(mem, inner);
+            if (in_node && in_node->kind == AST_BINARY &&
+                hardcode_is_in_op_sym(mem, tab, in_node->ref)) {
+                const AstNode *lhs_node = mem_get_ast(mem, in_node->left);
+                if (lhs_node && lhs_node->kind == AST_SLOT_LOAD &&
+                    !hardcode_ast_is_bare_unit_rhs(mem, in_node->right) &&
+                    (P->lex.cur.kind == TOK_LBRACE || cur_op_meta(P) == INTR_WHILE)) {
+                    uint8_t  var_slot = lhs_node->sub;
+                    uint16_t iter_ast = in_node->right;
+                    mem_get_ast_mut(mem, in_node->left)->ref &= (uint16_t)~AST_SLOT_UNDEF_ITER_BIT;
+                    if (cur_op_meta(P) == INTR_WHILE) {
+                        lex_next(&P->lex); /* consume optional '??' */
+                    }
+                    uint16_t body_ast = parse_branch_body(P);
+                    if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
+                    P->last_was_block = true;
+                    return mem_alloc_ast(mem, AST_FOR_IN, var_slot, 0, iter_ast, body_ast);
+                }
+                if (!hardcode_check_undef_in_lhs(mem, tab, inner)) {
+                    return MEM_NO_IDX;
+                }
+            }
         }
         return inner;
     }
@@ -1210,7 +1734,7 @@ static uint16_t parse_nud(Parser *P) {
         return parse_scope_block(P);
     }
 
-    /* 3b. Multidimensional Matrix Literal `[1, 2, 3]`, `[[1, 2], [3, 4]]`, or `[1, 2 ; 3, 4]` */
+    /* 3b. Matrix Literal `[1, 2, 3]` or Vector Comprehension `[x^2 for x in 1...5]` */
     if (t.kind == TOK_LBRACK) {
         return parse_mat_literal(P);
     }
@@ -1290,7 +1814,7 @@ static uint16_t parse_nud(Parser *P) {
         return mem_alloc_ast(mem, AST_EXTERN, argc, ext_sym_id, head, MEM_NO_IDX);
     }
 
-    /* 5. Prefix Unary Operator (`-x`, `√x`, `not x`, `!x`, `++x`, `+++x`) */
+    /* 5. Prefix Unary Operator (`-x`, `√x`, `_"42"`, `not x`, `!x`, `++x`, `+++x`) */
     if (t.kind == TOK_OP) {
         if (sym_active_meta_tag(tab, t.sym_id, FIX_FUNC) == INTR_OR_BRANCH) {
             t.kind = TOK_IDENT;
@@ -1313,8 +1837,8 @@ static uint16_t parse_nud(Parser *P) {
         }
     }
 
-    /* 6. Identifier, Control Construct, Tagged Scope, Typed Variable Declaration,
-          or Multi-Variable Declaration / Destructuring */
+    /* 6. Identifier, Lambda `x => ...`, Control Construct, Tagged Scope, Typed Variable
+          Declaration, Parameterized Container `vec<T>(...)`, or Multi-Variable Declaration */
     if (t.kind == TOK_IDENT) {
         const char *id_str = P->lex.src + t.off;
         uint16_t id_len    = t.len;
@@ -1323,9 +1847,7 @@ static uint16_t parse_nud(Parser *P) {
 
         lex_next(&P->lex);
 
-        /* 6.0 Reserved keyword guard: check if a control-flow keyword is being used
-               as a variable name (`if := 5`, `else : real := 5`, `or, x := 5`)
-               or as a scope tag (`if : { ... }`, `else : { ... }`) */
+        /* 6.0 Reserved keyword guard */
         if (sym_is_reserved_kw(tab, mem, id_str, id_len)) {
             if (P->in_ternary_then == 0 && cur_op_meta(P) == INTR_COLON) {
                 if (lex_peek_is_lbrace(&P->lex) || lex_peek_is_lparen(&P->lex)) {
@@ -1339,11 +1861,17 @@ static uint16_t parse_nud(Parser *P) {
             }
             if ((P->lex.cur.kind == TOK_OP &&
                  sym_active_meta_tag(tab, P->lex.cur.sym_id, FIX_INFIX_RIGHT) == INTR_STORE) ||
+                cur_op_meta(P) == INTR_LAMBDA ||
                 (P->lex.cur.kind == TOK_COMMA && lex_is_multi_lhs(P))) {
                 mem_err(mem, "Cannot use reserved keyword '%.*s' as a variable name",
                         (int)id_len, id_str);
                 return MEM_NO_IDX;
             }
+        }
+
+        /* 6.1 Single-parameter unparenthesized lambda `x => expr` */
+        if (cur_op_meta(P) == INTR_LAMBDA) {
+            return parse_lambda_from_ident(P, id_str, id_len);
         }
 
         /* 6a. Control-flow constructs bound in `00_bootstrap.math` */
@@ -1353,9 +1881,6 @@ static uint16_t parse_nud(Parser *P) {
         if (fn_meta == INTR_SWITCH_BLOCK) {
             return parse_switch_construct(P);
         }
-        if (fn_meta == INTR_LOOP_KW) {
-            return parse_loop_construct(P);
-        }
         if (fn_meta == INTR_JUMP_TAG) {
             return parse_tag_op(P, AST_JUMP, "jump");
         }
@@ -1364,6 +1889,12 @@ static uint16_t parse_nud(Parser *P) {
         }
         if (fn_meta == INTR_BREAK_LOOP) {
             return parse_break_construct(P);
+        }
+        if (fn_meta == INTR_CONTINUE_LOOP) {
+            return parse_continue_construct(P);
+        }
+        if (fn_meta == INTR_RETURN_FN) {
+            return parse_return_construct(P);
         }
         if (fn_meta == INTR_OR_BRANCH) {
             mem_err(mem, "Unexpected 'or'/'then' without preceding 'if' block");
@@ -1378,9 +1909,9 @@ static uint16_t parse_nud(Parser *P) {
             return MEM_NO_IDX;
         }
 
-        /* 6b. Colon-Tagged Scope or Loop (`Tag : { ... }`, `Tag : (i in 1...5) { ... }`, `Tag : loop ...`) */
+        /* 6b. Colon-Tagged Scope or Loop (`Tag : { ... }`, `Tag : (i in 1...5) { ... }`, `Tag : i in 1...5 { ... }`) */
         if (P->in_ternary_then == 0 && cur_op_meta(P) == INTR_COLON &&
-            (lex_peek_is_lbrace(&P->lex) || lex_peek_is_lparen(&P->lex))) {
+            (lex_peek_is_lbrace(&P->lex) || lex_peek_is_lparen(&P->lex) || lex_peek_is_ident_in(P))) {
             bool is_brace_scope = lex_peek_is_lbrace(&P->lex);
             lex_next(&P->lex);
             int label_id = parser_get_or_add_label(P, id_str, id_len);
@@ -1392,6 +1923,9 @@ static uint16_t parse_nud(Parser *P) {
             }
             P->labels[label_id].defined = true;
             uint16_t body = is_brace_scope ? parse_scope_block(P) : parser_parse_expr(P, 2);
+            if (body != MEM_NO_IDX && mem_get_ast(mem, body)->kind == AST_FOR_IN) {
+                mem_get_ast_mut(mem, body)->ref |= (uint16_t)(label_id + 1);
+            }
             P->labels[label_id].body_ast = body;
             P->last_was_block = true;
             return mem_alloc_ast(mem, AST_TAGGED_SCOPE, (uint8_t)label_id, 0, body, MEM_NO_IDX);
@@ -1412,8 +1946,7 @@ static uint16_t parse_nud(Parser *P) {
             return resolve_var_for_assign(P, id_str, id_len, P->lex.cur.sym_id, lock_type, lock_unit);
         }
 
-        /* 6d. Multi-Variable Declaration / Destructuring / Compound Assignment
-               (`x, y := 5`, `r1, r2 := quad_roots(1, -5, 6)`, `a, b, c := [10, 20, 30]`, `x, y += 2`) */
+        /* 6d. Multi-Variable Declaration / Destructuring / Compound Assignment */
         if (P->lex.cur.kind == TOK_COMMA && lex_is_multi_lhs(P)) {
             const char *var_names[8];
             uint16_t    var_lens[8];
@@ -1486,7 +2019,7 @@ static uint16_t parse_nud(Parser *P) {
             }
         }
 
-        /* 6e. Single Local Variable or Parameter Slot */
+        /* 6e. Single Local Variable or Parameter Slot (with direct `$fn` call support `f(x)`) */
         int vidx = find_local_idx(P, id_str, id_len);
         bool is_assign = (P->lex.cur.kind == TOK_OP &&
                           sym_active_meta_tag(tab, P->lex.cur.sym_id, FIX_INFIX_RIGHT) == INTR_STORE);
@@ -1494,8 +2027,52 @@ static uint16_t parse_nud(Parser *P) {
             return resolve_var_for_assign(P, id_str, id_len, P->lex.cur.sym_id, 0, 0);
         }
         if (vidx >= 0) {
-            uint8_t slot = P->locals[vidx].slot;
-            return mem_alloc_ast(mem, AST_SLOT_LOAD, slot, 0, 0, 0);
+            uint8_t  slot      = P->locals[vidx].slot;
+            uint16_t slot_load = mem_alloc_ast(mem, AST_SLOT_LOAD, slot, 0, 0, 0);
+            if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LPAREN) {
+                bool is_fn_var = (mem->fn_type_id != 0 && P->slot_types[slot] == mem->fn_type_id);
+                if (!is_fn_var && lex_at_is_syntax(&P->lex, P->lex.pos, INTR_RPAREN)) {
+                    is_fn_var = true; /* `f()` with 0 args is unambiguously a function call */
+                }
+                if (is_fn_var) {
+                    return parse_fn_call_step(P, slot_load);
+                }
+            }
+            return slot_load;
+        }
+
+        /* 6e-iter. Undefined variable on the left side of an iterator operator (`i in 1...100`) */
+        if (P->lex.cur.kind == TOK_OP && hardcode_is_in_op_sym(mem, tab, P->lex.cur.sym_id)) {
+            bool is_active_const = false;
+            if (sym_id >= 0) {
+                for (uint8_t i = 0; i < tab->const_count; ++i) {
+                    if (tab->consts[i].sym_id == (uint16_t)sym_id &&
+                        sym_mod_enabled(tab, tab->consts[i].mod_id)) {
+                        is_active_const = true;
+                        break;
+                    }
+                }
+            }
+            if (!is_active_const) {
+                int slot = parser_add_local(P, id_str, id_len, mem->fast_real_type);
+                if (mem->has_error) return MEM_NO_IDX;
+                StrSlice vslice  = P->locals[P->vis_count - 1].name;
+                uint16_t var_sym = sym_intern((SymTable *)tab, mem, vslice);
+                return mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)slot,
+                                     (uint16_t)(AST_SLOT_UNDEF_ITER_BIT | (var_sym & AST_SLOT_SYM_MASK)),
+                                     0, 0);
+            }
+        }
+
+        /* 6f-0. Parameterized container constructor (`vec<T>(...)`, `list<T>(...)`, `stack<T>(...)`, `queue<T>(...)`) */
+        uint16_t container_type_spec = MEM_NO_IDX;
+        {
+            uint16_t parsed_spec = 0;
+            if (hardcode_try_parse_container_type_arg(P, id_str, id_len, &parsed_spec)) {
+                container_type_spec = parsed_spec;
+            } else if (mem->has_error) {
+                return MEM_NO_IDX;
+            }
         }
 
         /* 6f. Call syntax `name(arg1, arg2, ...)` -> Struct, Function, or `Tag()` reuse */
@@ -1546,7 +2123,7 @@ static uint16_t parse_nud(Parser *P) {
                 lex_next(&P->lex);
             }
 
-            if (argc == 0) {
+            if (argc == 0 && container_type_spec == MEM_NO_IDX) {
                 int lid = find_label_id(P, id_str, id_len);
                 if (lid >= 0) {
                     return mem_alloc_ast(mem, AST_RUN_TAG, (uint8_t)lid, 0, MEM_NO_IDX, MEM_NO_IDX);
@@ -1554,7 +2131,8 @@ static uint16_t parse_nud(Parser *P) {
             }
 
             uint16_t st_tid = sym_find_type(tab, mem, id_str, id_len);
-            if (st_tid != MEM_TYPE_VOID && st_tid < tab->type_count &&
+            if (container_type_spec == MEM_NO_IDX &&
+                st_tid != MEM_TYPE_VOID && st_tid < tab->type_count &&
                 !tab->types[st_tid].is_consuming && tab->types[st_tid].parser_intr == INTR_NONE) {
                 return mem_alloc_ast(mem, AST_CONSTRUCT, argc, st_tid, head, MEM_NO_IDX);
             }
@@ -1563,7 +2141,7 @@ static uint16_t parse_nud(Parser *P) {
                 mem_err(mem, "Undefined function or struct '%.*s'", (int)id_len, id_str);
                 return MEM_NO_IDX;
             }
-            return mem_alloc_ast(mem, AST_CALL, argc, (uint16_t)sym_id, head, MEM_NO_IDX);
+            return mem_alloc_ast(mem, AST_CALL, argc, (uint16_t)sym_id, head, container_type_spec);
         }
 
         /* 6g. Named Global Constant (`π`, `e`, `g0`, `c0`, etc.) */
@@ -1583,7 +2161,6 @@ static uint16_t parse_nud(Parser *P) {
     mem_err(mem, "Unexpected token in expression");
     return MEM_NO_IDX;
 }
-
 
 static uint16_t parser_parse_expr_inner(Parser *P, int min_prec);
 
@@ -1605,7 +2182,16 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
     if (mem->has_error || left == MEM_NO_IDX) return MEM_NO_IDX;
 
     while (!mem->has_error) {
-        if (P->lex.cur.kind == TOK_LBRACK && 95 >= min_prec) {
+        /* Direct call on lambda or function expression: `((x) => x^2)(5)` */
+        if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LPAREN && 95 >= min_prec &&
+            (mem_get_ast(mem, left)->kind == AST_LAMBDA ||
+             mem_get_ast(mem, left)->kind == AST_FN_CALL)) {
+            left = parse_fn_call_step(P, left);
+            P->last_was_block = false;
+            continue;
+        }
+        /* Postfix subscript `[` only binds on the SAME line (`!had_newline`) */
+        if (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LBRACK && 95 >= min_prec) {
             left = parse_index_step(P, left);
             P->last_was_block = false;
             continue;
@@ -1616,8 +2202,10 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
             int post_prec = sym_get_active_prec(tab, t.sym_id, FIX_POSTFIX);
             int in_l_prec = sym_get_active_prec(tab, t.sym_id, FIX_INFIX_LEFT);
             int in_r_prec = sym_get_active_prec(tab, t.sym_id, FIX_INFIX_RIGHT);
+            int pref_prec = sym_get_active_prec(tab, t.sym_id, FIX_PREFIX);
 
-            if (post_prec >= min_prec) {
+            /* Postfix unary operators only bind on the SAME line (`!t.had_newline`) */
+            if (!t.had_newline && post_prec >= min_prec) {
                 bool can_be_infix = (in_l_prec >= 0 || in_r_prec >= 0);
                 bool use_postfix  = !can_be_infix;
                 if (can_be_infix && post_prec >= in_l_prec && post_prec >= in_r_prec) {
@@ -1631,13 +2219,17 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
                 }
             }
 
-            if (in_l_prec >= min_prec || in_r_prec >= min_prec) {
+            /* If a newline preceded a prefix-capable operator (like `-x`, `+x`, `++x`, `!x`),
+               do NOT bind it as infix to the previous line; let it start a new statement! */
+            bool blocked_by_newline_prefix = (t.had_newline && pref_prec >= 0);
+
+            if (!blocked_by_newline_prefix && (in_l_prec >= min_prec || in_r_prec >= min_prec)) {
                 OpFixity fix = (in_r_prec > in_l_prec) ? FIX_INFIX_RIGHT : FIX_INFIX_LEFT;
                 int prec     = (fix == FIX_INFIX_RIGHT) ? in_r_prec : in_l_prec;
                 int next_min = (fix == FIX_INFIX_RIGHT) ? prec : (prec + 1);
                 uint8_t mtag = sym_active_meta_tag(tab, t.sym_id, fix);
 
-                if (mtag == INTR_COLON) {
+                if (mtag == INTR_COLON || mtag == INTR_LAMBDA) {
                     break;
                 }
 
@@ -1668,13 +2260,52 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
                     P->last_was_block = false;
                     continue;
                 }
-                if (mtag == INTR_SEQ &&
-                    (P->lex.cur.kind == TOK_RPAREN || P->lex.cur.kind == TOK_RBRACE ||
-                     P->lex.cur.kind == TOK_RBRACK || P->lex.cur.kind == TOK_EOF)) {
-                    break;
+                if (mtag == INTR_SEQ) {
+                    while (cur_op_meta(P) == INTR_SEQ) {
+                        lex_next(&P->lex);
+                    }
+                    if (P->lex.cur.kind == TOK_RPAREN || P->lex.cur.kind == TOK_RBRACE ||
+                        P->lex.cur.kind == TOK_RBRACK || P->lex.cur.kind == TOK_EOF) {
+                        break;
+                    }
+                    uint8_t kw = token_func_meta(P, P->lex.cur);
+                    if (kw == INTR_OR_BRANCH || kw == INTR_ELSE_BRANCH || kw == INTR_CASE_BRANCH) {
+                        break;
+                    }
                 }
 
-                uint16_t right = parser_parse_expr(P, next_min);
+                uint16_t right          = MEM_NO_IDX;
+                bool     is_in_op       = hardcode_is_in_op_sym(mem, tab, t.sym_id);
+                bool     rhs_unparen    = (P->lex.cur.kind != TOK_LPAREN);
+                int      dual_unit_sid  = -1;
+
+                if (is_in_op && (P->lex.cur.kind == TOK_OP || P->lex.cur.kind == TOK_IDENT)) {
+                    const char *ustr = P->lex.src + P->lex.cur.off;
+                    uint16_t    ulen = P->lex.cur.len;
+                    if (!lex_peek_is_lparen(&P->lex)) {
+                        int usid = sym_find(tab, mem, ustr, ulen);
+                        if (usid >= 0 && hardcode_sym_is_postfix_unit(tab, (uint16_t)usid)) {
+                            if (find_local_idx(P, ustr, ulen) < 0) {
+                                lex_next(&P->lex);
+                                uint16_t pidx = mem_alloc_pool(mem, 1);
+                                mem_write_pool(mem, pidx, 1.0);
+                                uint16_t one_ast = mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, pidx, 0, 0);
+                                right = mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_POSTFIX,
+                                                      (uint16_t)usid, one_ast, 1);
+                            } else {
+                                dual_unit_sid = usid;
+                            }
+                        }
+                    }
+                }
+                if (right == MEM_NO_IDX) {
+                    right = parser_parse_expr(P, next_min);
+                    if (is_in_op && rhs_unparen && dual_unit_sid >= 0 && right != MEM_NO_IDX &&
+                        mem_get_ast(mem, right)->kind == AST_SLOT_LOAD) {
+                        mem_get_ast_mut(mem, right)->ref |=
+                            (uint16_t)(AST_SLOT_DUAL_UNIT_BIT | ((uint16_t)dual_unit_sid & AST_SLOT_SYM_MASK));
+                    }
+                }
                 if (mtag == INTR_STORE) {
                     left = build_store_or_compound(P, t.sym_id, left, right);
                     continue;
@@ -1684,11 +2315,36 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
                     continue;
                 }
                 left = mem_alloc_ast(mem, AST_BINARY, (uint8_t)fix, t.sym_id, left, right);
+                if (is_in_op && left != MEM_NO_IDX && !mem->has_error) {
+                    const AstNode *in_node  = mem_get_ast(mem, left);
+                    const AstNode *lhs_node = mem_get_ast(mem, in_node->left);
+                    if (lhs_node && lhs_node->kind == AST_SLOT_LOAD &&
+                        !hardcode_ast_is_bare_unit_rhs(mem, in_node->right) &&
+                        (cur_op_meta(P) == INTR_WHILE ||
+                         (!P->lex.cur.had_newline && P->lex.cur.kind == TOK_LBRACE && P->in_cond_expr == 0))) {
+                        uint8_t  var_slot = lhs_node->sub;
+                        uint16_t iter_ast = in_node->right;
+                        mem_get_ast_mut(mem, in_node->left)->ref &= (uint16_t)~AST_SLOT_UNDEF_ITER_BIT;
+                        if (cur_op_meta(P) == INTR_WHILE) {
+                            lex_next(&P->lex); /* consume optional '??' */
+                        }
+                        uint16_t body_ast = parse_branch_body(P);
+                        if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
+                        P->last_was_block = true;
+                        left = mem_alloc_ast(mem, AST_FOR_IN, var_slot, 0, iter_ast, body_ast);
+                        continue;
+                    }
+                    if (!(P->in_paren_expr > 0 && min_prec == 0 && P->lex.cur.kind == TOK_RPAREN)) {
+                        if (!hardcode_check_undef_in_lhs(mem, tab, left)) {
+                            return MEM_NO_IDX;
+                        }
+                    }
+                }
                 continue;
             }
         }
 
-        /* Implicit multiplication: `2x`, `2π`, `3(x + 1)`, `(x + 1)(x - 1)`, `2 sin(x)`, `2 √16` */
+        /* Implicit multiplication on the SAME line: `2x`, `2π`, `3(x + 1)`, `(x + 1)(x - 1)`, `2 sin(x)` */
         if (!P->last_was_block && 60 >= min_prec && hardcode_can_start_implicit_mul_rhs(P)) {
             int mul_sym = sym_find(tab, mem, "*", 1);
             if (mul_sym >= 0 && sym_get_active_prec(tab, (uint16_t)mul_sym, FIX_INFIX_LEFT) >= 0) {
@@ -1701,23 +2357,18 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
             }
         }
 
-        if (P->last_was_block && min_prec <= 1 &&
-            P->lex.cur.kind != TOK_EOF &&
-            P->lex.cur.kind != TOK_RPAREN &&
-            P->lex.cur.kind != TOK_RBRACE &&
-            P->lex.cur.kind != TOK_RBRACK &&
-            P->lex.cur.kind != TOK_COMMA &&
-            P->lex.cur.kind != TOK_OP) {
-            uint8_t kw = token_func_meta(P, P->lex.cur);
-            if (kw != INTR_OR_BRANCH && kw != INTR_ELSE_BRANCH && kw != INTR_CASE_BRANCH) {
-                int seq_sym = find_active_meta_sym(tab, INTR_SEQ);
-                if (seq_sym >= 0) {
-                    P->last_was_block = false;
-                    uint16_t right = parser_parse_expr(P, 2);
-                    left = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
-                                         (uint16_t)seq_sym, left, right);
-                    continue;
-                }
+        /* Default Newline `;` Operator (`\n` acts as `@seq` for one-statement-per-line writing,
+           both inside and outside `{...}` / `(...)` scopes, while keeping explicit `;` compulsory
+           when placing multiple statements on a single line). */
+        if (min_prec <= 1 && hardcode_can_start_newline_stmt(P)) {
+            int seq_sym = find_active_meta_sym(tab, INTR_SEQ);
+            if (seq_sym >= 0) {
+                P->last_was_block = false;
+                uint16_t right = parser_parse_expr(P, 2);
+                if (mem->has_error || right == MEM_NO_IDX) return MEM_NO_IDX;
+                left = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
+                                     (uint16_t)seq_sym, left, right);
+                continue;
             }
         }
 

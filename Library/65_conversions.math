@@ -19,7 +19,7 @@
 <[units]
 
 # 1. Universal Same-Unit-Group Infix Conversion Operator `"in"` (`:<55`)
-(val:real, T) "in" (unit:real, T) :<55 -> real, none = @div(val, unit)
+(val:real, T) "in" (unit:real, T) :<42 -> real, T = @div(val, unit)
 
 # 2. Distance Same-Unit Conversions (`distance` group: km, m, cm, mm, um, nm, mi, nmi, yd, ft, inch)
 (x:real, distance) "to_km"   :90 -> real, none = x / 1000

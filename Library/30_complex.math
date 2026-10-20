@@ -34,6 +34,13 @@ $complex(re:real, im:real)
 (z:complex, T) "-" (b:real, T)   :<50 -> complex, T = complex(z.re - b, z.im)
 (a:real, T)    "+" (z:complex, T):<50 -> complex, T = complex(a + z.re, z.im)
 
+# Insert / Composition Operator `into` -> constructs `complex` (`5 into 5i`, `5 into 5`, `5i into 5`)
+(a:real, T) "into" (b:iota, T)    :>55 -> complex, T = complex(a, @raw(b))
+(a:iota, T) "into" (b:real, T)    :>55 -> complex, T = complex(b, @raw(a))
+(a:real, T) "into" (b:real, T)    :>55 -> complex, T = complex(a, b)
+(a:real, T) "into" (z:complex, T) :>55 -> complex, T = complex(z.re + a, z.im)
+(a:iota, T) "into" (z:complex, T) :>55 -> complex, T = complex(z.re, z.im + @raw(a))
+
 # Overloaded arithmetic on `complex` numbers
 (a:complex, T) "+" (b:complex, T) :<50 -> complex, T = complex(a.re + b.re, a.im + b.im)
 (a:complex, T) "-" (b:complex, T) :<50 -> complex, T = complex(a.re - b.re, a.im - b.im)

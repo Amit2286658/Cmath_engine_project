@@ -82,6 +82,9 @@ bool sym_is_module_active(const SymTable *tab, const MemArena *mem, const char *
 }
 
 bool sym_mod_enabled(const SymTable *tab, uint8_t mod_id) {
+    if (!tab || mod_id >= tab->mod_count || mod_id >= SYM_MAX_MODULES || mod_id >= 64u) {
+        return false;
+    }
     return (tab->active_modules & (1ULL << mod_id)) != 0;
 }
 

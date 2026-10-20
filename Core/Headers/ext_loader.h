@@ -46,7 +46,8 @@ typedef struct {
     uint16_t field_count;        /* Active struct fields in SymTable          */
     uint16_t overload_count;     /* Active operator/func overloads            */
     uint32_t payload_bytes;      /* Total byte size following this header     */
-    uint64_t active_modules;     /* 64-bit active module bitmask              */
+    uint32_t active_modules;     /* 32-bit active module bitmask (0..31)      */
+    uint32_t checksum;           /* 32-bit FNV-1a checksum of header+payload  */
 } MathcHeader;
 
 _Static_assert(sizeof(MathcHeader) == 40, "MathcHeader must be strictly 40 bytes");
@@ -65,7 +66,14 @@ uint32_t ext_calc_mathc_size(const MemArena *mem, const SymTable *tab);
 size_t   ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
                             uint8_t *out_buf, size_t buf_cap);
 
-/* Load a precompiled `.mathc` binary image from memory in O(1) `memcpy` time */
+/* Compute 32-bit FNV-1a checksum over a serialized `.mathc` image buffer */
+uint32_t ext_calc_mathc_checksum(const MathcHeader *hdr,
+                                 const uint8_t *payload, size_t payload_len);
+
+/* Validate all header & payload indices in a `.mathc` buffer without mutating state */
+bool     ext_validate_mathc_buf(const uint8_t *data, size_t len);
+
+/* Load a precompiled `.mathc` binary image from memory (transactional & checksummed) */
 bool     ext_load_mathc_mem(MemArena *mem, SymTable *tab,
                             const uint8_t *data, size_t len);
 

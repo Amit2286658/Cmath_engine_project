@@ -13,6 +13,7 @@
 
 void mem_init(MemArena *mem) {
     memset(mem, 0, sizeof(*mem));
+    mem->jump_val = val_void();
 }
 
 void mem_err(MemArena *mem, const char *fmt, ...) {
@@ -42,6 +43,7 @@ void mem_rewind_scratch(MemArena *mem) {
     mem->sp             = 0;
     mem->jump_active    = 0;
     mem->jump_target_id = 0;
+    mem->jump_val       = val_void();
     mem->eval_depth     = 0;
     mem->eval_steps     = 0;
     for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
@@ -237,7 +239,7 @@ uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
     mem_write_pool(mem, hdr_idx + 2, (double)data_idx);
     mem_write_pool(mem, hdr_idx + 3, (double)mem->fast_real_type);
     for (uint8_t i = 0; i < 4; ++i) {
-        mem_write_pool(mem, hdr_idx + 4 + i, (i < rank) ? (double)dims[i] : 0.0);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 4u + i), (i < rank) ? (double)dims[i] : 0.0);
     }
     if (out_total_len) *out_total_len = (uint16_t)total;
     if (out_data_idx)  *out_data_idx  = data_idx;
@@ -260,11 +262,29 @@ uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,
     return idx;
 }
 
+static const AstNode s_invalid_ast = { 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX, MEM_NO_IDX };
+
 const AstNode *mem_get_ast(const MemArena *mem, uint16_t idx) {
+    if (!mem || idx >= mem->ast_count || idx >= MEM_MAX_AST_NODES) {
+        return &s_invalid_ast;
+    }
     return &mem->ast[idx];
 }
 
 AstNode *mem_get_ast_mut(MemArena *mem, uint16_t idx) {
+    static AstNode s_invalid_ast_mut;
+    if (!mem || idx >= mem->ast_count || idx >= MEM_MAX_AST_NODES) {
+        if (mem) {
+            mem_err(mem, "AST node index %u out of bounds (count=%u)",
+                    (unsigned)idx, (unsigned)mem->ast_count);
+        }
+        memset(&s_invalid_ast_mut, 0, sizeof(s_invalid_ast_mut));
+        s_invalid_ast_mut.kind  = 0xFFu;
+        s_invalid_ast_mut.ref   = MEM_NO_IDX;
+        s_invalid_ast_mut.left  = MEM_NO_IDX;
+        s_invalid_ast_mut.right = MEM_NO_IDX;
+        return &s_invalid_ast_mut;
+    }
     return &mem->ast[idx];
 }
 
@@ -287,11 +307,18 @@ void mem_pop_frame(MemArena *mem, uint16_t frame_base) {
 }
 
 Value mem_get_slot(const MemArena *mem, uint16_t frame_base, uint8_t slot) {
-    return mem->stack[frame_base + slot];
+    uint32_t idx = (uint32_t)frame_base + (uint32_t)slot;
+    if (!mem || idx >= MEM_MAX_CALL_STACK) return val_void();
+    return mem->stack[idx];
 }
 
 void mem_set_slot(MemArena *mem, uint16_t frame_base, uint8_t slot, Value v) {
-    mem->stack[frame_base + slot] = v;
+    uint32_t idx = (uint32_t)frame_base + (uint32_t)slot;
+    if (!mem || idx >= MEM_MAX_CALL_STACK) {
+        if (mem) mem_err(mem, "Stack slot index %u out of bounds", (unsigned)idx);
+        return;
+    }
+    mem->stack[idx] = v;
 }
 
 /* ============================================================================

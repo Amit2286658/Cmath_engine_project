@@ -20,6 +20,11 @@ extern "C" {
 #define PARSER_MAX_LOCALS      32
 #define PARSER_MAX_EXPR_DEPTH 128
 
+/* Bit flags stored in `AstNode.ref` on `AST_SLOT_LOAD` */
+#define AST_SLOT_UNDEF_ITER_BIT 0x4000u /* Variable auto-allocated on LHS of `in` */
+#define AST_SLOT_DUAL_UNIT_BIT  0x8000u /* Variable on RHS of `in` also matches unit sym */
+#define AST_SLOT_SYM_MASK       0x3FFFu
+
 typedef struct {
     StrSlice name;
     uint16_t type_id;
@@ -43,6 +48,8 @@ typedef struct {
     uint8_t    param_count;
     uint8_t    scope_depth;
     uint8_t    in_ternary_then;
+    uint8_t    in_cond_expr;
+    uint8_t    in_paren_expr;
     uint16_t   expr_depth;
     bool       last_was_block;
     LabelDef   labels[MEM_MAX_LABELS];

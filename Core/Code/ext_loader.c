@@ -1,10 +1,10 @@
 /*
- * ext_loader.c — In-Memory `.math` Extension Compiler & `.mathc` Binary Serializer
+ * ext_loader.c — In-Memory Extension Compiler & Binary Image Serializer
  *
- * Pure ISO C99 in-memory implementation: zero filesystem, directory, or path
- * dependencies (`<dirent.h>`, `<sys/stat.h>`, and `FILE*` I/O removed).
+ * Pure ISO C99 in-memory implementation: zero filesystem, directory, or file
+ * extension dependencies (`<dirent.h>`, `<sys/stat.h>`, and `FILE*` I/O removed).
  *
- * Supports both classic explicit `.math` declarations and streamlined shorthand:
+ * Supports both explicit declarations and streamlined shorthand:
  *   - Optional quotes around function and constant names:
  *       `lerp(a, b, t) = a + (b - a) * t`  or  `"lerp"(a:real, b:real, t:real) -> real = ...`
  *       `g0 = 9.80665`                     or  `"g0" : real = 9.80665`
@@ -196,6 +196,12 @@ static void ext_parse_type_decl(ExtLoader *L) {
             td->flat_size    = MEM_MAT_HDR_SLOTS;
             if (mem->mat_type_id == 0) {
                 mem->mat_type_id = (uint8_t)tid;
+            }
+        } else if (td->parser_intr == INTR_FN_TYPE) {
+            td->is_consuming = 0;
+            td->flat_size    = MEM_FN_HDR_SLOTS;
+            if (mem->fn_type_id == 0) {
+                mem->fn_type_id = (uint8_t)tid;
             }
         }
     } else if (ext_match_char(L, '(')) {
@@ -649,6 +655,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
     uint8_t  saved_str_type       = mem->str_type_id;
     uint8_t  saved_vec_type       = mem->vec_type_id;
     uint8_t  saved_mat_type       = mem->mat_type_id;
+    uint8_t  saved_fn_type        = mem->fn_type_id;
 
     uint8_t  saved_mod_count      = tab->mod_count;
     uint64_t saved_active_modules = tab->active_modules;
@@ -809,6 +816,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         mem->str_type_id    = saved_str_type;
         mem->vec_type_id    = saved_vec_type;
         mem->mat_type_id    = saved_mat_type;
+        mem->fn_type_id     = saved_fn_type;
 
         tab->mod_count      = saved_mod_count;
         tab->active_modules = saved_active_modules;
@@ -852,20 +860,40 @@ static void fill_mathc_header(const MemArena *mem, const SymTable *tab, MathcHea
     hdr->fast_real_type = mem->fast_real_type;
     hdr->str_type_id    = mem->str_type_id;
     hdr->vec_type_id    = mem->vec_type_id;
-    hdr->mat_type_id    = mem->mat_type_id;
     hdr->mod_count      = tab->mod_count;
     hdr->type_count     = tab->type_count;
-    hdr->unit_count     = tab->unit_count;
-    hdr->sym_count      = tab->sym_count;
     hdr->const_count    = tab->const_count;
+    hdr->sym_count      = tab->sym_count;
+    hdr->unit_count     = tab->unit_count;
+    hdr->mat_type_id    = mem->mat_type_id;
     hdr->perm_src_len   = mem->perm_src_len;
     hdr->perm_ast_count = mem->perm_ast_count;
     hdr->perm_pool_top  = mem->perm_pool_top;
     hdr->pat_elem_count = tab->pat_elem_count;
     hdr->field_count    = tab->field_count;
     hdr->overload_count = tab->overload_count;
-    hdr->active_modules = tab->active_modules;
+    hdr->active_modules = (uint32_t)(tab->active_modules & 0xFFFFFFFFu);
     hdr->payload_bytes  = calc_mathc_payload_bytes(hdr);
+    hdr->checksum       = 0;
+}
+
+uint32_t ext_calc_mathc_checksum(const MathcHeader *hdr,
+                                 const uint8_t *payload, size_t payload_len) {
+    if (!hdr || (!payload && payload_len > 0)) return 0;
+    MathcHeader clean_hdr = *hdr;
+    clean_hdr.checksum = 0;
+
+    uint32_t h = 2166136261u;
+    const uint8_t *hb = (const uint8_t *)&clean_hdr;
+    for (size_t i = 0; i < sizeof(MathcHeader); ++i) {
+        h ^= hb[i];
+        h *= 16777619u;
+    }
+    for (size_t i = 0; i < payload_len; ++i) {
+        h ^= payload[i];
+        h *= 16777619u;
+    }
+    return (h == 0) ? 1u : h;
 }
 
 uint32_t ext_calc_mathc_size(const MemArena *mem, const SymTable *tab) {
@@ -912,68 +940,305 @@ size_t ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
 
     #undef WRITE_SLICE
 
+    hdr.checksum = ext_calc_mathc_checksum(&hdr,
+                                           out_buf + sizeof(MathcHeader),
+                                           hdr.payload_bytes);
+    memcpy(out_buf, &hdr, sizeof(MathcHeader));
+
     return total_bytes;
 }
 
-static bool validate_mathc_indices(const MemArena *mem, const SymTable *tab, const MathcHeader *hdr) {
+static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hdr) {
+    /* 1. Validate special bootstrap type IDs in header */
+    if (hdr->fast_real_type >= hdr->type_count ||
+        hdr->str_type_id    >= hdr->type_count ||
+        hdr->vec_type_id    >= hdr->type_count ||
+        hdr->mat_type_id    >= hdr->type_count) {
+        return false;
+    }
+
+    const uint8_t *cur        = payload;
+    const uint8_t *src_ptr    = cur; cur += hdr->perm_src_len;
+    const uint8_t *ast_ptr    = cur; cur += (size_t)hdr->perm_ast_count * sizeof(AstNode);
+    const uint8_t *pool_ptr   = cur; cur += (size_t)hdr->perm_pool_top  * sizeof(double);
+    const uint8_t *mods_ptr   = cur; cur += (size_t)hdr->mod_count      * sizeof(StrSlice);
+    const uint8_t *types_ptr  = cur; cur += (size_t)hdr->type_count     * sizeof(TypeDef);
+    const uint8_t *units_ptr  = cur; cur += (size_t)hdr->unit_count     * sizeof(StrSlice);
+    const uint8_t *pats_ptr   = cur; cur += (size_t)hdr->pat_elem_count * sizeof(PatElem);
+    const uint8_t *fields_ptr = cur; cur += (size_t)hdr->field_count    * sizeof(FieldDef);
+    const uint8_t *syms_ptr   = cur; cur += (size_t)hdr->sym_count      * sizeof(StrSlice);
+    const uint8_t *ovs_ptr    = cur; cur += (size_t)hdr->overload_count * sizeof(OpOverload);
+    const uint8_t *consts_ptr = cur; cur += (size_t)hdr->const_count    * sizeof(ConstDef);
+    (void)src_ptr;
+    (void)pool_ptr;
+
+    /* 2. Validate module names */
     for (uint8_t i = 0; i < hdr->mod_count; ++i) {
-        StrSlice s = tab->mod_names[i];
+        StrSlice s;
+        memcpy(&s, mods_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
         if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
     }
+
+    /* 3. Validate types */
     for (uint16_t i = 1; i < hdr->type_count; ++i) {
-        const TypeDef *td = &tab->types[i];
-        if ((uint32_t)td->name.off + (uint32_t)td->name.len > hdr->perm_src_len) return false;
-        if (td->is_consuming) {
-            if ((uint32_t)td->start_idx + (uint32_t)td->field_count > hdr->pat_elem_count) return false;
-        } else if (td->parser_intr == INTR_NONE) {
-            if ((uint32_t)td->start_idx + (uint32_t)td->field_count > hdr->field_count) return false;
+        TypeDef td;
+        memcpy(&td, types_ptr + (size_t)i * sizeof(TypeDef), sizeof(TypeDef));
+        if ((uint32_t)td.name.off + (uint32_t)td.name.len > hdr->perm_src_len) return false;
+        if (td.mod_id >= hdr->mod_count) return false;
+        if (td.parser_intr >= INTR_COUNT) return false;
+        if (td.is_consuming) {
+            if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->pat_elem_count) return false;
+        } else if (td.parser_intr == INTR_NONE) {
+            if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->field_count) return false;
+            if (td.flat_size == 0 || td.flat_size > 256u) return false;
         }
     }
+
+    /* 4. Validate units */
     for (uint8_t i = 1; i < hdr->unit_count; ++i) {
-        StrSlice s = tab->units[i];
+        StrSlice s;
+        memcpy(&s, units_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
         if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
     }
+
+    /* 5. Validate pattern elements */
     for (uint16_t i = 0; i < hdr->pat_elem_count; ++i) {
-        StrSlice s = tab->pat_elems[i].chars;
-        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+        PatElem pe;
+        memcpy(&pe, pats_ptr + (size_t)i * sizeof(PatElem), sizeof(PatElem));
+        if (pe.kind < PAT_DIGIT || pe.kind > PAT_GROUP_END) return false;
+        if (pe.quant > QUANT_OPT) return false;
+        if ((uint32_t)pe.chars.off + (uint32_t)pe.chars.len > hdr->perm_src_len) return false;
+        if (pe.kind == PAT_LIT && pe.chars.len == 0) return false;
     }
+
+    /* 6. Validate struct fields */
     for (uint16_t i = 0; i < hdr->field_count; ++i) {
-        const FieldDef *fd = &tab->fields[i];
-        if ((uint32_t)fd->name.off + (uint32_t)fd->name.len > hdr->perm_src_len) return false;
-        if (fd->type_id == 0 || fd->type_id >= hdr->type_count) return false;
+        FieldDef fd;
+        memcpy(&fd, fields_ptr + (size_t)i * sizeof(FieldDef), sizeof(FieldDef));
+        if ((uint32_t)fd.name.off + (uint32_t)fd.name.len > hdr->perm_src_len) return false;
+        if (fd.type_id == 0 || fd.type_id >= hdr->type_count) return false;
+        if (fd.flat_offset >= 256u) return false;
     }
-    for (uint16_t i = 0; i < hdr->sym_count; ++i) {
-        StrSlice s = tab->syms[i];
-        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
-    }
-    for (uint16_t i = 0; i < hdr->overload_count; ++i) {
-        const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id >= hdr->sym_count) return false;
-        if (ov->fixity != FIX_SYNTAX && ov->body_ast != MEM_NO_IDX &&
-            ov->body_ast >= hdr->perm_ast_count) {
-            return false;
-        }
-    }
-    for (uint8_t i = 0; i < hdr->const_count; ++i) {
-        const ConstDef *cd = &tab->consts[i];
-        if (cd->sym_id >= hdr->sym_count) return false;
-        if (cd->pool_idx >= hdr->perm_pool_top) return false;
-    }
-    for (uint16_t i = 0; i < hdr->perm_ast_count; ++i) {
-        const AstNode *n = &mem->ast[i];
-        if (n->kind == AST_LIT) {
-            if (n->sub == hdr->str_type_id && hdr->str_type_id != 0) {
-                if ((uint32_t)n->left + (uint32_t)n->right > hdr->perm_src_len) return false;
-            } else if (n->sub != MEM_TYPE_VOID && n->ref >= hdr->perm_pool_top) {
-                return false;
+
+    /* 7. Validate struct field ranges against parent struct flat_size */
+    for (uint16_t i = 1; i < hdr->type_count; ++i) {
+        TypeDef td;
+        memcpy(&td, types_ptr + (size_t)i * sizeof(TypeDef), sizeof(TypeDef));
+        if (!td.is_consuming && td.parser_intr == INTR_NONE) {
+            for (uint8_t f = 0; f < td.field_count; ++f) {
+                FieldDef fd;
+                memcpy(&fd, fields_ptr + (size_t)(td.start_idx + f) * sizeof(FieldDef), sizeof(FieldDef));
+                if (fd.type_id == i) return false;
+                TypeDef ftd;
+                memcpy(&ftd, types_ptr + (size_t)fd.type_id * sizeof(TypeDef), sizeof(TypeDef));
+                uint32_t fsz = ftd.is_consuming ? 1u : (uint32_t)ftd.flat_size;
+                if (fsz == 0 || (uint32_t)fd.flat_offset + fsz > (uint32_t)td.flat_size) return false;
             }
         }
     }
+
+    /* 8. Validate interned symbols */
+    for (uint16_t i = 0; i < hdr->sym_count; ++i) {
+        StrSlice s;
+        memcpy(&s, syms_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
+        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    }
+
+    /* 9. Validate operator & function overloads */
+    uint8_t eff_units = hdr->unit_count ? hdr->unit_count : 1u;
+    for (uint16_t i = 0; i < hdr->overload_count; ++i) {
+        OpOverload ov;
+        memcpy(&ov, ovs_ptr + (size_t)i * sizeof(OpOverload), sizeof(OpOverload));
+        if (ov.sym_id >= hdr->sym_count) return false;
+        if (ov.mod_id >= hdr->mod_count) return false;
+        if (ov.fixity > FIX_SYNTAX) return false;
+        if (ov.param_count > 8u || ov.local_count > PARSER_MAX_LOCALS) return false;
+        if (ov.local_count < ov.param_count) return false;
+        if (ov.ret_type >= hdr->type_count && ov.ret_type != SYM_TYPE_ANY) return false;
+        if (ov.ret_unit < SYM_UNIT_LOCK_NONE && ov.ret_unit >= eff_units) return false;
+        for (uint8_t p = 0; p < ov.param_count; ++p) {
+            if (ov.param_types[p] >= hdr->type_count && ov.param_types[p] != SYM_TYPE_ANY) return false;
+            if (ov.param_units[p] < SYM_UNIT_LOCK_NONE && ov.param_units[p] >= eff_units) return false;
+        }
+        if (ov.fixity != FIX_SYNTAX) {
+            if (ov.body_ast >= hdr->perm_ast_count) return false;
+        }
+    }
+
+    /* 10. Validate constants */
+    for (uint8_t i = 0; i < hdr->const_count; ++i) {
+        ConstDef cd;
+        memcpy(&cd, consts_ptr + (size_t)i * sizeof(ConstDef), sizeof(ConstDef));
+        if (cd.sym_id >= hdr->sym_count) return false;
+        if (cd.mod_id >= hdr->mod_count) return false;
+        if (cd.type_id == 0 || cd.type_id >= hdr->type_count) return false;
+        if (cd.unit_id >= eff_units) return false;
+        if (cd.val_idx >= hdr->const_count) return false;
+        if (cd.pool_idx >= hdr->perm_pool_top) return false;
+    }
+
+    /* 11. Validate every AST node and all child indices (`left`, `right`, `ref`, `sub`) */
+    #define AST_OPT_OK(idx) ((idx) == MEM_NO_IDX || (idx) < hdr->perm_ast_count)
+    #define AST_REQ_OK(idx) ((idx) < hdr->perm_ast_count)
+
+    for (uint16_t i = 0; i < hdr->perm_ast_count; ++i) {
+        AstNode n;
+        memcpy(&n, ast_ptr + (size_t)i * sizeof(AstNode), sizeof(AstNode));
+        switch ((AstKind)n.kind) {
+            case AST_LIT:
+                if (n.sub >= hdr->type_count) return false;
+                if (n.sub == hdr->str_type_id && hdr->str_type_id != 0) {
+                    if ((uint32_t)n.left + (uint32_t)n.right > hdr->perm_src_len) return false;
+                } else if (n.sub != MEM_TYPE_VOID) {
+                    if (n.ref >= hdr->perm_pool_top) return false;
+                }
+                break;
+
+            case AST_CONST_SYM:
+                if (n.ref >= hdr->sym_count) return false;
+                break;
+
+            case AST_SLOT_LOAD:
+                if (n.sub >= PARSER_MAX_LOCALS) return false;
+                if (n.left != MEM_NO_IDX && n.left != SYM_TYPE_ANY && n.left >= hdr->type_count) return false;
+                if (n.right != MEM_NO_IDX && n.right < SYM_UNIT_LOCK_NONE && n.right >= eff_units) return false;
+                break;
+
+            case AST_FIELD_LOAD:
+                if (n.sub >= hdr->type_count) return false;
+                if (n.ref >= 256u) return false;
+                if (!AST_REQ_OK(n.left)) return false;
+                if (n.right != MEM_NO_IDX && n.right >= PARSER_MAX_LOCALS) return false;
+                break;
+
+            case AST_UNARY:
+                if (n.sub > FIX_SYNTAX || n.ref >= hdr->sym_count || !AST_REQ_OK(n.left)) return false;
+                break;
+
+            case AST_BINARY:
+                if (n.sub > FIX_SYNTAX || n.ref >= hdr->sym_count ||
+                    !AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
+                break;
+
+            case AST_CALL:
+                if (n.ref >= hdr->sym_count || !AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
+                break;
+
+            case AST_ARG_LINK:
+                if (!AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
+                break;
+
+            case AST_INTRINSIC:
+                if (n.sub == INTR_NONE || n.sub >= INTR_COUNT) return false;
+                if (!AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
+                if (n.ref != 0 && !AST_OPT_OK(n.ref)) return false;
+                break;
+
+            case AST_CONSTRUCT:
+                if (n.ref == 0 || n.ref >= hdr->type_count || !AST_OPT_OK(n.left)) return false;
+                break;
+
+            case AST_EXTERN:
+                if (n.ref >= hdr->sym_count || !AST_OPT_OK(n.left)) return false;
+                break;
+
+            case AST_TERNARY:
+                if (!AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
+                break;
+
+            case AST_SWITCH_EQ:
+                if (n.sub > 3 || !AST_REQ_OK(n.left) || !AST_OPT_OK(n.right)) return false;
+                if (n.sub == 0 && !AST_REQ_OK(n.right)) return false;
+                if (n.sub == 1 && (n.ref == 0 || n.ref >= hdr->type_count)) return false;
+                if (n.sub == 2 && n.ref >= PARSER_MAX_LOCALS) return false;
+                break;
+
+            case AST_TAGGED_SCOPE:
+                if (n.sub >= MEM_MAX_LABELS || !AST_REQ_OK(n.left)) return false;
+                break;
+
+            case AST_JUMP:
+            case AST_RUN_TAG:
+                if (n.sub >= MEM_MAX_LABELS) return false;
+                break;
+
+            case AST_BREAK:
+                if ((n.sub != 0xFFu && n.sub >= MEM_MAX_LABELS) || !AST_OPT_OK(n.left)) return false;
+                break;
+
+            case AST_CONTINUE:
+                if (n.sub != 0xFFu && n.sub >= MEM_MAX_LABELS) return false;
+                break;
+
+            case AST_RETURN:
+            case AST_MAT_LIT:
+                if (!AST_OPT_OK(n.left)) return false;
+                break;
+
+            case AST_INDEX:
+                if (!AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
+                break;
+
+            case AST_FOR_IN:
+                if (n.sub >= PARSER_MAX_LOCALS || !AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
+                break;
+
+            case AST_UNPACK_ELEM:
+                if (n.left >= PARSER_MAX_LOCALS) return false;
+                break;
+
+            case AST_LAMBDA:
+                if (n.sub > 4 || !AST_REQ_OK(n.ref)) return false;
+                break;
+
+            case AST_FN_CALL:
+                if (!AST_REQ_OK(n.left) || !AST_OPT_OK(n.right)) return false;
+                break;
+
+            default:
+                return false;
+        }
+    }
+
+    #undef AST_OPT_OK
+    #undef AST_REQ_OK
     return true;
+}
+
+bool ext_validate_mathc_buf(const uint8_t *data, size_t len) {
+    if (!data || len < sizeof(MathcHeader)) return false;
+    MathcHeader hdr;
+    memcpy(&hdr, data, sizeof(MathcHeader));
+    if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) return false;
+    uint32_t expected_payload = calc_mathc_payload_bytes(&hdr);
+    if (hdr.payload_bytes != expected_payload ||
+        sizeof(MathcHeader) + (size_t)expected_payload > len) {
+        return false;
+    }
+    if (hdr.perm_src_len   > MEM_SRC_BUF_CAP   ||
+        hdr.perm_ast_count > MEM_MAX_AST_NODES ||
+        hdr.perm_pool_top  > MEM_MAX_F64_POOL  ||
+        hdr.mod_count      > SYM_MAX_MODULES   ||
+        hdr.type_count     > SYM_MAX_TYPES     ||
+        hdr.type_count     == 0                ||
+        hdr.unit_count     > SYM_MAX_UNITS     ||
+        hdr.pat_elem_count > SYM_MAX_PAT_ELEMS ||
+        hdr.field_count    > SYM_MAX_FIELDS    ||
+        hdr.sym_count      > SYM_MAX_SYMS      ||
+        hdr.overload_count > SYM_MAX_OVERLOADS ||
+        hdr.const_count    > SYM_MAX_CONSTS) {
+        return false;
+    }
+    uint32_t expected_csum = ext_calc_mathc_checksum(&hdr,
+                                                     data + sizeof(MathcHeader),
+                                                     hdr.payload_bytes);
+    if (hdr.checksum != expected_csum) return false;
+    return validate_mathc_payload(data + sizeof(MathcHeader), &hdr);
 }
 
 bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
                         const uint8_t *data, size_t len) {
+    if (!mem || !tab) return false;
     mem_clear_err(mem);
     if (!data || len < sizeof(MathcHeader)) {
         mem_err(mem, "Invalid or truncated .mathc image");
@@ -1010,6 +1275,20 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
         return false;
     }
 
+    /* Validate all payload table & AST child indices BEFORE touching mem or tab */
+    if (!validate_mathc_payload(data + sizeof(MathcHeader), &hdr)) {
+        mem_err(mem, "Corrupted .mathc index out of bounds");
+        return false;
+    }
+
+    uint32_t expected_csum = ext_calc_mathc_checksum(&hdr,
+                                                     data + sizeof(MathcHeader),
+                                                     hdr.payload_bytes);
+    if (hdr.checksum != expected_csum) {
+        mem_err(mem, "Corrupted .mathc checksum mismatch");
+        return false;
+    }
+
     const uint8_t *cur = data + sizeof(MathcHeader);
 
     #define COPY_SLICE(dst, byte_cnt) do { \
@@ -1034,15 +1313,17 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
 
     #undef COPY_SLICE
 
-    if (!validate_mathc_indices(mem, tab, &hdr)) {
-        mem_err(mem, "Corrupted .mathc index out of bounds");
-        return false;
-    }
-
     mem->fast_real_type = hdr.fast_real_type;
     mem->str_type_id    = hdr.str_type_id;
     mem->vec_type_id    = hdr.vec_type_id;
     mem->mat_type_id    = hdr.mat_type_id;
+    mem->fn_type_id     = 0;
+    for (uint16_t i = 1; i < hdr.type_count; ++i) {
+        if (tab->types[i].parser_intr == INTR_FN_TYPE) {
+            mem->fn_type_id = (uint8_t)i;
+            break;
+        }
+    }
     mem->src_len        = hdr.perm_src_len;
     mem->ast_count      = hdr.perm_ast_count;
     mem->pool_top       = hdr.perm_pool_top;
@@ -1055,7 +1336,7 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     tab->sym_count      = hdr.sym_count;
     tab->overload_count = hdr.overload_count;
     tab->const_count    = hdr.const_count;
-    tab->active_modules = hdr.active_modules;
+    tab->active_modules = (uint64_t)hdr.active_modules;
 
     /* Reconstruct ABI-specific Value representations for global constants IN-PLACE
        using their saved `pool_idx` (zero new pool allocations). */

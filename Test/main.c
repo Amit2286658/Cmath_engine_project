@@ -1,30 +1,32 @@
 /*
  * main.c — Frontend Host Program Demonstrating:
  *   1. Internal zero-parse `eng_init()` auto-boot from embedded `stdlib_precompiled.h`
- *      (bootstrap, arith, trig, complex_ext, geom_ext, algebra, units, physics, chemistry)
+ *      (bootstrap, arith, trig, complex_ext, geom_ext, algebra, calculus, units,
+ *       conversions, physics, chemistry, biology)
  *   2. Pure in-memory `user_loader.h` workflow (`user_compile_ext` & `user_load_mathc`)
+ *      with zero file-extension or filesystem coupling in `Core/`
  *   3. Postfix `"i"` operator (`$iota`) & dimensional unit postfix operators (`deg`, `°`,
  *      `km`, `mph`, `atm`, `kcal`, `eV`, `dB`)
  *   4. Advanced Control Flow, Scopes, Booleans & Assignments:
+ *      - Default newline `;` statement separator inside & outside `{ ... }` / `( ... )`
+ *        for one-statement-per-line writing, while keeping `;` compulsory when placing
+ *        multiple statements on a single line
  *      - `{ ... }` local scope blocks (value-returning `x = { ... }`, isolated `{ ... }`,
  *        and lexical variable isolation/shadowing)
  *      - Multi-branch `if (c1) { b1 } or (c2) { b2 } else { b3 }` (`"or"` for else-if)
- *      - `switch (expr) { case v1 : { b1 } ... else : { b_def } }` (numbers & strings)
+ *      - Pattern-matched `switch (expr) { ... }` (values, ranges `1...5`, relational
+ *        guards `case > 10:`, struct destructuring `case vec2(0, y):`, vector
+ *        destructuring `case [0, y]:`, and `if <cond>` guards)
  *      - Standard right-associative ternary `cond ? x : y`
  *      - Colon-tagged scopes/loops `Tag : { ... }` and `Tag : (cond) ?? { ... }` with
- *        `jump(Tag)`, `run(Tag)`, `break`, and `break(OuterTag)`
+ *        `jump(Tag)`, `run(Tag)`, `break`, `break(OuterTag)`, `break val`,
+ *        `continue`, `continue(OuterTag)`, and `return val`
  *      - Keywordless `(i in 1...5) { ... }` / `(v in vec) { ... }` and `loop` constructs
- *      - Logical operators (`&&`, `||`, `!`, `and`, `or`, `not`, `nor`, `xor`, `nand`)
- *        and distributed comparison shorthand `(x & y == 1 | 2)`
- *      - Multi-variable declarations (`x, y := 5`), struct/vector/matrix destructuring
- *        (`r1, r2 := quad_roots(1, -5, 6)`), and compound assignments (`+=`, `-=`, etc.)
- *      - Dynamic slot promotion (`x := 5 ; x = x + 5i` -> `5 + 5i : complex`)
- *   5. Algebraic expressions (`$mat2`, `solve_2x2`, `quad_roots`, `quad_croot`, polynomials)
- *   6. Host Extern Callbacks (`eng_register_extern`: `@fx_rate`, `@fx_history`, `@kv_set`,
- *      `@kv_get`, `@elem_mass`)
- *   7. Streamlined `.math` Ergonomics (shorthand declarations, default parameters,
- *      variadic `vec(...)` & `a..b` / `a...b` ranges, `(i in 1...5){}`, implicit
- *      multiplication, UFCS dot-chaining, `solve`/`fmin`/`fmax`, destructuring)
+ *      - Vector & matrix slicing (`v[1..3]`, `M[0..1, 1..2]`) & comprehensions
+ *        (`[x^2 for x in 1...5]`, `[x^2 for x in 1...10 if x % 2 == 0]`)
+ *      - First-class lambdas (`(x) => x^2`, `x => x * 2`, `(a, b) => a + b`, `() => 42`)
+ *        and higher-order collection methods (`.map()`, `.filter()`, `.reduce()`,
+ *        `.fold()`, `.any()`, `.all()`, `.find()`, `.count_if()`, `call()`, and `f(x)`)
  */
 
 #include "math_engine.h"
@@ -612,7 +614,6 @@ static const TestCase k_tests[] = {
     { "unit_span(10, 25)",
       "15", "real",
       "Generic UnitType T 'unit_span(a:real,T, b:real,T)' on unitless numbers (10, 25)" },
-    /* User-Defined Custom Unit Type Group Tests (`data_size` & `bandwidth`) */
     { "2 MB + 500 KB", "2609152", "real",
       "User-defined custom unit group 'data_size' (2 MB + 500 KB in bytes)" },
     { "(10 MB) / (2 sec)", "5242880", "real",
@@ -621,6 +622,7 @@ static const TestCase k_tests[] = {
       "Introspect custom user unit group via unit_of((10 MB) / (2 sec))" },
     { "buf : real, data_size := 1 MB ; buf += 512 KB ; buf", "1572864", "real",
       "Variable locked to custom user unit group 'real, data_size'" },
+
     /* 11. Prefix '!' Logical Negation Overload & Approximate Equality '~' Operator Tests */
     { "!0 * 10 + !1", "10", "real",
       "Prefix '!' operator overload on 0/1: !0 = 1, !1 = 0 -> 10" },
@@ -806,28 +808,46 @@ static const TestCase k_tests[] = {
       "[Feat 6] Default fee_pct=1.5 in 'fx_with_fee(100, \"USD\", \"INR\")' -> 8274" },
     { "vec(10, 20, 30, 40)", "[10, 20, 30, 40]", "vec",
       "[Feat 2] Variadic 'vec(10, 20, 30, 40)' constructor -> [10, 20, 30, 40]" },
-    { "1..5", "[1, 2, 3, 4, 5]", "vec",
-      "[Feat 2] Inclusive 2-dot range operator '1..5' -> [1, 2, 3, 4, 5]" },
+    { "1..5", "[2, 3, 4]", "vec",
+      "[Feat 2] Exclusive-exclusive 2-dot range operator '1..5' -> [2, 3, 4]" },
     { "1...5", "[1, 2, 3, 4, 5]", "vec",
-      "[Feat 2] Inclusive 3-dot range operator '1...5' -> [1, 2, 3, 4, 5]" },
-    { "(3 in (1...5)) * 10 + (9 in (1...5))", "10", "real",
-      "[Feat 2] Vector membership operator 'in': (3 in 1...5)=1, (9 in 1...5)=0" },
+      "[Feat 2] Inclusive-inclusive 3-dot range operator '1...5' -> [1, 2, 3, 4, 5]" },
+    { "(5 in 1..100) * 1000 + (1 in 1..100) * 100 + (100 in 1...100) * 10 + (v := vec(1,3,5,7) ; 8 in v)", "1010", "real",
+      "[Feat 2] Boolean 'in' operator: 5 in 1..100 (1), 1 in 1..100 (0), 100 in 1...100 (1), 8 in v (0)" },
     { "s := 0 ; (i in 1...5) { s += i } ; s", "15", "real",
-      "[Feat 3] Keywordless range loop '(i in 1...5) { s += i }' -> 15" },
-    { "s := 0 ; (i in 1..5) { s += i^2 } ; s", "55", "real",
-      "[Feat 3] Keywordless 2-dot range loop '(i in 1..5) { s += i^2 }' -> 55" },
+      "[Feat 3] Context-aware iterator '(i in 1...5) { s += i }' -> 15" },
+    { "s := 0 ; (i in 1..5) { s += i^2 } ; s", "29", "real",
+      "[Feat 3] Exclusive-exclusive range loop '(i in 1..5) { s += i^2 }' (2^2+3^2+4^2 = 29)" },
     { "arr := vec(10, 20, 30, 40) ; tot := 0 ; (v in arr) { tot += v } ; tot", "100", "real",
-      "[Feat 3] Keywordless vector loop '(v in arr) { tot += v }' -> 100" },
+      "[Feat 3] Context-aware vector iterator '(v in arr) { tot += v }' -> 100" },
     { "pts := list(vec2(1, 2), vec2(3, 4), vec2(5, 6)) ; sx := 0 ; (p in pts) { sx += p.x * p.y } ; sx", "44", "real",
-      "[Feat 3] Keywordless struct-vector loop '(p in pts) { sx += p.x * p.y }' -> 2+12+30 = 44" },
-    { "s := 0 ; loop (i in 1...5) { s += i * 2 } ; s", "30", "real",
-      "[Feat 3] Explicit 'loop (i in 1...5) { ... }' syntax -> 30" },
-    { "k := 1 ; acc := 0 ; loop (k <= 4) { acc += k ; k += 1 } ; acc", "10", "real",
-      "[Feat 3] Conditional 'loop (k <= 4) { ... }' while-style loop -> 10" },
-    { "k := 0 ; loop { k += 1 ; if (k == 7) { break } } ; k", "7", "real",
-      "[Feat 3] Unconditional 'loop { ... break }' construct -> 7" },
-    { "cnt := 0 ; Outer : (i in 1...5) { (j in 1...5) { if (i * j > 6) { break(Outer) } ; cnt += 1 } } ; cnt", "8", "real",
-      "[Feat 3] Tagged keywordless nested loop 'Outer : (i in 1...5) { ... break(Outer) }' -> 8" },
+      "[Feat 3] Struct-vector iterator '(p in pts) { sx += p.x * p.y }' -> 2+12+30 = 44" },
+    { "if (5 in 1...100) { (25km in m) } else { 0m }", "25000", "real",
+      "[Feat 3] Context-aware '(5 in 1...100)' conditional + '(25km in m)' bare-unit conversion -> 25000" },
+    { "unit_of(25km in m)", "\"distance\"", "str",
+      "[Feat 3] '(25km in m)' preserves entity type 'real' and unit type 'distance'" },
+    { "s := 0 ; i in 1...5 { s += i } ; k in 1..<4 ?? { s += k * 10 } ; s", "75", "real",
+      "[Feat 3] Unparenthesized undefined iterator variable 'i in 1...5 { ... }' (15) + 'k in 1..<4 ?\? { ... }' (60)" },
+    { "m := 5 ; (25km in m) * m", "125000", "real",
+      "[Feat 3] Dual variable/unit disambiguation: scalar 'm := 5' still allows '25km in m' (25000m * 5 = 125000m)" },
+    { "km := vec(10, 25, 30) ; 25m in km", "0.025", "real",
+      "[Feat 3] Dual 'km := vec(10,25,30)': '25m in km' auto-resolves to unit conversion (0.025 km)" },
+    { "km := vec(10, 25, 30) ; (25 in km) * 10 + (25m in (km))", "10", "real",
+      "[Feat 3] Dual 'km := vec(10,25,30)': '25 in km' (1) and parenthesized '25m in (km)' forced vec lookup (0)" },
+    { "km := vec(10m, 25m, 50m) ; 25m in km", "1", "real",
+      "[Feat 3] Dual distance vector 'km := vec(10m,25m,50m)': '25m in km' resolves to membership (1)" },
+    { "km := vec(10m, 25m, 50m) ; 25m in 1km", "0.025", "real",
+      "[Feat 3] Dual distance vector 'km := vec(10m,25m,50m)': '25m in 1km' explicitly forces unit conversion (0.025)" },
+    { "len(1..<5) * 10 + len(1<..5)", "44", "real",
+      "[Feat 2] Half-open ranges '1..<5' ([1,2,3,4]) and '1<..5' ([2,3,4,5])" },
+    { "k := 0 ; loop : { k += 1 ; if (k == 7) { break(loop, k * 10) } ; jump(loop) }", "70", "real",
+      "[Feat 3] 'loop' used freely as user tag 'loop : { ... break(loop, k*10) }' -> 70" },
+    { "(φ ^ 2 - φ) ~ 1", "1", "real",
+      "[Feat 3] Golden ratio symbol 'φ' identity φ^2 - φ == 1" },
+    { "(φ == phi) * 10 + (ϕ == phi)", "11", "real",
+      "[Feat 3] Golden ratio symbols 'φ' and 'ϕ' equal 'phi'" },
+    { "cnt := 0 ; Outer : (i in 1...5) ?? { (j in 1...5) ?? { if (i * j > 6) { break(Outer) } ; cnt += 1 } } ; cnt", "8", "real",
+      "[Feat 3] Tagged nested loop 'Outer : (i in 1...5) ?? { ... break(Outer) }' -> 8" },
     { "sum_squares_to(5) + vec_dot_self(vec(2, 3, 6))", "104", "real",
       "[Feat 1 & 3] User functions 'sum_squares_to(5)' (55) + 'vec_dot_self(vec(2,3,6))' (49) -> 104" },
     { "x := 4 ; 2x^2 + 3x + 1", "45", "real",
@@ -850,6 +870,138 @@ static const TestCase k_tests[] = {
       "[Feat 8] Struct destructuring 'r1, r2 := quad_roots(1, -5, 6)' -> r1=3, r2=2" },
     { "a, b, c := vec(10, 20, 30) ; p, q := [100, 200] ; a + b + c + p + q", "360", "real",
       "[Feat 8] Vector & matrix destructuring 'a, b, c := vec(10,20,30)' and 'p, q := [100,200]'" },
+
+    /* 19. All 5 New Language Constructs:
+           #1 Default Newline `;` Inside & Outside Scopes (Compulsory `;` on Single Line)
+           #2 `continue`, `continue(Tag)`, `return expr`, Value-Returning `break expr`
+           #3 Vector & Matrix Slicing (`v[1..3]`, `M[0..1, 1..2]`) & Comprehensions (`[x^2 for x in ...]`)
+           #4 First-Class Lambdas (`(x) => x^2`) & Higher-Order `.map()`, `.filter()`, `.reduce()`
+           #5 Pattern-Matched `switch` (Ranges, Relational Guards, Struct/Vector Destructuring & `if` Guards) */
+    { "x := 10\ny := 20\nx + y", "30", "real",
+      "[Construct 1] Top-level newline as default ';' operator outside any scope" },
+    { "{\n  a := 5\n  b := 7\n  a * b\n}", "35", "real",
+      "[Construct 1] Newline as default ';' operator inside '{ ... }' scope" },
+    { "(\n  u := 4\n  v := 6\n  u^2 + v^2\n)", "52", "real",
+      "[Construct 1] Newline as default ';' operator inside '( ... )' block" },
+    { "s := 0\n(i in 1...6) ?? {\n  if (i % 2 == 0) { continue }\n  s += i\n}\ns", "9", "real",
+      "[Construct 1 & 2] Multi-line '(i in 1...6) ?\?' with 'continue' skipping even numbers (1+3+5 = 9)" },
+    { "s := 0 ; i := 0 ; (i < 6) ?? { i += 1 ; if (i == 3 || i == 5) { continue } ; s += i } ; s", "13", "real",
+      "[Construct 2] 'continue' inside '?\?' while loop (1+2+4+6 = 13)" },
+    { "tot := 0 ; Outer : (i in 1...3) ?? { (j in 1...3) ?? { if (j == 2) { continue(Outer) } ; tot += i * 10 + j } } ; tot", "63", "real",
+      "[Construct 2] Tagged 'continue(Outer)' jumping to next outer loop iteration (11+21+31 = 63)" },
+    { "found := (x in 1...20) ?? { if (x^2 > 50) { break x } }\nfound", "8", "real",
+      "[Construct 2] Value-returning 'break x' from range loop (first x with x^2 > 50 is 8)" },
+    { "res := Outer : (i in 1...5) ?? { (j in 1...5) ?? { if (i * j == 12) { break(Outer, i * 100 + j) } } } ; res", "304", "real",
+      "[Construct 2] Tagged value-returning 'break(Outer, val)' from nested loop (i=3, j=4 -> 304)" },
+    { "safe_sqrt_ret(-4) * 100 + safe_sqrt_ret(0) * 10 + safe_sqrt_ret(9)", "-70", "real",
+      "[Construct 2] Early 'return expr' inside user function 'safe_sqrt_ret' (-100 + 0 + 30 = -70)" },
+    { "x := 10\nreturn x * 5\nx = 999", "50", "real",
+      "[Construct 2] Top-level early 'return expr' halting evaluation immediately -> 50" },
+    { "v := vec(10, 20, 30, 40, 50) ; v[1...3]", "[20, 30, 40]", "vec",
+      "[Construct 3] Inclusive vector range slicing 'v[1...3]' -> [20, 30, 40]" },
+    { "v := vec(10, 20, 30, 40, 50) ; v[0..4]", "[20, 30, 40]", "vec",
+      "[Construct 3] Exclusive vector range slicing 'v[0..4]' -> [20, 30, 40]" },
+    { "v := vec(10, 20, 30, 40, 50) ; v[-3...-1]", "[30, 40, 50]", "vec",
+      "[Construct 3] Negative-index inclusive vector slicing 'v[-3...-1]' -> [30, 40, 50]" },
+    { "v := vec(1, 2, 3, 4, 5) ; v[1...3] = 99 ; v", "[1, 99, 99, 99, 5]", "vec",
+      "[Construct 3] In-place scalar slice assignment 'v[1...3] = 99'" },
+    { "M := [1, 2, 3 ; 4, 5, 6 ; 7, 8, 9] ; M[0...1, 1...2]", "[[2, 3], [5, 6]]", "mat",
+      "[Construct 3] 2D submatrix slicing 'M[0...1, 1...2]' -> [[2, 3], [5, 6]]" },
+    { "M := [1, 2, 3 ; 4, 5, 6 ; 7, 8, 9] ; M[2, 0...1]", "[7, 8]", "mat",
+      "[Construct 3] Row-to-1D-slice indexing 'M[2, 0...1]' -> [7, 8]" },
+    { "[x^2 for x in 1...5]", "[1, 4, 9, 16, 25]", "vec",
+      "[Construct 3] Vector comprehension '[x^2 for x in 1...5]'" },
+    { "[x^2 for x in 1...10 if x % 2 == 0]", "[4, 16, 36, 64, 100]", "vec",
+      "[Construct 3] Filtered vector comprehension '[x^2 for x in 1...10 if x % 2 == 0]'" },
+    { "[p.x + p.y for p in list(vec2(1, 2), vec2(3, 4), vec2(5, 6)) if p.x > 1]", "[7, 11]", "vec",
+      "[Construct 3] Comprehension over struct vector with 'if' guard" },
+    { "f := (x) => x^2 + 1 ; f(5) + call(f, 3)", "36", "real",
+      "[Construct 4] First-class lambda 'f := (x) => x^2 + 1' invoked via 'f(5)' (26) and 'call(f, 3)' (10)" },
+    { "add_fn := (a, b) => a + b * 10 ; add_fn(4, 3) + ((x) => x * 3)(7)", "55", "real",
+      "[Construct 4] 2-arg lambda 'add_fn(4, 3)' (34) + immediate IIFE '((x) => x * 3)(7)' (21)" },
+    { "k := 10 ; scale := x => x * k ; scale(7)", "70", "real",
+      "[Construct 4] Single-ident lambda 'x => x * k' capturing lexical variable 'k = 10'" },
+    { "(1...5).map(x => x^2).filter(x => x > 5).sum()", "50", "real",
+      "[Construct 4] UFCS higher-order pipeline '(1...5).map(x => x^2).filter(x => x > 5).sum()' (9+16+25 = 50)" },
+    { "(1...5).reduce((a, b) => a + b) * 1000 + (1...4).fold(10, (acc, x) => acc + x)", "15020", "real",
+      "[Construct 4] '.reduce((a, b) => a + b)' (15) and '.fold(10, (acc, x) => acc + x)' (20)" },
+    { "v := vec(2, 4, 7, 8) ; v.any(x => x % 2 != 0) * 100 + v.all(x => x > 0) * 10 + v.count_if(x => x >= 4)", "113", "real",
+      "[Construct 4] Higher-order predicates '.any()' (1), '.all()' (1), and '.count_if()' (3)" },
+    { "v := vec(3, 8, 15, 22) ; v.find(x => x > 10)", "15", "real",
+      "[Construct 4] Higher-order '.find(x => x > 10)' returning first matching element (15)" },
+    { "M := [1, 2 ; 3, 4] ; M.map(x => x * 10)", "[[10, 20], [30, 40]]", "mat",
+      "[Construct 4] Higher-order '.map(x => x * 10)' preserving 2D matrix shape" },
+    { "grade_band(95) == \"A\" && grade_band(84) == \"B\" && grade_band(72) == \"C\" && grade_band(50) == \"F\" && grade_band(120) == \"invalid\"", "1", "real",
+      "[Construct 5] Pattern-matched 'switch' with relational 'case >= 90:' and range 'case 80..89:'" },
+    { "describe_vec2(vec2(0, 0)) == \"origin\" && describe_vec2(vec2(0, 9)) == \"y-axis\" && describe_vec2(vec2(4, 4)) == \"diagonal\" && describe_vec2(vec2(2, 5)) == \"general\"", "1", "real",
+      "[Construct 5] Pattern-matched 'switch' with struct destructuring 'case vec2(0, y):' & 'if x == y'" },
+    { "p := vec2(0, 7) ; switch (p) { case vec2(0, y) : { y * 10 } case vec2(x, y) : { x + y } else : { 0 } }", "70", "real",
+      "[Construct 5] Struct destructuring in 'switch' binding field variable 'y = 7' -> 70" },
+    { "arr := [0, 12] ; switch (arr) { case [0, y] if y > 5 : { y * 3 } case [a, b] : { a + b } else : { -1 } }", "36", "real",
+      "[Construct 5] Vector/1D-matrix destructuring 'case [0, y] if y > 5:' binding 'y = 12' -> 36" },
+
+    /* 20. Postfix "_" (@tostr), Prefix "_" (@fromstr), "into" Operator, and Parameterized
+           Containers `vec<T>()`, `list<T>()`, `stack<T>()`, `queue<T>()` */
+    { "42_", "\"42\"", "str",
+      "[Op _] Postfix \"_\" on real literal 42_ -> \"42\" ($str)" },
+    { "(3 + 4i)_", "\"3 + 4i\"", "str",
+      "[Op _] Postfix \"_\" on complex (3 + 4i)_ -> \"3 + 4i\"" },
+    { "vec2(3, 4)_", "\"vec2(x=3, y=4)\"", "str",
+      "[Op _] Postfix \"_\" on struct vec2(3, 4)_ -> \"vec2(x=3, y=4)\"" },
+    { "vec(10, 20, 30)_", "\"[10, 20, 30]\"", "str",
+      "[Op _] Postfix \"_\" on dynamic vector vec(10, 20, 30)_ -> \"[10, 20, 30]\"" },
+    { "[1, 2 ; 3, 4]_", "\"[[1, 2], [3, 4]]\"", "str",
+      "[Op _] Postfix \"_\" on 2D matrix [1, 2 ; 3, 4]_ -> \"[[1, 2], [3, 4]]\"" },
+    { "_\"42\" + 8", "50", "real",
+      "[Op _] Prefix \"_\" converting \"42\" -> real 42 (+ 8 = 50)" },
+    { "_\"3 + 4i\"", "3 + 4i", "complex",
+      "[Op _] Prefix \"_\" converting \"3 + 4i\" -> complex 3 + 4i" },
+    { "_\"vec2(3, 4)\"", "vec2(x=3, y=4)", "vec2",
+      "[Op _] Prefix \"_\" converting \"vec2(3, 4)\" -> struct vec2(x=3, y=4)" },
+    { "_\"[10, 20, 30]\"", "[10, 20, 30]", "vec",
+      "[Op _] Prefix \"_\" converting \"[10, 20, 30]\" -> dynamic $vec [10, 20, 30]" },
+    { "_\"[[1, 2], [3, 4]]\"", "[[1, 2], [3, 4]]", "mat",
+      "[Op _] Prefix \"_\" converting \"[[1, 2], [3, 4]]\" -> 2D $mat" },
+    { "unit_of(_\"100 km\")", "\"distance\"", "str",
+      "[Op _] Prefix \"_\" converting \"100 km\" preserves unit tag \"distance\"" },
+    { "_(vec3(1, 2, 3)_)", "vec3(x=1, y=2, z=3)", "vec3",
+      "[Op _] Round-trip string conversion _(vec3(1, 2, 3)_) -> vec3(x=1, y=2, z=3)" },
+    { "5 into 5i", "5 + 5i", "complex",
+      "[Op into] '5 into 5i' combines real and iota -> complex 5 + 5i" },
+    { "5i into 5", "5 + 5i", "complex",
+      "[Op into] '5i into 5' combines iota and real -> complex 5 + 5i" },
+    { "5 into 5", "5 + 5i", "complex",
+      "[Op into] '5 into 5' combines two reals -> complex 5 + 5i" },
+    { "2 into (3 + 4i)", "5 + 4i", "complex",
+      "[Op into] '2 into (3 + 4i)' adds real component into complex -> 5 + 4i" },
+    { "3i into (3 + 4i)", "3 + 7i", "complex",
+      "[Op into] '3i into (3 + 4i)' adds imaginary component into complex -> 3 + 7i" },
+    { "7 into vec2(3, 4)", "vec3(x=3, y=4, z=7)", "vec3",
+      "[Op into] '7 into vec2(3, 4)' promotes vec2 + z -> vec3(x=3, y=4, z=7)" },
+    { "vec2(3, 4) into 7", "vec3(x=3, y=4, z=7)", "vec3",
+      "[Op into] 'vec2(3, 4) into 7' promotes vec2 + z -> vec3(x=3, y=4, z=7)" },
+    { "40 into vec(10, 20, 30)", "[10, 20, 30, 40]", "vec",
+      "[Op into] '40 into vec(10, 20, 30)' pushes element into vector (alternate for vec.push(T))" },
+    { "30 into list(10, 20)", "[10, 20, 30]", "vec",
+      "[Op into] '30 into list(10, 20)' pushes element into list -> [10, 20, 30]" },
+    { "v := vec<real>() ; 10 into v ; 20 into v ; 30 into v ; v", "[10, 20, 30]", "vec",
+      "[Op into & vec<T>] Sequential 'T into v' on typed 'vec<real>()' -> [10, 20, 30]" },
+    { "10 into 20 into vec<real>()", "[20, 10]", "vec",
+      "[Op into & vec<T>] Right-associative chained '10 into 20 into vec<real>()' -> [20, 10]" },
+    { "vec<real>(4).cap() * 100 + vec<real>(3, 7).sum()", "421", "real",
+      "[vec<T>] Typed capacity 'vec<real>(4)' (cap 4) and fill 'vec<real>(3, 7)' (sum 21)" },
+    { "vec<vec2>(vec2(1, 2), vec2(3, 4))", "[vec2(x=1, y=2), vec2(x=3, y=4)]", "vec",
+      "[vec<T>] Variadic typed struct vector 'vec<vec2>(vec2(1, 2), vec2(3, 4))'" },
+    { "d := vec<real, distance>(1 km, 500 m) ; d[0] + d[1]", "1500", "real",
+      "[vec<T, unit>] Typed & unit-locked 'vec<real, distance>(1 km, 500 m)' -> 1500 m" },
+    { "list<complex>(1 + 2i, 3 - 4i)", "[1 + 2i, 3 - 4i]", "vec",
+      "[list<T>] Parameterized 'list<complex>(1 + 2i, 3 - 4i)'" },
+    { "s := stack<real>(10, 20) ; s.push(30) ; s.peek() * 1000 + s.pop() * 10 + s.len()", "30302", "real",
+      "[stack<T>] LIFO 'stack<real>(10, 20)' with .push(30), .peek() (30), .pop() (30), .len() (2)" },
+    { "q := queue<real>(10, 20) ; q.enqueue(30) ; q.front() * 1000 + q.dequeue() * 10 + q.front()", "10120", "real",
+      "[queue<T>] FIFO 'queue<real>(10, 20)' with .enqueue(30), .front() (10), .dequeue() (10), .front() (20)" },
+    { "v : vec<vec2> := vec<vec2>() ; vec2(5, 6) into v ; v[0].x + v[0].y", "11", "real",
+      "[vec<T> annot] Variable type lock 'v : vec<vec2> := vec<vec2>()' + 'vec2(5, 6) into v' -> 11" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -908,8 +1060,8 @@ int main(void) {
     printf("    Predefined bootstrap & scientific stdlib loaded from memory (%u modules, %u overloads, %u AST nodes).\n\n",
            g_eng.sym.mod_count, g_eng.sym.overload_count, g_eng.mem.perm_ast_count);
 
-    /* 3. Frontend reads raw `.math` text, passes ONLY raw text to `user_compile_ext`,
-     *    receives back the compiled `.mathc` binary image, and tests `user_load_mathc`. */
+    /* 3. Frontend reads raw source text, passes ONLY raw text to `user_compile_ext`,
+     *    receives back the compiled binary image, and tests `user_load_mathc`. */
     const char *math_path  = "Test/user_physics.math";
     const char *mathc_path = "Test/user_physics.mathc";
     size_t raw_len = 0;
@@ -936,7 +1088,7 @@ int main(void) {
     (void)frontend_write_file(mathc_path, compiled_mathc, compiled_mathc_len);
 
     printf("[3] In-Memory User Extension API (`user_loader.h`):\n");
-    printf("    - Step A (`user_compile_ext`): Compiled raw text (%zu bytes) -> handed back %zu-byte `.mathc` image\n",
+    printf("    - Step A (`user_compile_ext`): Compiled raw text (%zu bytes) -> handed back %zu-byte binary image\n",
            raw_len, compiled_mathc_len);
 
     size_t disk_mathc_len = 0;
@@ -951,13 +1103,13 @@ int main(void) {
         fprintf(stderr, "user_load_mathc failed: %s\n", eng_last_error(&g_eng));
         return 1;
     }
-    printf("    - Step B (`user_load_mathc`) : Loaded %zu-byte compiled `.mathc` image in O(1) `memcpy` time\n\n",
+    printf("    - Step B (`user_load_mathc`) : Loaded %zu-byte compiled binary image in O(1) `memcpy` time\n\n",
            disk_mathc_len);
 
     print_architecture_report(&g_eng);
 
     /* 4. Run Automated Expression Test Suite */
-    printf("[4] Running Full Automated Suite (Stdlib + Control Flow + Booleans + Multi-Var + Algebra + Units + Physics + Chemistry + Ergonomics):\n");
+    printf("[4] Running Full Automated Suite (Stdlib + Control Flow + Units + Calculus + 5 New Constructs):\n");
     int passed = 0, total = 0;
     for (int i = 0; k_tests[i].expr != NULL; ++i) {
         total++;
@@ -979,11 +1131,22 @@ int main(void) {
     }
     printf("\n    Suite Summary: %d / %d passed.\n\n", passed, total);
 
-    /* 5. Verify Compile-Time Guardrails for Scopes, `if/or/else`, Reserved Keywords, and `vec<T>` */
-    bool vec_type_guard = !eng_eval(&g_eng, "v := vec() ; push(v, 10) ; push(v, vec2(1, 2))", &v);
-    printf("[5] Type-Safety, Reserved-Keyword & Control-Flow Grammar Guardrails:\n");
+    /* 5. Verify Compile-Time Guardrails for Scopes, Compulsory Same-Line ';', `if/or/else`, Reserved Keywords, and `vec<T>` */
+    bool vec_type_guard = !eng_eval(&g_eng, "v := vec() ; push(v, 10) ; push(v, vec2(1, 2))", &v) &&
+                          !eng_eval(&g_eng, "v := vec<vec2>() ; 10 into v", &v) &&
+                          !eng_eval(&g_eng, "vec<real>(vec2(1, 2))", &v) &&
+                          !eng_eval(&g_eng, "q := queue<real, distance>() ; q.enqueue(60 deg)", &v) &&
+                          !eng_eval(&g_eng, "_\"not_a_valid_type_xyz\"", &v);
+    printf("[5] Type-Safety, Compulsory Same-Line ';', Reserved-Keyword & Control-Flow Guardrails:\n");
     printf("    - Homogeneous vec<T> guard    : %s -> \"%s\"\n",
            vec_type_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
+           eng_last_error(&g_eng));
+
+    bool same_line_semi_guard = !eng_eval(&g_eng, "x := 10 y := 20", &v) &&
+                                !eng_eval(&g_eng, "{ a := 10 b := 20 }", &v) &&
+                                !eng_eval(&g_eng, "{ a := 10 } a", &v);
+    printf("    - Same-line missing ';' guard : %s -> \"%s\"\n",
+           same_line_semi_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
 
     bool scope_isolation_guard = !eng_eval(&g_eng, "{ inner_only := 42 } ; inner_only", &v);
@@ -1004,8 +1167,13 @@ int main(void) {
     bool kw_var_guard = !eng_eval(&g_eng, "if := 5", &v) &&
                         !eng_eval(&g_eng, "else := 5", &v) &&
                         !eng_eval(&g_eng, "or := 5", &v) &&
+                        !eng_eval(&g_eng, "continue := 5", &v) &&
+                        !eng_eval(&g_eng, "return := 5", &v) &&
                         !eng_eval(&g_eng, "x, switch := 5", &v) &&
-                        !eng_eval(&g_eng, "(loop in 1...5) {}", &v);
+                        !eng_eval(&g_eng, "(5km in m){}", &v) &&
+                        !eng_eval(&g_eng, "(d := 5km ; (d in m){})", &v) &&
+                        !eng_eval(&g_eng, "undef_var in 1...10", &v) &&
+                        !eng_eval(&g_eng, "if (undef_var in 1...10) { 1 }", &v);
     printf("    - Reserved keyword as variable: %s -> \"%s\"\n",
            kw_var_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED",
            eng_last_error(&g_eng));
@@ -1113,9 +1281,8 @@ int main(void) {
     eng_set_module(&g_eng, "user_physics", true);
 
     /* 7. Verify All 8 Audit Regression Cases */
-    printf("[7] Audit Regression Suite (Bugs 1-8 Verification):\n");
+    printf("[7] Audit Regression Suite (Bugs 1-10 Verification):\n");
 
-    /* Bug 1: .mathc load preserves unit-tagged constants across evaluations */
     const uint8_t *uconst_mathc = NULL;
     size_t uconst_len = 0;
     bool bug1_ok = user_compile_ext(&g_eng, "[uconst_mod]\n\"gx\" : real, distance = 5m\n", &uconst_mathc, &uconst_len) &&
@@ -1126,7 +1293,6 @@ int main(void) {
                    (strcmp(eng_unit_name(&g_eng, eng_val_unit(&g_eng, v), (char[32]){0}, 32), "distance") == 0);
     printf("    - [Bug 1] .mathc unit constant (gx + 1m == 6m) : %s\n", bug1_ok ? "PASS" : "FAIL");
 
-    /* Bug 2: Failed extension load rolls back all state transactionally */
     uint16_t pre_ov  = g_eng.sym.overload_count;
     uint16_t pre_ast = g_eng.mem.perm_ast_count;
     bool bug2_fail = !user_compile_ext(&g_eng, "\"leak_fn\"(x:real) -> real = x + 1\n\"bad_fn\"(x:real) -> real = (1 + ", NULL, NULL);
@@ -1137,7 +1303,6 @@ int main(void) {
     printf("    - [Bug 2] Transactional rollback on bad ext    : %s (overloads=%u)\n",
            bug2_ok ? "PASS" : "FAIL", g_eng.sym.overload_count);
 
-    /* Bug 3: Deeply nested expression rejected by PARSER_MAX_EXPR_DEPTH */
     char deep_expr[512];
     memset(deep_expr, '(', 200);
     deep_expr[200] = '1';
@@ -1147,12 +1312,10 @@ int main(void) {
     printf("    - [Bug 3] Deep nesting guard (200 parens)      : %s (\"%s\")\n",
            bug3_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
 
-    /* Bug 4: Self-referential struct rejected at compile time */
     bool bug4_ok = !user_compile_ext(&g_eng, "$self_node(a:real, next:self_node)", NULL, NULL);
     printf("    - [Bug 4] Self-referential struct rejection    : %s (\"%s\")\n",
            bug4_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
 
-    /* Bug 5: Overlong >65534-char input rejected instead of uint16_t truncation */
     char *huge_expr = (char *)malloc(66000);
     bool bug5_ok = false;
     if (huge_expr) {
@@ -1168,14 +1331,12 @@ int main(void) {
     printf("    - [Bug 5] >65534-byte input truncation guard   : %s (\"%s\")\n",
            bug5_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
 
-    /* Bug 6: Pool exhaustion does not overwrite f64_pool[0] */
     double saved_pool0 = g_eng.mem.f64_pool[0];
     bool bug6_exhaust = !eng_eval(&g_eng, "v := vec(9000, 5)", &v);
     bool bug6_ok = bug6_exhaust && (g_eng.mem.f64_pool[0] == saved_pool0);
     printf("    - [Bug 6] Pool exhaustion f64_pool[0] integrity: %s (pool[0]=%g)\n",
            bug6_ok ? "PASS" : "FAIL", g_eng.mem.f64_pool[0]);
 
-    /* Bug 7: Extension without [module] header joins [default], not [biology] */
     bool bug7_compile = user_compile_ext(&g_eng, "\"anon_mod_fn\"(x:real) -> real = x * 3\n", NULL, NULL);
     eng_set_module(&g_eng, "biology", false);
     bool bug7_eval = eng_eval(&g_eng, "anon_mod_fn(7)", &v) && (val_get_f64(&g_eng.mem, v) == 21.0);
@@ -1183,20 +1344,110 @@ int main(void) {
     bool bug7_ok = bug7_compile && bug7_eval;
     printf("    - [Bug 7] Headerless user ext in [default]     : %s\n", bug7_ok ? "PASS" : "FAIL");
 
-    /* Bug 8: Float-to-int UB guard on huge/fractional/NaN vector & matrix indices */
     bool bug8_huge = !eng_eval(&g_eng, "pts := vec() ; push(pts, 10) ; at(pts, -4294967296)", &v);
     bool bug8_frac = !eng_eval(&g_eng, "pts := vec() ; push(pts, 10) ; push(pts, 20) ; at(pts, 0.5)", &v);
     bool bug8_ok   = bug8_huge && bug8_frac;
     printf("    - [Bug 8] Safe float-to-int index guard        : %s (\"%s\")\n",
            bug8_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
 
+    /* [Bug 9] Transactional .mathc load (corrupted image must not overwrite live Engine) */
+    uint8_t *mut_buf = (uint8_t *)malloc(uconst_len);
+    bool bug9_ok = false;
+    if (mut_buf && uconst_mathc && uconst_len > sizeof(MathcHeader) + 32) {
+        uint16_t saved_ov  = g_eng.sym.overload_count;
+        uint16_t saved_ast = g_eng.mem.perm_ast_count;
+        uint8_t  saved_mod = g_eng.sym.mod_count;
+
+        /* 9a. Flip payload byte without updating checksum -> rejected by checksum */
+        memcpy(mut_buf, uconst_mathc, uconst_len);
+        mut_buf[sizeof(MathcHeader) + 8] ^= 0xFFu;
+        bool reject_csum = !user_load_mathc(&g_eng, mut_buf, uconst_len);
+
+        /* 9b. Corrupt an AST node index in payload AND recompute checksum -> rejected by pre-copy validator */
+        memcpy(mut_buf, uconst_mathc, uconst_len);
+        MathcHeader mhdr;
+        memcpy(&mhdr, mut_buf, sizeof(MathcHeader));
+        size_t ast_off = sizeof(MathcHeader) + (size_t)mhdr.perm_src_len;
+        if (mhdr.perm_ast_count > 10) {
+            AstNode bad_node = { (uint8_t)AST_UNARY, (uint8_t)FIX_PREFIX, 0, 62719u, MEM_NO_IDX };
+            memcpy(mut_buf + ast_off + 5 * sizeof(AstNode), &bad_node, sizeof(AstNode));
+        }
+        mhdr.checksum = ext_calc_mathc_checksum(&mhdr, mut_buf + sizeof(MathcHeader), mhdr.payload_bytes);
+        memcpy(mut_buf, &mhdr, sizeof(MathcHeader));
+        bool reject_oob = !user_load_mathc(&g_eng, mut_buf, uconst_len);
+
+        char oob_err[128];
+        snprintf(oob_err, sizeof(oob_err), "%s", eng_last_error(&g_eng));
+
+        /* Verify live g_eng was never overwritten and still evaluates prior definitions */
+        Value v_fn = 0, v_gx = 0;
+        bool state_intact = (g_eng.sym.overload_count == saved_ov) &&
+                            (g_eng.mem.perm_ast_count == saved_ast) &&
+                            (g_eng.sym.mod_count == saved_mod) &&
+                            eng_eval(&g_eng, "anon_mod_fn(7)", &v_fn) &&
+                            (val_get_f64(&g_eng.mem, v_fn) == 21.0) &&
+                            eng_eval(&g_eng, "gx + 1m", &v_gx) &&
+                            (val_get_f64(&g_eng.mem, v_gx) == 6.0);
+        bug9_ok = reject_csum && reject_oob && state_intact;
+        printf("    - [Bug 9] Transactional .mathc load & checksum : %s (\"%s\")\n",
+               bug9_ok ? "PASS" : "FAIL", oob_err);
+    }
+
+    /* [Bug 10] 3,000-Iteration Corrupted .mathc Image Fuzzer (raw + checksum-recomputed) */
+    static Engine s_fuzz_eng;
+    bool bug10_ok = (mut_buf != NULL && uconst_mathc != NULL);
+    uint32_t rng = 0xC0FFEE12u;
+    int rejected_cnt = 0, accepted_cnt = 0;
+    if (bug10_ok) {
+        eng_init(&s_fuzz_eng);
+        for (int iter = 0; iter < 3000; ++iter) {
+            memcpy(mut_buf, uconst_mathc, uconst_len);
+            int num_muts = 1 + (int)(rng % 4u);
+            for (int m = 0; m < num_muts; ++m) {
+                rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+                size_t pos = (iter < 1500)
+                             ? (size_t)(rng % uconst_len)
+                             : (sizeof(MathcHeader) + (size_t)(rng % (uconst_len - sizeof(MathcHeader))));
+                rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+                mut_buf[pos] ^= (uint8_t)(1u + (rng % 255u));
+            }
+            if (iter >= 1500) {
+                /* Recompute checksum so mutations directly stress validate_mathc_payload & AST bounds */
+                MathcHeader fhdr;
+                memcpy(&fhdr, mut_buf, sizeof(MathcHeader));
+                if (fhdr.payload_bytes == uconst_len - sizeof(MathcHeader)) {
+                    fhdr.checksum = ext_calc_mathc_checksum(&fhdr,
+                                                            mut_buf + sizeof(MathcHeader),
+                                                            fhdr.payload_bytes);
+                    memcpy(mut_buf, &fhdr, sizeof(MathcHeader));
+                }
+            }
+            if (user_load_mathc(&s_fuzz_eng, mut_buf, uconst_len)) {
+                accepted_cnt++;
+                Value fv;
+                (void)eng_eval(&s_fuzz_eng, "2 + 3 * 4", &fv);
+                (void)eng_eval(&s_fuzz_eng, "sin(0) + cos(0)", &fv);
+                (void)eng_eval(&s_fuzz_eng, "vec2(3, 4).x", &fv);
+                (void)eng_eval(&s_fuzz_eng, "5!", &fv);
+            } else {
+                rejected_cnt++;
+            }
+        }
+    }
+    free(mut_buf);
+    bool null_guard_ok = !eng_eval(NULL, "1 + 1", &v) && !eng_set_module(NULL, "units", false);
+    bug10_ok = bug10_ok && null_guard_ok && (rejected_cnt + accepted_cnt == 3000) && (rejected_cnt > 2500);
+    printf("    - [Bug 10] 3,000x mutated .mathc fuzz + NULL   : %s (%d rejected, %d safe-eval)\n",
+           bug10_ok ? "PASS" : "FAIL", rejected_cnt, accepted_cnt);
+
     return (passed == total && blank_ok && load_mathc_ok && vec_type_guard &&
-            scope_isolation_guard && multi_else_guard && else_if_guard &&
+            same_line_semi_guard && scope_isolation_guard && multi_else_guard && else_if_guard &&
             kw_var_guard && kw_tag_guard &&
             unlike_unit_guard && concrete_real_guard && concrete_real_dist_unit_guard &&
             concrete_real_dist_iota_guard && concrete_dist_unitless_iota_guard &&
             fn_unit_mismatch_guard && gen_T_unit_mismatch_guard &&
             conv_unit_mismatch_guard && jagged_mat_guard && non_bool_not_guard && not_overload_guard && lim_diverge_guard && custom_err_guard && fx_unknown_ccy_guard && fx_neg_amount_guard &&
             syn_off && units_off && phys_off &&
-            bug1_ok && bug2_ok && bug3_ok && bug4_ok && bug5_ok && bug6_ok && bug7_ok && bug8_ok) ? 0 : 1;
+            bug1_ok && bug2_ok && bug3_ok && bug4_ok && bug5_ok && bug6_ok && bug7_ok && bug8_ok &&
+            bug9_ok && bug10_ok) ? 0 : 1;
 }

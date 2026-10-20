@@ -7,20 +7,36 @@
 #include <string.h>
 
 bool lex_is_ident_start(unsigned char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c >= 0x80;
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c >= 0x80;
 }
 
 bool lex_is_ident_cont(unsigned char c) {
-    return lex_is_ident_start(c) || (c >= '0' && c <= '9');
+    return lex_is_ident_start(c) || c == '_' || (c >= '0' && c <= '9');
 }
 
 static bool is_ascii_word(const char *s, uint16_t len) {
     if (len == 0) return false;
-    for (uint16_t i = 0; i < len; ++i) {
+    unsigned char c0 = (unsigned char)s[0];
+    if (!((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z'))) return false;
+    for (uint16_t i = 1; i < len; ++i) {
         unsigned char c = (unsigned char)s[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_')) return false;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || (c >= '0' && c <= '9'))) {
+            return false;
+        }
     }
     return true;
+}
+
+static bool ident_continues_at(const char *src, uint16_t p, uint16_t len) {
+    if (p >= len) return false;
+    unsigned char c = (unsigned char)src[p];
+    if (lex_is_ident_start(c) || (c >= '0' && c <= '9')) return true;
+    if (c == '_') {
+        if (p + 1 >= len) return false;
+        unsigned char nc = (unsigned char)src[p + 1];
+        return lex_is_ident_start(nc) || (nc >= '0' && nc <= '9');
+    }
+    return false;
 }
 
 static int match_single_atom(const MemArena *mem, const PatElem *pe,
@@ -33,7 +49,7 @@ static int match_single_atom(const MemArena *mem, const PatElem *pe,
         case PAT_ALPHA:
             return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') ? 1 : -1;
         case PAT_LIT: {
-            if (pos + pe->chars.len > len) return -1;
+            if (pe->chars.len == 0 || pos + pe->chars.len > len) return -1;
             if (memcmp(src + pos, mem_str_ptr(mem, pe->chars), pe->chars.len) == 0) {
                 return (int)pe->chars.len;
             }
@@ -172,13 +188,16 @@ static Value construct_consumed_token(MemArena *mem, const SymTable *tab,
     }
 }
 
-static bool skip_ws_and_comments(Lexer *lex) {
+static bool skip_ws_and_comments(Lexer *lex, bool *out_had_nl) {
+    bool saw_nl = false;
     while (lex->pos < lex->len) {
         char c = lex->src[lex->pos];
         if (c == ' ' || c == '\t' || c == '\r') {
             lex->pos++;
         } else if (c == '\n') {
+            saw_nl = true;
             if (lex->stop_at_newline && lex->paren_depth == 0) {
+                if (out_had_nl) *out_had_nl = saw_nl;
                 return true;
             }
             lex->pos++;
@@ -188,6 +207,7 @@ static bool skip_ws_and_comments(Lexer *lex) {
             break;
         }
     }
+    if (out_had_nl) *out_had_nl = saw_nl;
     return false;
 }
 
@@ -205,15 +225,18 @@ void lex_init(Lexer *lex, MemArena *mem, const SymTable *tab,
 void lex_next(Lexer *lex) {
     MemArena       *mem = lex->mem;
     const SymTable *tab = lex->tab;
+    bool had_nl = false;
 
-    if (skip_ws_and_comments(lex)) {
+    if (skip_ws_and_comments(lex, &had_nl)) {
         memset(&lex->cur, 0, sizeof(lex->cur));
-        lex->cur.off  = lex->pos;
-        lex->cur.kind = TOK_EOF;
+        lex->cur.off         = lex->pos;
+        lex->cur.kind        = TOK_EOF;
+        lex->cur.had_newline = had_nl;
         return;
     }
     memset(&lex->cur, 0, sizeof(lex->cur));
-    lex->cur.off = lex->pos;
+    lex->cur.off         = lex->pos;
+    lex->cur.had_newline = had_nl;
 
     if (lex->pos >= lex->len) {
         lex->cur.kind = TOK_EOF;
@@ -222,7 +245,7 @@ void lex_next(Lexer *lex) {
 
     char c = lex->src[lex->pos];
 
-    /* 1. Private C intrinsic / host extern hook '@' (only valid inside .math bodies) */
+    /* 1. Private C intrinsic / host extern hook '@' (only valid inside extension bodies) */
     if (c == '@') {
         lex->cur.kind = TOK_AT;
         lex->cur.len  = 1;
@@ -259,7 +282,7 @@ void lex_next(Lexer *lex) {
         return;
     }
 
-    /* 3. Active Syntax Delimiters (`(`, `)`, `{`, `}`, `,`) & Active Operators (`.`, `;`, `:=`, `=`, `?`, `:`, `??`, `i`, `+`) */
+    /* 3. Active Syntax Delimiters (`(`, `)`, `{`, `}`, `[`, `]`, `,`) & Active Operators */
     int best_sym_len = 0;
     uint16_t best_sym_id = 0;
     uint8_t best_syntax_tag = 0;
@@ -274,7 +297,7 @@ void lex_next(Lexer *lex) {
         const char *s_ptr = mem_str_ptr(mem, s);
         if (memcmp(lex->src + lex->pos, s_ptr, s.len) == 0) {
             if (is_ascii_word(s_ptr, s.len)) {
-                if (lex->pos + s.len < lex->len && lex_is_ident_cont((unsigned char)lex->src[lex->pos + s.len])) {
+                if (ident_continues_at(lex->src, (uint16_t)(lex->pos + s.len), lex->len)) {
                     continue;
                 }
             }
@@ -317,10 +340,10 @@ void lex_next(Lexer *lex) {
         return;
     }
 
-    /* 4. Identifiers */
+    /* 4. Identifiers (trailing '_' is reserved for the postfix '_' operator) */
     if (lex_is_ident_start((unsigned char)c)) {
         uint16_t start = lex->pos;
-        while (lex->pos < lex->len && lex_is_ident_cont((unsigned char)lex->src[lex->pos])) {
+        while (lex->pos < lex->len && ident_continues_at(lex->src, lex->pos, lex->len)) {
             if ((unsigned char)lex->src[lex->pos] >= 0x80 && lex->pos > start) {
                 bool sym_starts_here = false;
                 for (uint16_t sid = 0; sid < tab->sym_count; ++sid) {

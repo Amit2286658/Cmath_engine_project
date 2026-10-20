@@ -4,7 +4,7 @@
 # Demonstrates:
 #   1. Calling standard library modules (`[arith]`, `[trig]`, `[geom_ext]`,
 #      `[algebra]`, `[units]`, `[physics]`, `[chemistry]`)
-#   2. Multi-branch `if ... or ... else`, `switch ... case ... else`,
+#   2. Multi-branch `if ... or ... else`, pattern-matched `switch ... case ... else`,
 #      local `{ ... }` scopes, ternary `? :`, `break(Tag)`, and `Tag : { ... }`
 #   3. Wrapping host-registered C callbacks (`eng_register_extern`) for:
 #      - `@fx_rate(from, to)`           : Realtime currency exchange rate
@@ -12,15 +12,16 @@
 #      - `@fx_history(from, to, days)`  : Vector-returning historical FX series
 #      - `@kv_set(key, val)` / `@kv_get(key)` : Persistent host key-value store
 #      - `@elem_mass(symbol)`           : IUPAC Periodic Table atomic mass lookup
-#   4. Streamlined `.math` Ergonomics (All 8 Features):
-#      - Unquoted function & constant names (`hyp_3d(x, y, z) = ...`, `golden_ang = ...`)
-#      - Optional `:real` parameter types and optional `-> real` return types
-#      - Default parameter values (`fx_with_fee(..., fee_pct:real = 1.5)`, `log_base(x, b = 10)`)
-#      - Keywordless `(i in 1...5){}` and `(v in vec){}` loops + `loop` keyword
-#      - Implicit multiplication (`2x`, `2π`, `3(x + 1)`)
-#      - Uniform Function Call / dot-chaining (`v.push(10).vec_sum()`)
-#      - General solver & extrema (`solve`, `fmin`, `fmax`)
-#      - Struct/vector/matrix destructuring (`r1, r2 := quad_roots(1, -5, 6)`)
+#   4. Streamlined Language Ergonomics & New Constructs:
+#      - Default newline `;` separator inside & outside `{ ... }` / `( ... )` scopes
+#        (while keeping `;` compulsory for multiple statements on a single line)
+#      - `continue`, `continue(Tag)`, `return expr`, and value-returning `break expr`
+#      - Vector & matrix slicing (`v[1..3]`, `M[0..1, 1..2]`) & comprehensions
+#        (`[x^2 for x in 1...10 if x % 2 == 0]`)
+#      - First-class lambdas (`(x) => x^2`, `x => x * 2`, `(a, b) => a + b`) &
+#        higher-order collection methods (`.map()`, `.filter()`, `.reduce()`, `.any()`, `.all()`)
+#      - Pattern-matched `switch` with ranges, relational guards, struct/vector
+#        destructuring, and `if` guards
 
 [user_physics]
 <[boot_syntax]
@@ -147,12 +148,37 @@ tau_const = 2π
 hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)
 log_base(x, base = 10) = ln(x) / ln(base)
 sum_squares_to(n) = {
-    s := 0 ;
-    (i in 1...n) { s += i^2 } ;
+    s := 0
+    (i in 1...n) ?? { s += i^2 }
     s
 }
 vec_dot_self(v:vec) = {
-    s := 0 ;
-    (x in v) { s += x^2 } ;
+    s := 0
+    (x in v) ?? { s += x^2 }
     s
+}
+
+# 11. New Constructs: Semicolon-Free Multi-Line Bodies, Early `return`, `continue`,
+#     Value-Returning `break`, Lambdas, Comprehensions & Pattern-Matched `switch`
+safe_sqrt_ret(x) = {
+    if (x < 0) { return -1 }
+    if (x == 0) { return 0 }
+    res := √x
+    return res * 10
+}
+
+describe_vec2(p:vec2) -> str = switch (p) {
+    case vec2(0, 0) : { "origin" }
+    case vec2(0, y) : { "y-axis" }
+    case vec2(x, 0) : { "x-axis" }
+    case vec2(x, y) if x == y : { "diagonal" }
+    else : { "general" }
+}
+
+grade_band(score) -> str = switch (score) {
+    case < 0, > 100 : { "invalid" }
+    case >= 90 : { "A" }
+    case 80...89 : { "B" }
+    case 70...79 : { "C" }
+    else : { "F" }
 }
