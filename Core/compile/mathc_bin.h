@@ -1,16 +1,14 @@
 /*
- * ext_loader.h — In-Memory `.math` Extension Compiler & `.mathc` Binary Serializer
+ * mathc_bin.h — In-Memory `.mathc` Binary Image Format, Serializer & O(1) Loader
  *
  * Purpose:
- *   1. Compiles raw `.math` source text strings into `MemArena` + `SymTable`
- *      permanent tables (`ext_load_str`) with transactional rollback on error.
- *   2. Serializes and deserializes precompiled `.mathc` binary images strictly
- *      in memory (`ext_save_mathc_mem`, `ext_load_mathc_mem`) so the engine has
- *      zero filesystem, directory, or OS path dependencies.
+ *   Defines the 40-byte ABI- & OS-neutral `MathcHeader` binary format and
+ *   provides in-memory `.mathc` serialization, FNV-1a checksumming, structural
+ *   validation, and O(1) `memcpy` loading inside `Core/compile/`.
  */
 
-#ifndef EXT_LOADER_H
-#define EXT_LOADER_H
+#ifndef MATHC_BIN_H
+#define MATHC_BIN_H
 
 #include "mem_arena.h"
 #include "sym_table.h"
@@ -53,11 +51,8 @@ typedef struct {
 _Static_assert(sizeof(MathcHeader) == 40, "MathcHeader must be strictly 40 bytes");
 
 /* ============================================================================
- * 2. IN-MEMORY `.math` TEXT COMPILER & `.mathc` BINARY SERIALIZER API
+ * 2. IN-MEMORY `.mathc` BINARY SERIALIZER & O(1) LOADER API
  * ============================================================================ */
-
-/* Compile raw `.math` extension source text into permanent Arena + SymTable state */
-bool     ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src);
 
 /* Compute the exact byte size required to serialize the current permanent state */
 uint32_t ext_calc_mathc_size(const MemArena *mem, const SymTable *tab);
@@ -81,4 +76,4 @@ bool     ext_load_mathc_mem(MemArena *mem, SymTable *tab,
 }
 #endif
 
-#endif /* EXT_LOADER_H */
+#endif /* MATHC_BIN_H */

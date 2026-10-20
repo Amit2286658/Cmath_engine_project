@@ -117,6 +117,11 @@ typedef struct {
     Value       jump_val;          /* Payload for `break expr` / `return expr`   */
     uint16_t    label_ast[MEM_MAX_LABELS];
 
+    /* Lambda source slices for session variable persistence (reset per eval) */
+    uint16_t    fn_body_ast[16];
+    StrSlice    fn_src_slice[16];
+    uint8_t     fn_src_count;
+
     /* Recursion & Global Step Budget State */
     uint16_t    eval_depth;
     uint32_t    eval_steps;

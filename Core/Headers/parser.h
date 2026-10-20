@@ -30,6 +30,7 @@ typedef struct {
     uint16_t type_id;
     uint8_t  slot;
     uint8_t  scope_depth;
+    uint8_t  is_loop_iter;
 } LocalVar;
 
 typedef struct {

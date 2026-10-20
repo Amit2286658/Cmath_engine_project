@@ -1,0 +1,194 @@
+# =============================================================================
+# Library/conversions.math — Standard Same-Unit-Type Conversions
+# =============================================================================
+
+[conversions]
+<[arith]
+<[trig]
+<[units]
+
+# 1. Universal Same-Unit-Group Infix Conversion Operator `"in"` (`:<42`)
+(val:real, T) in (unit:real, T) :<42 -> real, T = @div(val, unit)
+
+# 2. Distance Same-Unit Conversions (`distance` group: km, m, cm, mm, um, nm, mi, nmi, yd, ft, inch)
+(x:real, distance) to_km   :90 -> real, none = x / 1000
+(x:real, distance) to_m    :90 -> real, none = x
+(x:real, distance) to_cm   :90 -> real, none = x * 100
+(x:real, distance) to_mm   :90 -> real, none = x * 1000
+(x:real, distance) to_um   :90 -> real, none = x * (10 ^ 6)
+(x:real, distance) to_nm   :90 -> real, none = x * (10 ^ 9)
+(x:real, distance) to_mi   :90 -> real, none = x / 1609.344
+(x:real, distance) to_nmi  :90 -> real, none = x / 1852
+(x:real, distance) to_yd   :90 -> real, none = x / 0.9144
+(x:real, distance) to_ft   :90 -> real, none = x / 0.3048
+(x:real, distance) to_inch :90 -> real, none = x / 0.0254
+
+km_to_m(x)  = x * 1000
+m_to_cm(x)  = x * 100
+cm_to_m(x)  = x * 0.01
+m_to_mm(x)  = x * 1000
+mm_to_m(x)  = x * 0.001
+m_to_um(x)  = x * (10 ^ 6)
+um_to_m(x)  = x * (10 ^ -6)
+m_to_nm(x)  = x * (10 ^ 9)
+nm_to_m(x)  = x * (10 ^ -9)
+km_to_cm(x) = x * 100000
+cm_to_km(x) = x / 100000
+km_to_mm(x) = x * (10 ^ 6)
+mm_to_km(x) = x * (10 ^ -6)
+km_to_nm(x) = x * (10 ^ 12)
+nm_to_km(x) = x * (10 ^ -12)
+cm_to_mm(x) = x * 10
+mm_to_cm(x) = x * 0.1
+mm_to_um(x) = x * 1000
+um_to_mm(x) = x * 0.001
+um_to_nm(x) = x * 1000
+nm_to_um(x) = x * 0.001
+mi_to_m(x)  = x * 1609.344
+mi_to_km(x) = x * 1.609344
+km_to_mi(x) = x / 1.609344
+yd_to_m(x)  = x * 0.9144
+m_to_yd(x)  = x / 0.9144
+ft_to_in(x) = x * 12
+in_to_ft(x) = x / 12
+m_to_in(x)  = x / 0.0254
+in_to_m(x)  = x * 0.0254
+
+# 3. Angle Same-Unit Conversions (`angle` group: rad, deg, arcmin, arcsec)
+(a:real, angle) to_rad    :90 -> real, none = a
+(a:real, angle) to_deg    :90 -> real, none = a * 180 / π
+(a:real, angle) to_arcmin :90 -> real, none = a * (180 * 60) / π
+(a:real, angle) to_arcsec :90 -> real, none = a * (180 * 3600) / π
+
+deg_to_rad(d)    = d * π / 180
+rad_to_deg(r)    = r * 180 / π
+deg_to_arcmin(d) = d * 60
+arcmin_to_deg(m) = m / 60
+deg_to_arcsec(d) = d * 3600
+arcsec_to_deg(s) = s / 3600
+rad_to_arcsec(r) = r * (180 * 3600) / π
+arcsec_to_rad(s) = s * π / (180 * 3600)
+
+# 4. Mass Same-Unit Conversions (`mass` group: kg, gram, mg, ton, lb, oz)
+(m:real, mass) to_kg   :90 -> real, none = m
+(m:real, mass) to_gram :90 -> real, none = m * 1000
+(m:real, mass) to_mg   :90 -> real, none = m * (10 ^ 6)
+(m:real, mass) to_ton  :90 -> real, none = m / 1000
+(m:real, mass) to_lb   :90 -> real, none = m / 0.45359237
+(m:real, mass) to_oz   :90 -> real, none = m / 0.028349523125
+
+kg_to_g(x)   = x * 1000
+g_to_kg(x)   = x * 0.001
+kg_to_mg(x)  = x * (10 ^ 6)
+mg_to_kg(x)  = x * (10 ^ -6)
+g_to_mg(x)   = x * 1000
+mg_to_g(x)   = x * 0.001
+ton_to_kg(x) = x * 1000
+kg_to_ton(x) = x * 0.001
+lb_to_oz(x)  = x * 16
+oz_to_lb(x)  = x / 16
+g_to_oz(x)   = x / 28.349523125
+oz_to_g(x)   = x * 28.349523125
+
+# 5. Time Same-Unit Conversions (`time` group: day, hr, min_t, sec, ms, us, ns)
+(t:real, time) to_sec :90 -> real, none = t
+(t:real, time) to_ms  :90 -> real, none = t * 1000
+(t:real, time) to_us  :90 -> real, none = t * (10 ^ 6)
+(t:real, time) to_ns  :90 -> real, none = t * (10 ^ 9)
+(t:real, time) to_min :90 -> real, none = t / 60
+(t:real, time) to_hr  :90 -> real, none = t / 3600
+(t:real, time) to_day :90 -> real, none = t / 86400
+
+hr_to_min(x)  = x * 60
+min_to_hr(x)  = x / 60
+hr_to_sec(x)  = x * 3600
+sec_to_hr(x)  = x / 3600
+min_to_sec(x) = x * 60
+sec_to_min(x) = x / 60
+sec_to_ms(x)  = x * 1000
+ms_to_sec(x)  = x * 0.001
+ms_to_us(x)   = x * 1000
+us_to_ms(x)   = x * 0.001
+us_to_ns(x)   = x * 1000
+ns_to_us(x)   = x * 0.001
+sec_to_ns(x)  = x * (10 ^ 9)
+ns_to_sec(x)  = x * (10 ^ -9)
+day_to_hr(x)  = x * 24
+hr_to_day(x)  = x / 24
+day_to_sec(x) = x * 86400
+sec_to_day(x) = x / 86400
+
+# 6. Speed Same-Unit Conversions (`speed` group: mps, kph, mph, knots)
+(v:real, speed) to_mps   :90 -> real, none = v
+(v:real, speed) to_kph   :90 -> real, none = v * 3.6
+(v:real, speed) to_mph   :90 -> real, none = v / 0.44704
+(v:real, speed) to_knots :90 -> real, none = v * (3600 / 1852)
+
+kph_to_mps(x)   = x / 3.6
+mph_to_mps(x)   = x * 0.44704
+kph_to_mph(x)   = x / 1.609344
+mph_to_kph(x)   = x * 1.609344
+knots_to_mps(x) = x * (1852 / 3600)
+mps_to_knots(x) = x * (3600 / 1852)
+knots_to_kph(x) = x * 1.852
+kph_to_knots(x) = x / 1.852
+
+# 7. Pressure Same-Unit Conversions (`pressure` group: Pa, kPa, MPa, bar, atm, psi, torr)
+(p:real, pressure) to_Pa   :90 -> real, none = p
+(p:real, pressure) to_kPa  :90 -> real, none = p / 1000
+(p:real, pressure) to_MPa  :90 -> real, none = p / 1000000
+(p:real, pressure) to_bar  :90 -> real, none = p / 100000
+(p:real, pressure) to_atm  :90 -> real, none = p / 101325
+(p:real, pressure) to_psi  :90 -> real, none = p / 6894.757293168
+(p:real, pressure) to_torr :90 -> real, none = p * (760 / 101325)
+
+atm_to_Pa(x)   = x * 101325
+Pa_to_atm(x)   = x / 101325
+bar_to_Pa(x)   = x * 100000
+Pa_to_bar(x)   = x / 100000
+kPa_to_Pa(x)   = x * 1000
+Pa_to_kPa(x)   = x / 1000
+psi_to_Pa(x)   = x * 6894.757293168
+Pa_to_psi(x)   = x / 6894.757293168
+atm_to_psi(x)  = x * (101325 / 6894.757293168)
+psi_to_atm(x)  = x * (6894.757293168 / 101325)
+atm_to_bar(x)  = x * 1.01325
+bar_to_atm(x)  = x / 1.01325
+atm_to_torr(x) = x * 760
+torr_to_atm(x) = x / 760
+
+# 8. Energy & Power Same-Unit Conversions (`energy` & `power` groups)
+(e_v:real, energy) to_J    :90 -> real, none = e_v
+(e_v:real, energy) to_kJ   :90 -> real, none = e_v / 1000
+(e_v:real, energy) to_MJ   :90 -> real, none = e_v / 1000000
+(e_v:real, energy) to_cal  :90 -> real, none = e_v / 4.184
+(e_v:real, energy) to_kcal :90 -> real, none = e_v / 4184
+(e_v:real, energy) to_Wh   :90 -> real, none = e_v / 3600
+(e_v:real, energy) to_kWh  :90 -> real, none = e_v / 3600000
+(e_v:real, energy) to_eV   :90 -> real, none = e_v / (1.602176634 * (10 ^ -19))
+
+(p_v:real, power)  to_W    :90 -> real, none = p_v
+(p_v:real, power)  to_kW   :90 -> real, none = p_v / 1000
+(p_v:real, power)  to_MW   :90 -> real, none = p_v / 1000000
+(p_v:real, power)  to_hp   :90 -> real, none = p_v / 745.699872
+
+kJ_to_J(x)    = x * 1000
+J_to_kJ(x)    = x / 1000
+kcal_to_J(x)  = x * 4184
+J_to_kcal(x)  = x / 4184
+kcal_to_kJ(x) = x * 4.184
+kJ_to_kcal(x) = x / 4.184
+cal_to_J(x)   = x * 4.184
+J_to_cal(x)   = x / 4.184
+kWh_to_J(x)   = x * 3600000
+J_to_kWh(x)   = x / 3600000
+Wh_to_J(x)    = x * 3600
+J_to_Wh(x)    = x / 3600
+kW_to_W(x)    = x * 1000
+W_to_kW(x)    = x / 1000
+MW_to_W(x)    = x * 1000000
+W_to_MW(x)    = x / 1000000
+hp_to_W(x)    = x * 745.699872
+W_to_hp(x)    = x / 745.699872
+hp_to_kW(x)   = x * 0.745699872
+kW_to_hp(x)   = x / 0.745699872

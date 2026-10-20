@@ -1,11 +1,12 @@
 /*
- * mathc.c — Standalone Build-Time Source -> Binary Image & C-Header Compiler
+ * mathc.c — Standalone Build-Time Source Compiler & Dependency-Resolved Linker
  *
  * Purpose:
- *   Build-time CLI utility that reads one or more extension source files on the
- *   frontend side (completely agnostic to file extension — `.math`, `.txt`, or
- *   extensionless), feeds their raw text into `ext_load_str()`, serializes the
- *   compiled binary image in memory via `ext_save_mathc_mem()`, and writes
+ *   Build-time CLI utility that reads one or more `.math` extension source files
+ *   in ANY order (no numerical filename prefixes required), compiles each file
+ *   into `ExtBuildCtx` via `ext_compile_unit()`, links all modules in topological
+ *   dependency order (`<[dep]`) via `ext_link_units()`, serializes the single
+ *   unified `.mathc` binary image in memory via `ext_save_mathc_mem()`, and writes
  *   `<output_image>` and optionally `<stdlib_precompiled.h>`.
  *
  * Usage:
@@ -19,9 +20,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-static MemArena g_mem;
-static SymTable g_sym;
-static uint8_t  g_mathc_buf[MATHC_MAX_IMAGE_BYTES];
+static MemArena    g_mem;
+static SymTable    g_sym;
+static ExtBuildCtx g_build;
+static uint8_t     g_mathc_buf[MATHC_MAX_IMAGE_BYTES];
 
 static char *read_file_text(const char *path) {
     FILE *fp = fopen(path, "rb");
@@ -92,19 +94,27 @@ int main(int argc, char **argv) {
 
     mem_init(&g_mem);
     sym_init(&g_sym);
+    ext_build_init(&g_build);
 
+    /* Phase 1: Compile (stage module units & dependencies from each input file in any order) */
     for (int i = 4; i < argc; ++i) {
         char *raw_text = read_file_text(argv[i]);
         if (!raw_text) {
             fprintf(stderr, "mathc error: cannot read '%s'\n", argv[i]);
             return 1;
         }
-        bool ok = ext_load_str(&g_mem, &g_sym, raw_text);
+        bool ok = ext_compile_unit(&g_mem, &g_sym, &g_build, raw_text);
         free(raw_text);
         if (!ok) {
             fprintf(stderr, "mathc compile error in '%s': %s\n", argv[i], g_mem.err_msg);
             return 1;
         }
+    }
+
+    /* Phase 2: Link (topologically sort `<[dep]` graph and compile all modules into unified image) */
+    if (!ext_link_units(&g_mem, &g_sym, &g_build)) {
+        fprintf(stderr, "mathc link error: %s\n", g_mem.err_msg);
+        return 1;
     }
 
     size_t mathc_bytes = ext_save_mathc_mem(&g_mem, &g_sym, g_mathc_buf, sizeof(g_mathc_buf));
@@ -121,8 +131,8 @@ int main(int argc, char **argv) {
     }
     fclose(fp);
 
-    printf("[mathc] Compiled %d source file(s) -> '%s' (%zu bytes: %u modules, %u types, %u overloads, %u AST nodes)\n",
-           argc - 4, out_mathc, mathc_bytes,
+    printf("[mathc] Compiled & linked %d source file(s) (%u module units) -> '%s' (%zu bytes: %u modules, %u types, %u overloads, %u AST nodes)\n",
+           argc - 4, (unsigned)g_build.unit_count, out_mathc, mathc_bytes,
            g_sym.mod_count, g_sym.type_count - 1, g_sym.overload_count, g_mem.perm_ast_count);
 
     if (out_hdr) {

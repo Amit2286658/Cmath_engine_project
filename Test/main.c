@@ -970,8 +970,18 @@ static const TestCase k_tests[] = {
       "[Op into] '5 into 5i' combines real and iota -> complex 5 + 5i" },
     { "5i into 5", "5 + 5i", "complex",
       "[Op into] '5i into 5' combines iota and real -> complex 5 + 5i" },
-    { "5 into 5", "5 + 5i", "complex",
-      "[Op into] '5 into 5' combines two reals -> complex 5 + 5i" },
+    { "5 into 5", "10", "real",
+      "[Op into] Likewise entities/units '5 into 5' returns sum -> 10" },
+    { "50m into 20cm", "50.2", "real",
+      "[Op into] Likewise entities/units '50m into 20cm' returns sum -> 50.2 [distance]" },
+    { "5i into 3i", "8i", "iota",
+      "[Op into] Likewise imaginary '5i into 3i' returns sum -> 8i" },
+    { "(1 + 2i) into (3 + 4i)", "4 + 6i", "complex",
+      "[Op into] Likewise complex '(1 + 2i) into (3 + 4i)' returns sum -> 4 + 6i" },
+    { "vec2(1, 2) into vec2(3, 4)", "vec2(x=4, y=6)", "vec2",
+      "[Op into] Likewise struct 'vec2(1, 2) into vec2(3, 4)' returns sum -> vec2(x=4, y=6)" },
+    { "vec3(1, 2, 3) into vec3(4, 5, 6)", "vec3(x=5, y=7, z=9)", "vec3",
+      "[Op into] Likewise struct 'vec3(1, 2, 3) into vec3(4, 5, 6)' returns sum -> vec3(x=5, y=7, z=9)" },
     { "2 into (3 + 4i)", "5 + 4i", "complex",
       "[Op into] '2 into (3 + 4i)' adds real component into complex -> 5 + 4i" },
     { "3i into (3 + 4i)", "3 + 7i", "complex",
@@ -1437,10 +1447,160 @@ int main(void) {
     free(mut_buf);
     bool null_guard_ok = !eng_eval(NULL, "1 + 1", &v) && !eng_set_module(NULL, "units", false);
     bug10_ok = bug10_ok && null_guard_ok && (rejected_cnt + accepted_cnt == 3000) && (rejected_cnt > 2500);
-    printf("    - [Bug 10] 3,000x mutated .mathc fuzz + NULL   : %s (%d rejected, %d safe-eval)\n",
+    printf("    - [Bug 10] 3,000x mutated .mathc fuzz + NULL   : %s (%d rejected, %d safe-eval)\n\n",
            bug10_ok ? "PASS" : "FAIL", rejected_cnt, accepted_cnt);
 
+    /* 8. Verify Separated Compilation & Dependency-Resolved Linking + Duplicate Rejection */
+    printf("[8] Separated Compilation & Dependency-Resolved Linking (`user_compile_unit` / `user_link_ext`):\n");
+    /* 8a. Compile 3 dependent modules in REVERSE dependency order:
+     *     [mod_aero] -> depends on <[mod_thermo] and <[mod_base]
+     *     [mod_thermo] -> depends on <[mod_base]
+     *     [mod_base] -> depends on <[arith]
+     */
+    const char *mod_aero_src =
+        "[mod_aero]\n"
+        "<[mod_thermo]\n"
+        "<[mod_base]\n"
+        "aero_lift(v) = thermo_scale(v) + base_k\n";
+    const char *mod_thermo_src =
+        "[mod_thermo]\n"
+        "<[mod_base]\n"
+        "thermo_scale(x) = base_fn(x) * 3\n";
+    const char *mod_base_src =
+        "[mod_base]\n"
+        "<[arith]\n"
+        "base_k = 7\n"
+        "base_fn(x) = x + base_k\n";
+
+    UserBuildCtx ubuild;
+    user_build_init(&ubuild);
+    const uint8_t *linked_mathc = NULL;
+    size_t linked_mathc_len = 0;
+    bool link_order_ok = user_compile_unit(&g_eng, &ubuild, mod_aero_src) &&
+                         user_compile_unit(&g_eng, &ubuild, mod_thermo_src) &&
+                         user_compile_unit(&g_eng, &ubuild, mod_base_src) &&
+                         user_link_ext(&g_eng, &ubuild, &linked_mathc, &linked_mathc_len) &&
+                         (linked_mathc != NULL && linked_mathc_len > sizeof(MathcHeader)) &&
+                         eng_eval(&g_eng, "aero_lift(3)", &v) &&
+                         (val_get_f64(&g_eng.mem, v) == 37.0);
+    printf("    - Out-of-order compile+link ([aero]->[thermo]->[base]) : %s (aero_lift(3) == 37, %zuB .mathc)\n",
+           link_order_ok ? "PASS" : "FAIL", linked_mathc_len);
+
+    /* 8b. Reject duplicate named module load (`[mod_base]` already loaded) */
+    bool dup_mod_guard = !user_compile_ext(&g_eng, mod_base_src, NULL, NULL);
+    printf("    - Duplicate named module load ([mod_base] 2x)          : %s -> \"%s\"\n",
+           dup_mod_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
+
+    /* 8c. Reject duplicate headerless `[default]` declaration load */
+    bool dup_def_guard = !user_compile_ext(&g_eng, "\"anon_mod_fn\"(x:real) -> real = x * 3\n", NULL, NULL);
+    printf("    - Duplicate [default] raw-text reload                  : %s -> \"%s\"\n",
+           dup_def_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
+
+    /* 8d. Reject missing module dependency (`<[no_such_mod]`) with transactional rollback */
+    bool missing_dep_guard = !user_compile_ext(&g_eng, "[mod_orphan]\n<[no_such_mod]\norphan_fn(x) = x\n", NULL, NULL) &&
+                             !eng_eval(&g_eng, "orphan_fn(1)", &v);
+    printf("    - Missing module dependency (<[no_such_mod])           : %s -> \"%s\"\n",
+           missing_dep_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
+
+    /* 8e. Reject circular module dependency (`[cyc_a] <[cyc_b]` & `[cyc_b] <[cyc_a]`) */
+    const char *cyc_srcs[2] = {
+        "[cyc_a]\n<[cyc_b]\na_fn(x) = b_fn(x)\n",
+        "[cyc_b]\n<[cyc_a]\nb_fn(x) = a_fn(x)\n"
+    };
+    bool cycle_dep_guard = !user_compile_and_link(&g_eng, cyc_srcs, 2, NULL, NULL);
+    printf("    - Circular module dependency ([cyc_a] <-> [cyc_b])     : %s -> \"%s\"\n\n",
+           cycle_dep_guard ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
+
+    /* 9. Verify Independent Parallel In-Memory Sessions & Order-Tagged Raw-Text Snapshots */
+    printf("[9] Parallel In-Memory Sessions & Order-Tagged Raw-Text Snapshots (`eng_session_*`):\n");
+    int sess_a = eng_session_open(&g_eng);
+    int sess_b = eng_session_open(&g_eng);
+    bool sess_open_ok = (sess_a >= 0 && sess_b >= 0 && sess_a != sess_b);
+
+    Value va1 = 0, va2 = 0, va3 = 0, vb1 = 0, vb2 = 0;
+    /* Interleave evaluations across Session A and Session B */
+    bool sa_step1 = eng_session_eval(&g_eng, sess_a,
+                                     "dist_x : real, distance := 50m ; factor := 3 ; q := queue<real, distance>(10m, 20m) ; dist_x",
+                                     &va1) && (val_get_f64(&g_eng.mem, va1) == 50.0);
+    bool sb_step1 = eng_session_eval(&g_eng, sess_b,
+                                     "dist_x := 999 ; pts := stack<vec2>(vec2(1, 2), vec2(5, 8)) ; dist_x",
+                                     &vb1) && (val_get_f64(&g_eng.mem, vb1) == 999.0);
+    bool sa_step2 = eng_session_eval(&g_eng, sess_a,
+                                     "scale_fn := a => a * factor ; q.enqueue(30m) ; dist_x += q.dequeue() ; dist_x",
+                                     &va2) && (val_get_f64(&g_eng.mem, va2) == 60.0);
+    bool sb_step2 = eng_session_eval(&g_eng, sess_b,
+                                     "top_pt := pts.pop() ; dist_x += top_pt.y ; dist_x",
+                                     &vb2) && (val_get_f64(&g_eng.mem, vb2) == 1007.0);
+
+    /* Load a new user module while sessions are live -> independent of sessions! */
+    bool sess_indep_mod = user_compile_ext(&g_eng, "[sess_helper_mod]\n<[arith]\nboost_ten(x) = x + 10\n", NULL, NULL);
+    bool sa_step3 = eng_session_eval(&g_eng, sess_a,
+                                     "factor = 4 ; boost_ten(scale_fn(5))",
+                                     &va3) && (val_get_f64(&g_eng.mem, va3) == 30.0);
+
+    /* Verify stateless `eng_eval` remains isolated from session variables, and type/unit locks persist in Session A */
+    bool stateless_isolated = !eng_eval(&g_eng, "dist_x", &v);
+    bool sa_lock_enforced   = !eng_session_eval(&g_eng, sess_a, "dist_x += 60 deg", &v);
+    bool parallel_sess_ok   = sess_open_ok && sa_step1 && sb_step1 && sa_step2 && sb_step2 &&
+                              sess_indep_mod && sa_step3 && stateless_isolated && sa_lock_enforced &&
+                              (eng_session_snapshot_count(&g_eng, sess_a) == 3) &&
+                              (eng_session_snapshot_count(&g_eng, sess_b) == 2);
+    printf("    - Parallel isolated sessions (Session A & Session B)   : %s (sA=30, sB=1007, locks & closures preserved)\n",
+           parallel_sess_ok ? "PASS" : "FAIL");
+
+    /* Iteratively extract raw-text order-tagged snapshots from Session A */
+    char saved_snaps[3][ENG_SNAPSHOT_MAX_LEN];
+    uint16_t iter_cnt = 0;
+    const char *raw_snap = NULL;
+    while ((raw_snap = eng_session_snapshot_next(&g_eng, sess_a)) != NULL && iter_cnt < 3) {
+        snprintf(saved_snaps[iter_cnt], ENG_SNAPSHOT_MAX_LEN, "%s", raw_snap);
+        printf("      Snapshot[%u] : %s\n", (unsigned)(iter_cnt + 1), saved_snaps[iter_cnt]);
+        iter_cnt++;
+    }
+    bool snap_iter_ok = (iter_cnt == 3) &&
+                        (strncmp(saved_snaps[0], "MSP1|seq:1|", 11) == 0) &&
+                        (strncmp(saved_snaps[1], "MSP1|seq:2|", 11) == 0) &&
+                        (strncmp(saved_snaps[2], "MSP1|seq:3|", 11) == 0);
+
+    /* Close Session A in memory, then restore it from out-of-order snapshots [seq:3, seq:1, seq:2] */
+    (void)eng_session_close(&g_eng, sess_a);
+    const char *shuffled_snaps[3] = { saved_snaps[2], saved_snaps[0], saved_snaps[1] };
+    int sess_restored = eng_session_restore(&g_eng, shuffled_snaps, 3);
+    Value vr1 = 0, vr2 = 0;
+    bool r_ok1 = (sess_restored >= 0) &&
+                 eng_session_eval(&g_eng, sess_restored, "dist_x + q.dequeue()", &vr1) &&
+                 (val_get_f64(&g_eng.mem, vr1) == 80.0) &&
+                 (strcmp(eng_unit_name(&g_eng, eng_val_unit(&g_eng, vr1), (char[32]){0}, 32), "distance") == 0);
+    bool r_ok2 = r_ok1 &&
+                 eng_session_eval(&g_eng, sess_restored, "scale_fn(10) + (q.dequeue() to_m)", &vr2) &&
+                 (val_get_f64(&g_eng.mem, vr2) == 70.0) &&
+                 (eng_session_snapshot_count(&g_eng, sess_restored) == 5);
+    bool restore_continue_ok = r_ok1 && r_ok2;
+    printf("    - Iterative snapshot export & out-of-order restore     : %s (continued seq:4->80m, seq:5->70)\n",
+           (snap_iter_ok && restore_continue_ok) ? "PASS" : "FAIL");
+
+    /* Verify incomplete/missing/cross-session/tampered snapshots are rejected */
+    const char *missing_seq2[2] = { saved_snaps[0], saved_snaps[2] };
+    const char *missing_seq1[2] = { saved_snaps[1], saved_snaps[2] };
+    const char *cross_sess[2]   = { saved_snaps[0], eng_session_snapshot_at(&g_eng, sess_b, 1) };
+    char tampered_snap[ENG_SNAPSHOT_MAX_LEN];
+    snprintf(tampered_snap, sizeof(tampered_snap), "%s", saved_snaps[0]);
+    tampered_snap[strlen(tampered_snap) - 1] ^= 1;
+    const char *tampered_arr[1] = { tampered_snap };
+
+    bool snap_guards_ok = (eng_session_restore(&g_eng, missing_seq2, 2) < 0) &&
+                          (eng_session_restore(&g_eng, missing_seq1, 2) < 0) &&
+                          (eng_session_restore(&g_eng, cross_sess,   2) < 0) &&
+                          (eng_session_restore(&g_eng, tampered_arr, 1) < 0);
+    printf("    - Incomplete/gap/cross-session/tampered snapshot guard : %s -> \"%s\"\n\n",
+           snap_guards_ok ? "REJECTED AS EXPECTED" : "UNEXPECTED", eng_last_error(&g_eng));
+
+    (void)eng_session_close(&g_eng, sess_b);
+    (void)eng_session_close(&g_eng, sess_restored);
+
     return (passed == total && blank_ok && load_mathc_ok && vec_type_guard &&
+            link_order_ok && dup_mod_guard && dup_def_guard && missing_dep_guard && cycle_dep_guard &&
+            parallel_sess_ok && snap_iter_ok && restore_continue_ok && snap_guards_ok &&
             same_line_semi_guard && scope_isolation_guard && multi_else_guard && else_if_guard &&
             kw_var_guard && kw_tag_guard &&
             unlike_unit_guard && concrete_real_guard && concrete_real_dist_unit_guard &&

@@ -44,6 +44,7 @@ void mem_rewind_scratch(MemArena *mem) {
     mem->jump_active    = 0;
     mem->jump_target_id = 0;
     mem->jump_val       = val_void();
+    mem->fn_src_count   = 0;
     mem->eval_depth     = 0;
     mem->eval_steps     = 0;
     for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {

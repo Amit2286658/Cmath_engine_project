@@ -2,20 +2,30 @@
  * math_engine.h — Top-Level Engine Wrapper (Auto-Boots Precompiled Standard Library)
  *
  * Architecture Overview:
- *   User Program (`main.c`)
+ *   User Program (`Test/main.c`)
  *        │
- *        ├──► [math_engine.h / math_engine.c]  (Top-Level Engine Wrapper)
- *        │       │   Automatically loads precompiled bootstrap & standard `.math`
- *        │       │   modules (`stdlib_precompiled.h` / `Library/stdlib.mathc`)
- *        │       │   inside `eng_init()` with zero filesystem or path logic.
- *        │       ├──► [mem_arena.h/.c]   (Isolated Memory Arena & 8B/12B Value Packing)
- *        │       ├──► [sym_table.h/.c]   (Dynamic Types, Units, Structs, Modules, Overloads)
- *        │       ├──► [lexer.h/.c]       (Pattern-Driven Consuming Types & Syntax Tokens)
- *        │       ├──► [parser.h/.c]      (Top-Down Operator Precedence Pratt Parser)
- *        │       ├──► [ext_loader.h/.c]  (In-Memory `.math` Compiler & `.mathc` Serializer)
- *        │       └──► [evaluator.h/.c]   (Type- & Unit-Dispatched AST Evaluator & `@` Intrinsics)
+ *        ├──► [Core/Headers + Core/Code]  (Core Engine Pipeline)
+ *        │       ├──► [math_engine.h/.c]  Top-Level Engine Wrapper & Stateless Eval
+ *        │       ├──► [mem_arena.h/.c]    Isolated Memory Arena & 8B NaN-Boxed Values
+ *        │       ├──► [sym_table.h/.c]    Dynamic Types, Units, Structs, Modules, Overloads
+ *        │       ├──► [lexer.h/.c]        Pattern-Driven Consuming Types & Syntax Tokens
+ *        │       ├──► [parser.h/.c]       Top-Down Operator Precedence Pratt Parser
+ *        │       └──► [evaluator.h/.c]    Type- & Unit-Dispatched AST Evaluator
  *        │
- *        └──► [user_loader.h / user_loader.c]  (In-Memory User `.math` / `.mathc` API)
+ *        ├──► [Core/compile]              (Compilation, Linking, `.mathc` Binary & User Loader)
+ *        │       ├──► [compiler.h/.c]     Module Unit Stager & Declaration Compiler
+ *        │       ├──► [linker.h/.c]       Topological `<[dep]` Dependency Linker
+ *        │       ├──► [mathc_bin.h/.c]    `.mathc` Binary Serializer, Validator & Loader
+ *        │       ├──► [user_loader.h/.c]  Host-Facing User Extension Compile/Link/Load API
+ *        │       └──► [ext_loader.h]      Umbrella Header for `compiler`, `linker`, `mathc_bin`
+ *        │
+ *        ├──► [Core/session]              (Parallel In-Memory Sessions & Snapshots)
+ *        │       ├──► [session.h/.c]      Parallel Session Lifecycle & `eng_session_eval`
+ *        │       └──► [snapshot.h/.c]     Order-Tagged Raw-Text Snapshots & `eng_session_restore`
+ *        │
+ *        └──► [Core/lib]                  (Delegates & Hardcoded Grammar Rules)
+ *                ├──► [delegate/delegate.h/.c]  C `@<intrinsic>` Implementations
+ *                └──► [hardcode/hardcode.h/.c]  Isolated Hardcoded Grammar & Ergonomics
  */
 
 #ifndef MATH_ENGINE_H
@@ -27,23 +37,30 @@
 #include "parser.h"
 #include "ext_loader.h"
 #include "evaluator.h"
+#include "session.h"
+#include "snapshot.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Unified Engine Context combining the isolated Memory Arena and Symbol Registry */
-typedef struct {
-    MemArena mem;
-    SymTable sym;
-} Engine;
+/* Unified Engine Context combining Arena, Symbol Registry & Parallel Sessions */
+struct Engine {
+    MemArena   mem;
+    SymTable   sym;
+    EngSession sessions[ENG_MAX_SESSIONS];
+};
+
+/* ============================================================================
+ * 1. CORE ENGINE INITIALIZATION, MODULE TOGGLING & STATELESS EVALUATION
+ * ============================================================================ */
 
 /*
  * Initialize the Engine and INTERNALLY load all bootstrap & predefined `.math`
  * modules (`[boot_syntax]`, `[boot_types]`, `[boot_control]`, `[arith]`,
- * `[trig]`, `[complex_ext]`, `[geom_ext]`, `[algebra]`, `[units]`, `[physics]`,
- * `[chemistry]`) from the embedded precompiled `.mathc` image in O(1) `memcpy`
- * time with zero filesystem access.
+ * `[trig]`, `[complex_ext]`, `[geom_ext]`, `[algebra]`, `[calculus]`, `[units]`,
+ * `[conversions]`, `[physics]`, `[chemistry]`, `[biology]`) from the embedded
+ * precompiled `.mathc` image in O(1) `memcpy` time with zero filesystem access.
  */
 bool        eng_init(Engine *eng);
 
@@ -64,11 +81,19 @@ bool        eng_register_extern(Engine *eng, const char *name,
 bool        eng_set_module(Engine *eng, const char *mod_name, bool enabled);
 bool        eng_is_module_active(const Engine *eng, const char *mod_name);
 
-/* Parse and evaluate an expression string using currently active modules */
+/* Stateless one-shot evaluation: parse and evaluate an expression string */
 bool        eng_eval(Engine *eng, const char *expr, Value *out_val);
 
-/* Format any Value (primitive, string, vector, or nested struct) to a C string buffer */
+/* ============================================================================
+ * 2. VALUE FORMATTING & TYPE / UNIT / ERROR INTROSPECTION
+ * ============================================================================ */
+
+/* Format any Value (primitive, string, vector, matrix, or nested struct) to a C string */
 void        eng_format_value(const Engine *eng, Value val, char *buf, size_t buf_cap);
+
+/* Format a multidimensional matrix at `hdr_idx` (shared with `Core/session/snapshot.c`) */
+void        eng_format_mat_at(const Engine *eng, uint16_t hdr_idx, bool high_prec,
+                              char *buf, size_t cap);
 
 /* Inspect Value Entity Type, Unit Type & Engine error state */
 uint16_t    eng_val_type(const Engine *eng, Value v);

@@ -1,0 +1,110 @@
+# =============================================================================
+# Library/units.math — SI & Imperial Unit Groups & Postfix Suffixes
+# =============================================================================
+
+[units]
+<[arith]
+<[trig]
+<[complex_ext]
+
+# 1. Angle Unit Group (`angle`, normalized to SI radians) + Dimensionless Ratios
+(d) deg    :95 -> real, angle = d * π / 180
+(d) "°"    :95 -> real, angle = d * π / 180
+(r) rad    :95 -> real, angle = r
+(m) arcmin :95 -> real, angle = m * π / (180 * 60)
+(s) arcsec :95 -> real, angle = s * π / (180 * 3600)
+(x) pct    :95                = x * 0.01
+(x) dB     :95                = 10 ^ (x / 20)
+(x) dBm    :95                = 0.001 * (10 ^ (x / 10))
+
+deg2rad(deg) -> real, angle = deg * π / 180
+rad2deg(rad)                = rad * 180 / π
+
+# 2. Distance Unit Group (`distance`, normalized to SI meters `m`)
+(x)      m    :95 -> real, distance = x
+(x:iota) m    :95 -> iota, distance = @raw(x)
+(x)      km   :95 -> real, distance = x * 1000
+(x:iota) km   :95 -> iota, distance = @mul(x, 1000)
+(x)      cm   :95 -> real, distance = x * 0.01
+(x:iota) cm   :95 -> iota, distance = @mul(x, 0.01)
+(x)      mm   :95 -> real, distance = x * 0.001
+(x:iota) mm   :95 -> iota, distance = @mul(x, 0.001)
+(x)      im   :95 -> iota, distance = @raw(x)
+(x)      ikm  :95 -> iota, distance = @mul(x, 1000)
+(x)      icm  :95 -> iota, distance = @mul(x, 0.01)
+(x)      imm  :95 -> iota, distance = @mul(x, 0.001)
+(x)      um   :95 -> real, distance = x * (10 ^ -6)
+(x)      nm   :95 -> real, distance = x * (10 ^ -9)
+(x)      mi   :95 -> real, distance = x * 1609.344
+(x)      nmi  :95 -> real, distance = x * 1852
+(x)      yd   :95 -> real, distance = x * 0.9144
+(x)      ft   :95 -> real, distance = x * 0.3048
+(x)      inch :95 -> real, distance = x * 0.0254
+
+m_to_km(m)                    = m / 1000
+m_to_ft(m)                    = m / 0.3048
+m_to_mi(m)                    = m / 1609.344
+ft_to_m(ft_v) -> real, distance = ft_v * 0.3048
+in_to_cm(in_v)                = in_v * 2.54
+cm_to_in(cm_v)                = cm_v / 2.54
+
+# 3. Mass Unit Group (`mass`, normalized to SI kilograms `kg`)
+(x) kg   :95 -> real, mass = x
+(x) gram :95 -> real, mass = x * 0.001
+(x) mg   :95 -> real, mass = x * (10 ^ -6)
+(x) ton  :95 -> real, mass = x * 1000
+(x) lb   :95 -> real, mass = x * 0.45359237
+(x) oz   :95 -> real, mass = x * 0.028349523125
+(x) amu  :95 -> real, mass = x * 1.66053906660 * (10 ^ -27)
+
+kg_to_lb(kg_v)                = kg_v / 0.45359237
+lb_to_kg(lb_v) -> real, mass  = lb_v * 0.45359237
+
+# 4. Time Unit Group (`time`, normalized to SI seconds `s`)
+(x) ms    :95 -> real, time = x * 0.001
+(x) us    :95 -> real, time = x * (10 ^ -6)
+(x) ns    :95 -> real, time = x * (10 ^ -9)
+(x) sec   :95 -> real, time = x
+(x) min_t :95 -> real, time = x * 60
+(x) hr    :95 -> real, time = x * 3600
+(x) day   :95 -> real, time = x * 86400
+
+# 5. Speed Unit Group (`speed`, normalized to SI `m/s`)
+(x) mps   :95 -> real, speed = x
+(x) kph   :95 -> real, speed = x / 3.6
+(x) mph   :95 -> real, speed = x * 0.44704
+(x) knots :95 -> real, speed = x * (1852 / 3600)
+
+mps_to_kph(v) = v * 3.6
+mps_to_mph(v) = v / 0.44704
+
+# 6. Pressure Unit Group (`pressure`, normalized to SI Pascals `Pa`)
+(x) Pa   :95 -> real, pressure = x
+(x) kPa  :95 -> real, pressure = x * 1000
+(x) MPa  :95 -> real, pressure = x * 1000000
+(x) bar  :95 -> real, pressure = x * 100000
+(x) atm  :95 -> real, pressure = x * 101325
+(x) psi  :95 -> real, pressure = x * 6894.757293168
+(x) torr :95 -> real, pressure = x * (101325 / 760)
+
+# 7. Energy (`energy`, SI Joules `J`) & Power (`power`, SI Watts `W`) Unit Groups
+(x) J    :95 -> real, energy = x
+(x) kJ   :95 -> real, energy = x * 1000
+(x) MJ   :95 -> real, energy = x * 1000000
+(x) cal  :95 -> real, energy = x * 4.184
+(x) kcal :95 -> real, energy = x * 4184
+(x) Wh   :95 -> real, energy = x * 3600
+(x) kWh  :95 -> real, energy = x * 3600000
+(x) eV   :95 -> real, energy = x * 1.602176634 * (10 ^ -19)
+(x) W    :95 -> real, power  = x
+(x) kW   :95 -> real, power  = x * 1000
+(x) MW   :95 -> real, power  = x * 1000000
+(x) hp   :95 -> real, power  = x * 745.699872
+
+# 8. Temperature Conversions (Affine Scales: Celsius, Fahrenheit, Kelvin)
+c_to_k(c) = c + 273.15
+k_to_c(k) = k - 273.15
+c_to_f(c) = c * 1.8 + 32
+f_to_c(f) = (f - 32) / 1.8
+f_to_k(f) = (f - 32) / 1.8 + 273.15
+k_to_f(k) = (k - 273.15) * 1.8 + 32

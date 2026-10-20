@@ -1,9 +1,15 @@
 /*
- * math_engine.c — Top-Level Engine Wrapper Implementation
+ * math_engine.c — Top-Level Engine Wrapper, Stateless Eval & Value Formatter
  *
  * Internally loads the precompiled bootstrap and standard library modules
  * (`stdlib_precompiled.h`) in O(1) `memcpy` time inside `eng_init()` with
  * zero filesystem, directory, or file extension dependencies.
+ *
+ * Note:
+ *   - Compilation, dependency-resolved linking, `.mathc` serialization, and
+ *     user extension loading live in `Core/compile/`.
+ *   - Parallel in-memory sessions and order-tagged raw-text snapshots live in
+ *     `Core/session/`.
  */
 
 #include "math_engine.h"
@@ -15,6 +21,7 @@ void eng_init_blank(Engine *eng) {
     if (!eng) return;
     mem_init(&eng->mem);
     sym_init(&eng->sym);
+    memset(eng->sessions, 0, sizeof(eng->sessions));
 }
 
 bool eng_init(Engine *eng) {
@@ -132,19 +139,24 @@ const char *eng_last_error(const Engine *eng) {
     return eng->mem.err_msg;
 }
 
+/* ============================================================================
+ * HUMAN-READABLE VALUE FORMATTER (`eng_format_value`, `eng_format_mat_at`)
+ * ============================================================================ */
+
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                              uint8_t depth, char *buf, size_t cap);
 
 static void format_mat_slice(const Engine *eng, uint16_t data_idx,
                              const uint16_t *dims, uint8_t rank, uint8_t axis,
-                             char *buf, size_t cap, size_t *used) {
+                             bool high_prec, char *buf, size_t cap, size_t *used) {
     if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "[");
     if (axis + 1 >= rank) {
         uint16_t n = dims[axis];
         for (uint16_t i = 0; i < n && *used < cap; ++i) {
             double v = mem_read_pool(&eng->mem, (uint16_t)(data_idx + i));
             if (v == 0.0) v = 0.0; /* normalize -0.0 */
-            *used += (size_t)snprintf(buf + *used, cap - *used, "%s%.6g",
+            *used += (size_t)snprintf(buf + *used, cap - *used,
+                                      high_prec ? "%s%.17g" : "%s%.6g",
                                       (i > 0 ? ", " : ""), v);
         }
     } else {
@@ -158,13 +170,14 @@ static void format_mat_slice(const Engine *eng, uint16_t data_idx,
                 *used += (size_t)snprintf(buf + *used, cap - *used, ", ");
             }
             format_mat_slice(eng, (uint16_t)(data_idx + i * stride),
-                             dims, rank, (uint8_t)(axis + 1), buf, cap, used);
+                             dims, rank, (uint8_t)(axis + 1), high_prec, buf, cap, used);
         }
     }
     if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "]");
 }
 
-static void format_mat_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t cap) {
+void eng_format_mat_at(const Engine *eng, uint16_t hdr_idx, bool high_prec,
+                       char *buf, size_t cap) {
     uint8_t  rank     = (uint8_t)mem_read_pool(&eng->mem, hdr_idx + 0);
     uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 2);
     uint16_t dims[4]  = { 0, 0, 0, 0 };
@@ -176,7 +189,7 @@ static void format_mat_at(const Engine *eng, uint16_t hdr_idx, char *buf, size_t
         return;
     }
     size_t used = 0;
-    format_mat_slice(eng, data_idx, dims, rank, 0, buf, cap, &used);
+    format_mat_slice(eng, data_idx, dims, rank, 0, high_prec, buf, cap, &used);
 }
 
 static void format_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
@@ -226,7 +239,7 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         return;
     }
     if (type_id == eng->mem.mat_type_id && type_id != 0) {
-        format_mat_at(eng, pool_idx, buf, cap);
+        eng_format_mat_at(eng, pool_idx, false, buf, cap);
         return;
     }
     if (type_id == eng->mem.fn_type_id && type_id != 0) {

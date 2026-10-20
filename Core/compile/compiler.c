@@ -1,21 +1,19 @@
 /*
- * ext_loader.c — In-Memory Extension Compiler & Binary Image Serializer
+ * compiler.c — In-Memory `.math` Compilation Unit Stager & Declaration Compiler
  *
- * Pure ISO C99 in-memory implementation: zero filesystem, directory, or file
- * extension dependencies (`<dirent.h>`, `<sys/stat.h>`, and `FILE*` I/O removed).
- *
- * Supports both explicit declarations and streamlined shorthand:
- *   - Optional quotes around function and constant names:
- *       `lerp(a, b, t) = a + (b - a) * t`  or  `"lerp"(a:real, b:real, t:real) -> real = ...`
- *       `g0 = 9.80665`                     or  `"g0" : real = 9.80665`
- *   - Optional `:real` parameter types and optional `-> real` return types
- *   - Default parameter values (`round(x:real, digits:real = 0) -> real = ...`)
+ * Implements Phase 1 (Compilation) of extension building:
+ *   - `ext_build_init` / `ext_compile_unit`: Scans raw `.math` source strings,
+ *     splits them into `[module]` compilation units, extracts `<[dep]` module
+ *     dependencies, and rejects duplicate named modules.
+ *   - `ext_compile_slice`: Compiles `$type`, syntax delimiter, constant, and
+ *     function/operator overload declarations for a single module slice.
  */
 
-#include "ext_loader.h"
+#include "compiler.h"
 #include "parser.h"
-#include "../lib/hardcode/hardcode.h"
+#include "hardcode.h"
 #include "evaluator.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -87,11 +85,41 @@ static StrSlice ext_read_quoted(ExtLoader *L) {
     return mem_intern_str(L->mem, buf, blen);
 }
 
+static bool ext_has_duplicate_overload(const SymTable *tab, uint16_t sym_id, uint8_t mod_id,
+                                       uint8_t fixity, uint8_t pcount,
+                                       const uint16_t *ptypes, const uint8_t *punits) {
+    if (sym_id >= tab->sym_count) return false;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->mod_id != mod_id || ov->fixity != fixity || ov->param_count != pcount) continue;
+        bool same = true;
+        for (uint8_t p = 0; p < pcount; ++p) {
+            if (ov->param_types[p] != (uint8_t)ptypes[p] || ov->param_units[p] != punits[p]) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
 static void ext_parse_type_decl(ExtLoader *L) {
     MemArena *mem = L->mem;
     SymTable *tab = L->tab;
     L->pos++; /* skip '$' */
     StrSlice tname = ext_read_ident(L);
+    if (mem->has_error || tname.len == 0) return;
+
+    /* Reject duplicate type declarations */
+    for (uint16_t i = 1; i < tab->type_count; ++i) {
+        if (mem_slice_eq(mem, tab->types[i].name, tname)) {
+            mem_err(mem, "Type '$%.*s' is already defined",
+                    (int)tname.len, mem_str_ptr(mem, tname));
+            return;
+        }
+    }
+
     if (tab->type_count >= SYM_MAX_TYPES) {
         mem_err(mem, "Type table overflow (max %d)", SYM_MAX_TYPES);
         return;
@@ -435,7 +463,6 @@ static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
     }
 }
 
-
 static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
     MemArena *mem = L->mem;
     SymTable *tab = L->tab;
@@ -455,7 +482,7 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
             intr != INTR_LBRACK && intr != INTR_RBRACK &&
             intr != INTR_COMMA) {
             mem_err(mem, "Unknown syntax delimiter intrinsic '@%.*s'",
-                    (int)iname.len, mem_str_ptr(mem, iname));
+                     (int)iname.len, mem_str_ptr(mem, iname));
             return;
         }
         if (tab->overload_count >= SYM_MAX_OVERLOADS) {
@@ -485,6 +512,16 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
             }
             if (!ext_match_char(L, '=')) {
                 mem_err(mem, "Expected '=' in constant definition");
+                return;
+            }
+        }
+        for (uint8_t i = 0; i < tab->const_count; ++i) {
+            if (tab->consts[i].sym_id == sym_id && tab->consts[i].mod_id == L->cur_mod) {
+                StrSlice s = tab->syms[sym_id];
+                mem_err(mem, "Constant '%.*s' is already defined in module '[%.*s]'",
+                        (int)s.len, mem_str_ptr(mem, s),
+                        (int)tab->mod_names[L->cur_mod].len,
+                        mem_str_ptr(mem, tab->mod_names[L->cur_mod]));
                 return;
             }
         }
@@ -603,6 +640,15 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
     if (!ext_parse_return_spec(L, &rtid, &ruid)) return;
     ext_match_char(L, '=');
 
+    if (ext_has_duplicate_overload(tab, sym_id, L->cur_mod, fixity, pcount, ptypes, punits)) {
+        StrSlice s = tab->syms[sym_id];
+        mem_err(mem, "Duplicate declaration of '%.*s' in module '[%.*s]'",
+                (int)s.len, mem_str_ptr(mem, s),
+                (int)tab->mod_names[L->cur_mod].len,
+                mem_str_ptr(mem, tab->mod_names[L->cur_mod]));
+        return;
+    }
+
     if (tab->overload_count >= SYM_MAX_OVERLOADS) {
         mem_err(mem, "Overload table overflow (max %d)", SYM_MAX_OVERLOADS);
         return;
@@ -635,48 +681,19 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
     }
 }
 
-bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
-    mem_clear_err(mem);
-    if (!ext_src) {
-        mem_err(mem, "Null extension source string");
-        return false;
-    }
-    size_t raw_len = strlen(ext_src);
-    if (raw_len > 65534u) {
-        mem_err(mem, "Extension source length exceeds maximum (65534 bytes)");
-        return false;
-    }
-
-    /* Save watermarks for transactional rollback on compile error */
-    uint16_t saved_src_len        = mem->src_len;
-    uint16_t saved_ast_count      = mem->ast_count;
-    uint16_t saved_pool_top       = mem->pool_top;
-    uint8_t  saved_fast_real      = mem->fast_real_type;
-    uint8_t  saved_str_type       = mem->str_type_id;
-    uint8_t  saved_vec_type       = mem->vec_type_id;
-    uint8_t  saved_mat_type       = mem->mat_type_id;
-    uint8_t  saved_fn_type        = mem->fn_type_id;
-
-    uint8_t  saved_mod_count      = tab->mod_count;
-    uint64_t saved_active_modules = tab->active_modules;
-    uint8_t  saved_type_count     = tab->type_count;
-    uint8_t  saved_unit_count     = tab->unit_count;
-    uint16_t saved_pat_elem_count = tab->pat_elem_count;
-    uint16_t saved_field_count    = tab->field_count;
-    uint16_t saved_sym_count      = tab->sym_count;
-    uint16_t saved_overload_count = tab->overload_count;
-    uint8_t  saved_const_count    = tab->const_count;
-
+bool ext_compile_slice(MemArena *mem, SymTable *tab,
+                       const char *slice_src, uint16_t slice_len) {
     ExtLoader L;
     memset(&L, 0, sizeof(L));
     L.mem = mem;
     L.tab = tab;
-    L.src = ext_src;
-    L.len = (uint16_t)raw_len;
+    L.src = slice_src;
+    L.len = slice_len;
     L.pos = 0;
 
     /* Default any extension without an explicit `[module]` header to `[default]` */
     StrSlice def_mod = mem_intern_str(mem, "default", 7);
+    if (mem->has_error) return false;
     L.cur_mod = sym_find_or_add_mod(tab, mem, def_mod);
 
     while (L.pos < L.len && !mem->has_error) {
@@ -688,7 +705,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         if (c == '[') {
             L.pos++;
             StrSlice mname = ext_read_ident(&L);
-            if (!ext_match_char(&L, ']')) {
+            if (!ext_match_char(&L, ']') || mname.len == 0) {
                 mem_err(mem, "Expected closing ']' in module header");
                 break;
             }
@@ -699,7 +716,7 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         if (c == '<' && L.pos + 1 < L.len && L.src[L.pos + 1] == '[') {
             L.pos += 2;
             StrSlice dep = ext_read_ident(&L);
-            if (!ext_match_char(&L, ']')) {
+            if (!ext_match_char(&L, ']') || dep.len == 0) {
                 mem_err(mem, "Expected closing ']' in module dependency");
                 break;
             }
@@ -776,6 +793,15 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
             if (!ext_parse_return_spec(&L, &rtid, &ruid)) break;
             ext_match_char(&L, '=');
 
+            if (ext_has_duplicate_overload(tab, sym_id, L.cur_mod, fixity, pcount, ptypes, punits)) {
+                StrSlice s = tab->syms[sym_id];
+                mem_err(mem, "Duplicate declaration of '%.*s' in module '[%.*s]'",
+                        (int)s.len, mem_str_ptr(mem, s),
+                        (int)tab->mod_names[L.cur_mod].len,
+                        mem_str_ptr(mem, tab->mod_names[L.cur_mod]));
+                break;
+            }
+
             if (tab->overload_count >= SYM_MAX_OVERLOADS) {
                 mem_err(mem, "Overload table overflow (max %d)", SYM_MAX_OVERLOADS);
                 break;
@@ -807,547 +833,258 @@ bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {
         break;
     }
 
-    if (mem->has_error) {
-        /* Transactional rollback: restore all permanent & symbol table counters */
-        mem->src_len        = saved_src_len;
-        mem->ast_count      = saved_ast_count;
-        mem->pool_top       = saved_pool_top;
-        mem->fast_real_type = saved_fast_real;
-        mem->str_type_id    = saved_str_type;
-        mem->vec_type_id    = saved_vec_type;
-        mem->mat_type_id    = saved_mat_type;
-        mem->fn_type_id     = saved_fn_type;
-
-        tab->mod_count      = saved_mod_count;
-        tab->active_modules = saved_active_modules;
-        tab->type_count     = saved_type_count;
-        tab->unit_count     = saved_unit_count;
-        tab->pat_elem_count = saved_pat_elem_count;
-        tab->field_count    = saved_field_count;
-        tab->sym_count      = saved_sym_count;
-        tab->overload_count = saved_overload_count;
-        tab->const_count    = saved_const_count;
-        sym_rebuild_index(tab);
-        return false;
-    }
-
-    mem_snapshot_perm(mem);
-    return true;
+    return !mem->has_error;
 }
 
 /* ============================================================================
- * IN-MEMORY `.mathc` BINARY SERIALIZATION & O(1) LOADER IMPLEMENTATION
+ * MODULE UNIT STAGING (`ext_build_init`, `ext_compile_unit`)
  * ============================================================================ */
 
-static uint32_t calc_mathc_payload_bytes(const MathcHeader *h) {
-    return (uint32_t)h->perm_src_len
-         + (uint32_t)h->perm_ast_count  * (uint32_t)sizeof(AstNode)
-         + (uint32_t)h->perm_pool_top   * (uint32_t)sizeof(double)
-         + (uint32_t)h->mod_count       * (uint32_t)sizeof(StrSlice)
-         + (uint32_t)h->type_count      * (uint32_t)sizeof(TypeDef)
-         + (uint32_t)h->unit_count      * (uint32_t)sizeof(StrSlice)
-         + (uint32_t)h->pat_elem_count  * (uint32_t)sizeof(PatElem)
-         + (uint32_t)h->field_count     * (uint32_t)sizeof(FieldDef)
-         + (uint32_t)h->sym_count       * (uint32_t)sizeof(StrSlice)
-         + (uint32_t)h->overload_count  * (uint32_t)sizeof(OpOverload)
-         + (uint32_t)h->const_count     * (uint32_t)sizeof(ConstDef);
+void ext_build_init(ExtBuildCtx *ctx) {
+    if (!ctx) return;
+    ctx->unit_count = 0;
+    ctx->pool_used  = 0;
+    ctx->has_error  = false;
+    ctx->err_msg[0] = '\0';
 }
 
-static void fill_mathc_header(const MemArena *mem, const SymTable *tab, MathcHeader *hdr) {
-    memset(hdr, 0, sizeof(*hdr));
-    hdr->magic          = MATHC_MAGIC;
-    hdr->version        = MATHC_VERSION;
-    hdr->fast_real_type = mem->fast_real_type;
-    hdr->str_type_id    = mem->str_type_id;
-    hdr->vec_type_id    = mem->vec_type_id;
-    hdr->mod_count      = tab->mod_count;
-    hdr->type_count     = tab->type_count;
-    hdr->const_count    = tab->const_count;
-    hdr->sym_count      = tab->sym_count;
-    hdr->unit_count     = tab->unit_count;
-    hdr->mat_type_id    = mem->mat_type_id;
-    hdr->perm_src_len   = mem->perm_src_len;
-    hdr->perm_ast_count = mem->perm_ast_count;
-    hdr->perm_pool_top  = mem->perm_pool_top;
-    hdr->pat_elem_count = tab->pat_elem_count;
-    hdr->field_count    = tab->field_count;
-    hdr->overload_count = tab->overload_count;
-    hdr->active_modules = (uint32_t)(tab->active_modules & 0xFFFFFFFFu);
-    hdr->payload_bytes  = calc_mathc_payload_bytes(hdr);
-    hdr->checksum       = 0;
-}
-
-uint32_t ext_calc_mathc_checksum(const MathcHeader *hdr,
-                                 const uint8_t *payload, size_t payload_len) {
-    if (!hdr || (!payload && payload_len > 0)) return 0;
-    MathcHeader clean_hdr = *hdr;
-    clean_hdr.checksum = 0;
-
-    uint32_t h = 2166136261u;
-    const uint8_t *hb = (const uint8_t *)&clean_hdr;
-    for (size_t i = 0; i < sizeof(MathcHeader); ++i) {
-        h ^= hb[i];
-        h *= 16777619u;
+static bool build_fail(MemArena *mem, ExtBuildCtx *ctx, const char *msg) {
+    if (mem) mem_err(mem, "%s", msg);
+    if (ctx && !ctx->has_error) {
+        ctx->has_error = true;
+        snprintf(ctx->err_msg, sizeof(ctx->err_msg), "%s", mem ? mem->err_msg : msg);
     }
-    for (size_t i = 0; i < payload_len; ++i) {
-        h ^= payload[i];
-        h *= 16777619u;
-    }
-    return (h == 0) ? 1u : h;
+    return false;
 }
 
-uint32_t ext_calc_mathc_size(const MemArena *mem, const SymTable *tab) {
-    MathcHeader hdr;
-    fill_mathc_header(mem, tab, &hdr);
-    return (uint32_t)sizeof(MathcHeader) + hdr.payload_bytes;
-}
-
-size_t ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
-                          uint8_t *out_buf, size_t buf_cap) {
+bool ext_compile_unit(MemArena *mem, const SymTable *tab,
+                      ExtBuildCtx *ctx, const char *raw_math_text) {
+    if (!mem || !tab || !ctx) return false;
     mem_clear_err(mem);
-    MathcHeader hdr;
-    fill_mathc_header(mem, tab, &hdr);
-
-    size_t total_bytes = sizeof(MathcHeader) + (size_t)hdr.payload_bytes;
-    if (!out_buf || buf_cap < total_bytes) {
-        mem_err(mem, "Output buffer too small for .mathc image (%zu < %zu bytes)",
-                buf_cap, total_bytes);
-        return 0;
-    }
-
-    uint8_t *cur = out_buf;
-
-    #define WRITE_SLICE(src_ptr, byte_cnt) do { \
-        size_t _n = (size_t)(byte_cnt); \
-        if (_n > 0) { \
-            memcpy(cur, (src_ptr), _n); \
-            cur += _n; \
-        } \
-    } while (0)
-
-    WRITE_SLICE(&hdr,           sizeof(MathcHeader));
-    WRITE_SLICE(mem->src_buf,   hdr.perm_src_len);
-    WRITE_SLICE(mem->ast,       hdr.perm_ast_count * sizeof(AstNode));
-    WRITE_SLICE(mem->f64_pool,  hdr.perm_pool_top  * sizeof(double));
-    WRITE_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
-    WRITE_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
-    WRITE_SLICE(tab->units,     hdr.unit_count     * sizeof(StrSlice));
-    WRITE_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
-    WRITE_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
-    WRITE_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
-    WRITE_SLICE(tab->overloads, hdr.overload_count * sizeof(OpOverload));
-    WRITE_SLICE(tab->consts,    hdr.const_count    * sizeof(ConstDef));
-
-    #undef WRITE_SLICE
-
-    hdr.checksum = ext_calc_mathc_checksum(&hdr,
-                                           out_buf + sizeof(MathcHeader),
-                                           hdr.payload_bytes);
-    memcpy(out_buf, &hdr, sizeof(MathcHeader));
-
-    return total_bytes;
-}
-
-static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hdr) {
-    /* 1. Validate special bootstrap type IDs in header */
-    if (hdr->fast_real_type >= hdr->type_count ||
-        hdr->str_type_id    >= hdr->type_count ||
-        hdr->vec_type_id    >= hdr->type_count ||
-        hdr->mat_type_id    >= hdr->type_count) {
+    if (ctx->has_error) {
+        mem_err(mem, "%s", ctx->err_msg);
         return false;
     }
-
-    const uint8_t *cur        = payload;
-    const uint8_t *src_ptr    = cur; cur += hdr->perm_src_len;
-    const uint8_t *ast_ptr    = cur; cur += (size_t)hdr->perm_ast_count * sizeof(AstNode);
-    const uint8_t *pool_ptr   = cur; cur += (size_t)hdr->perm_pool_top  * sizeof(double);
-    const uint8_t *mods_ptr   = cur; cur += (size_t)hdr->mod_count      * sizeof(StrSlice);
-    const uint8_t *types_ptr  = cur; cur += (size_t)hdr->type_count     * sizeof(TypeDef);
-    const uint8_t *units_ptr  = cur; cur += (size_t)hdr->unit_count     * sizeof(StrSlice);
-    const uint8_t *pats_ptr   = cur; cur += (size_t)hdr->pat_elem_count * sizeof(PatElem);
-    const uint8_t *fields_ptr = cur; cur += (size_t)hdr->field_count    * sizeof(FieldDef);
-    const uint8_t *syms_ptr   = cur; cur += (size_t)hdr->sym_count      * sizeof(StrSlice);
-    const uint8_t *ovs_ptr    = cur; cur += (size_t)hdr->overload_count * sizeof(OpOverload);
-    const uint8_t *consts_ptr = cur; cur += (size_t)hdr->const_count    * sizeof(ConstDef);
-    (void)src_ptr;
-    (void)pool_ptr;
-
-    /* 2. Validate module names */
-    for (uint8_t i = 0; i < hdr->mod_count; ++i) {
-        StrSlice s;
-        memcpy(&s, mods_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
-        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    if (!raw_math_text) {
+        return build_fail(mem, ctx, "Null extension source string");
+    }
+    size_t raw_len = strlen(raw_math_text);
+    if (raw_len > 65534u) {
+        return build_fail(mem, ctx, "Extension source length exceeds maximum (65534 bytes)");
+    }
+    if (ctx->pool_used + (uint32_t)raw_len + 1u > EXT_STAGE_POOL_CAP) {
+        return build_fail(mem, ctx, "Extension staging pool overflow");
     }
 
-    /* 3. Validate types */
-    for (uint16_t i = 1; i < hdr->type_count; ++i) {
-        TypeDef td;
-        memcpy(&td, types_ptr + (size_t)i * sizeof(TypeDef), sizeof(TypeDef));
-        if ((uint32_t)td.name.off + (uint32_t)td.name.len > hdr->perm_src_len) return false;
-        if (td.mod_id >= hdr->mod_count) return false;
-        if (td.parser_intr >= INTR_COUNT) return false;
-        if (td.is_consuming) {
-            if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->pat_elem_count) return false;
-        } else if (td.parser_intr == INTR_NONE) {
-            if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->field_count) return false;
-            if (td.flat_size == 0 || td.flat_size > 256u) return false;
+    uint32_t base_off = ctx->pool_used;
+    memcpy(ctx->src_pool + base_off, raw_math_text, raw_len + 1u);
+    ctx->pool_used += (uint32_t)raw_len + 1u;
+
+    const char *src = ctx->src_pool + base_off;
+    uint16_t    len = (uint16_t)raw_len;
+    uint16_t    pos = 0;
+
+    int  cur_u          = -1;
+    int  depth          = 0;
+    bool in_pattern     = false;
+    bool at_stmt_start  = true;
+
+    while (pos < len) {
+        /* 1. Skip horizontal whitespace */
+        while (pos < len && (src[pos] == ' ' || src[pos] == '\t' || src[pos] == '\r')) {
+            pos++;
         }
-    }
+        if (pos >= len) break;
 
-    /* 4. Validate units */
-    for (uint8_t i = 1; i < hdr->unit_count; ++i) {
-        StrSlice s;
-        memcpy(&s, units_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
-        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
-    }
+        /* 2. Newline resets top-level statement boundary */
+        if (src[pos] == '\n') {
+            pos++;
+            if (depth == 0 && !in_pattern) {
+                at_stmt_start = true;
+            }
+            continue;
+        }
 
-    /* 5. Validate pattern elements */
-    for (uint16_t i = 0; i < hdr->pat_elem_count; ++i) {
-        PatElem pe;
-        memcpy(&pe, pats_ptr + (size_t)i * sizeof(PatElem), sizeof(PatElem));
-        if (pe.kind < PAT_DIGIT || pe.kind > PAT_GROUP_END) return false;
-        if (pe.quant > QUANT_OPT) return false;
-        if ((uint32_t)pe.chars.off + (uint32_t)pe.chars.len > hdr->perm_src_len) return false;
-        if (pe.kind == PAT_LIT && pe.chars.len == 0) return false;
-    }
+        /* 3. Line comment */
+        if (src[pos] == '#') {
+            while (pos < len && src[pos] != '\n') pos++;
+            continue;
+        }
 
-    /* 6. Validate struct fields */
-    for (uint16_t i = 0; i < hdr->field_count; ++i) {
-        FieldDef fd;
-        memcpy(&fd, fields_ptr + (size_t)i * sizeof(FieldDef), sizeof(FieldDef));
-        if ((uint32_t)fd.name.off + (uint32_t)fd.name.len > hdr->perm_src_len) return false;
-        if (fd.type_id == 0 || fd.type_id >= hdr->type_count) return false;
-        if (fd.flat_offset >= 256u) return false;
-    }
+        /* 4. Top-level `[module]` header or `<[dep]` dependency */
+        if (at_stmt_start && depth == 0 && !in_pattern) {
+            if (src[pos] == '[') {
+                uint16_t hdr_start = pos;
+                pos++;
+                while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
+                uint16_t id_start = pos;
+                while (pos < len && lex_is_ident_cont((unsigned char)src[pos])) pos++;
+                uint16_t id_len = pos - id_start;
+                while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
 
-    /* 7. Validate struct field ranges against parent struct flat_size */
-    for (uint16_t i = 1; i < hdr->type_count; ++i) {
-        TypeDef td;
-        memcpy(&td, types_ptr + (size_t)i * sizeof(TypeDef), sizeof(TypeDef));
-        if (!td.is_consuming && td.parser_intr == INTR_NONE) {
-            for (uint8_t f = 0; f < td.field_count; ++f) {
-                FieldDef fd;
-                memcpy(&fd, fields_ptr + (size_t)(td.start_idx + f) * sizeof(FieldDef), sizeof(FieldDef));
-                if (fd.type_id == i) return false;
-                TypeDef ftd;
-                memcpy(&ftd, types_ptr + (size_t)fd.type_id * sizeof(TypeDef), sizeof(TypeDef));
-                uint32_t fsz = ftd.is_consuming ? 1u : (uint32_t)ftd.flat_size;
-                if (fsz == 0 || (uint32_t)fd.flat_offset + fsz > (uint32_t)td.flat_size) return false;
+                if (id_len == 0 || id_len >= 32u || pos >= len || src[pos] != ']') {
+                    return build_fail(mem, ctx, "Expected closing ']' in module header");
+                }
+                pos++; /* consume ']' */
+
+                char mname[32];
+                memcpy(mname, src + id_start, id_len);
+                mname[id_len] = '\0';
+                bool is_def = (strcmp(mname, "default") == 0);
+
+                if (!is_def) {
+                    /* Reject if module is already loaded in SymTable */
+                    for (uint8_t i = 0; i < tab->mod_count; ++i) {
+                        if (mem_slice_eq_cstr(mem, tab->mod_names[i], mname)) {
+                            mem_err(mem, "Module '[%s]' is already loaded", mname);
+                            ctx->has_error = true;
+                            snprintf(ctx->err_msg, sizeof(ctx->err_msg), "%s", mem->err_msg);
+                            return false;
+                        }
+                    }
+                    /* Reject if module is already staged in ExtBuildCtx */
+                    for (uint8_t i = 0; i < ctx->unit_count; ++i) {
+                        if (!ctx->units[i].is_default_mod &&
+                            strcmp(ctx->units[i].mod_name, mname) == 0) {
+                            mem_err(mem, "Module '[%s]' is already loaded", mname);
+                            ctx->has_error = true;
+                            snprintf(ctx->err_msg, sizeof(ctx->err_msg), "%s", mem->err_msg);
+                            return false;
+                        }
+                    }
+                }
+
+                if (cur_u >= 0) {
+                    ctx->units[cur_u].src_len = (uint16_t)((base_off + hdr_start) - ctx->units[cur_u].src_off);
+                }
+                if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
+                    return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+                }
+                cur_u = (int)ctx->unit_count++;
+                ExtCompiledUnit *u = &ctx->units[cur_u];
+                memset(u, 0, sizeof(*u));
+                memcpy(u->mod_name, mname, id_len + 1u);
+                u->is_default_mod = is_def;
+                u->src_off        = base_off + hdr_start;
+                u->src_len        = 0;
+                at_stmt_start     = true;
+                continue;
+            }
+
+            if (src[pos] == '<' && pos + 1 < len && src[pos + 1] == '[') {
+                uint16_t dep_stmt_start = pos;
+                if (cur_u < 0) {
+                    if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
+                        return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+                    }
+                    cur_u = (int)ctx->unit_count++;
+                    ExtCompiledUnit *u = &ctx->units[cur_u];
+                    memset(u, 0, sizeof(*u));
+                    memcpy(u->mod_name, "default", 8);
+                    u->is_default_mod = true;
+                    u->src_off        = base_off + dep_stmt_start;
+                    u->src_len        = 0;
+                }
+                pos += 2;
+                while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
+                uint16_t id_start = pos;
+                while (pos < len && lex_is_ident_cont((unsigned char)src[pos])) pos++;
+                uint16_t id_len = pos - id_start;
+                while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
+
+                if (id_len == 0 || id_len >= 32u || pos >= len || src[pos] != ']') {
+                    return build_fail(mem, ctx, "Expected closing ']' in module dependency");
+                }
+                pos++; /* consume ']' */
+
+                char dname[32];
+                memcpy(dname, src + id_start, id_len);
+                dname[id_len] = '\0';
+
+                ExtCompiledUnit *u = &ctx->units[cur_u];
+                bool already_dep = false;
+                for (uint8_t d = 0; d < u->dep_count; ++d) {
+                    if (strcmp(u->deps[d], dname) == 0) {
+                        already_dep = true;
+                        break;
+                    }
+                }
+                if (!already_dep) {
+                    if (u->dep_count >= EXT_MAX_UNIT_DEPS) {
+                        return build_fail(mem, ctx, "Maximum module dependencies (16) exceeded");
+                    }
+                    memcpy(u->deps[u->dep_count++], dname, id_len + 1u);
+                }
+                at_stmt_start = true;
+                continue;
+            }
+        }
+
+        /* 5. Any declaration before an explicit `[module]` header creates an implicit `[default]` unit */
+        if (cur_u < 0) {
+            if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
+                return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+            }
+            cur_u = (int)ctx->unit_count++;
+            ExtCompiledUnit *u = &ctx->units[cur_u];
+            memset(u, 0, sizeof(*u));
+            memcpy(u->mod_name, "default", 8);
+            u->is_default_mod = true;
+            u->src_off        = base_off + pos;
+            u->src_len        = 0;
+        }
+
+        /* 6. Advance over string literals, consuming patterns, and bracketed scopes */
+        if (src[pos] == '"') {
+            pos++;
+            while (pos < len && src[pos] != '"') {
+                if (src[pos] == '\\' && pos + 1 < len) pos += 2;
+                else pos++;
+            }
+            if (pos >= len || src[pos] != '"') {
+                return build_fail(mem, ctx, "Unterminated quoted string symbol in declaration");
+            }
+            pos++;
+            at_stmt_start = false;
+        } else if (in_pattern) {
+            if (src[pos] == '[' && pos + 1 < len && src[pos + 1] == '^') {
+                pos += 2;
+                while (pos < len && src[pos] != ']') {
+                    if (src[pos] == '\\' && pos + 1 < len) pos += 2;
+                    else pos++;
+                }
+                if (pos < len) pos++;
+            } else if (src[pos] == '=' && pos + 1 < len && src[pos + 1] == '>') {
+                pos += 2;
+                in_pattern = false;
+            } else {
+                pos++;
+            }
+        } else {
+            if (src[pos] == '~' && depth == 0) {
+                in_pattern    = true;
+                at_stmt_start = false;
+                pos++;
+            } else if (src[pos] == '(' || src[pos] == '{' || src[pos] == '[') {
+                depth++;
+                at_stmt_start = false;
+                pos++;
+            } else if (src[pos] == ')' || src[pos] == '}' || src[pos] == ']') {
+                if (depth > 0) depth--;
+                at_stmt_start = false;
+                pos++;
+            } else if (src[pos] == ';' && depth == 0) {
+                at_stmt_start = true;
+                pos++;
+            } else {
+                at_stmt_start = false;
+                pos++;
             }
         }
     }
 
-    /* 8. Validate interned symbols */
-    for (uint16_t i = 0; i < hdr->sym_count; ++i) {
-        StrSlice s;
-        memcpy(&s, syms_ptr + (size_t)i * sizeof(StrSlice), sizeof(StrSlice));
-        if ((uint32_t)s.off + (uint32_t)s.len > hdr->perm_src_len) return false;
+    if (cur_u >= 0) {
+        ctx->units[cur_u].src_len = (uint16_t)((base_off + len) - ctx->units[cur_u].src_off);
     }
-
-    /* 9. Validate operator & function overloads */
-    uint8_t eff_units = hdr->unit_count ? hdr->unit_count : 1u;
-    for (uint16_t i = 0; i < hdr->overload_count; ++i) {
-        OpOverload ov;
-        memcpy(&ov, ovs_ptr + (size_t)i * sizeof(OpOverload), sizeof(OpOverload));
-        if (ov.sym_id >= hdr->sym_count) return false;
-        if (ov.mod_id >= hdr->mod_count) return false;
-        if (ov.fixity > FIX_SYNTAX) return false;
-        if (ov.param_count > 8u || ov.local_count > PARSER_MAX_LOCALS) return false;
-        if (ov.local_count < ov.param_count) return false;
-        if (ov.ret_type >= hdr->type_count && ov.ret_type != SYM_TYPE_ANY) return false;
-        if (ov.ret_unit < SYM_UNIT_LOCK_NONE && ov.ret_unit >= eff_units) return false;
-        for (uint8_t p = 0; p < ov.param_count; ++p) {
-            if (ov.param_types[p] >= hdr->type_count && ov.param_types[p] != SYM_TYPE_ANY) return false;
-            if (ov.param_units[p] < SYM_UNIT_LOCK_NONE && ov.param_units[p] >= eff_units) return false;
-        }
-        if (ov.fixity != FIX_SYNTAX) {
-            if (ov.body_ast >= hdr->perm_ast_count) return false;
-        }
-    }
-
-    /* 10. Validate constants */
-    for (uint8_t i = 0; i < hdr->const_count; ++i) {
-        ConstDef cd;
-        memcpy(&cd, consts_ptr + (size_t)i * sizeof(ConstDef), sizeof(ConstDef));
-        if (cd.sym_id >= hdr->sym_count) return false;
-        if (cd.mod_id >= hdr->mod_count) return false;
-        if (cd.type_id == 0 || cd.type_id >= hdr->type_count) return false;
-        if (cd.unit_id >= eff_units) return false;
-        if (cd.val_idx >= hdr->const_count) return false;
-        if (cd.pool_idx >= hdr->perm_pool_top) return false;
-    }
-
-    /* 11. Validate every AST node and all child indices (`left`, `right`, `ref`, `sub`) */
-    #define AST_OPT_OK(idx) ((idx) == MEM_NO_IDX || (idx) < hdr->perm_ast_count)
-    #define AST_REQ_OK(idx) ((idx) < hdr->perm_ast_count)
-
-    for (uint16_t i = 0; i < hdr->perm_ast_count; ++i) {
-        AstNode n;
-        memcpy(&n, ast_ptr + (size_t)i * sizeof(AstNode), sizeof(AstNode));
-        switch ((AstKind)n.kind) {
-            case AST_LIT:
-                if (n.sub >= hdr->type_count) return false;
-                if (n.sub == hdr->str_type_id && hdr->str_type_id != 0) {
-                    if ((uint32_t)n.left + (uint32_t)n.right > hdr->perm_src_len) return false;
-                } else if (n.sub != MEM_TYPE_VOID) {
-                    if (n.ref >= hdr->perm_pool_top) return false;
-                }
-                break;
-
-            case AST_CONST_SYM:
-                if (n.ref >= hdr->sym_count) return false;
-                break;
-
-            case AST_SLOT_LOAD:
-                if (n.sub >= PARSER_MAX_LOCALS) return false;
-                if (n.left != MEM_NO_IDX && n.left != SYM_TYPE_ANY && n.left >= hdr->type_count) return false;
-                if (n.right != MEM_NO_IDX && n.right < SYM_UNIT_LOCK_NONE && n.right >= eff_units) return false;
-                break;
-
-            case AST_FIELD_LOAD:
-                if (n.sub >= hdr->type_count) return false;
-                if (n.ref >= 256u) return false;
-                if (!AST_REQ_OK(n.left)) return false;
-                if (n.right != MEM_NO_IDX && n.right >= PARSER_MAX_LOCALS) return false;
-                break;
-
-            case AST_UNARY:
-                if (n.sub > FIX_SYNTAX || n.ref >= hdr->sym_count || !AST_REQ_OK(n.left)) return false;
-                break;
-
-            case AST_BINARY:
-                if (n.sub > FIX_SYNTAX || n.ref >= hdr->sym_count ||
-                    !AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
-                break;
-
-            case AST_CALL:
-                if (n.ref >= hdr->sym_count || !AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
-                break;
-
-            case AST_ARG_LINK:
-                if (!AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
-                break;
-
-            case AST_INTRINSIC:
-                if (n.sub == INTR_NONE || n.sub >= INTR_COUNT) return false;
-                if (!AST_OPT_OK(n.left) || !AST_OPT_OK(n.right)) return false;
-                if (n.ref != 0 && !AST_OPT_OK(n.ref)) return false;
-                break;
-
-            case AST_CONSTRUCT:
-                if (n.ref == 0 || n.ref >= hdr->type_count || !AST_OPT_OK(n.left)) return false;
-                break;
-
-            case AST_EXTERN:
-                if (n.ref >= hdr->sym_count || !AST_OPT_OK(n.left)) return false;
-                break;
-
-            case AST_TERNARY:
-                if (!AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
-                break;
-
-            case AST_SWITCH_EQ:
-                if (n.sub > 3 || !AST_REQ_OK(n.left) || !AST_OPT_OK(n.right)) return false;
-                if (n.sub == 0 && !AST_REQ_OK(n.right)) return false;
-                if (n.sub == 1 && (n.ref == 0 || n.ref >= hdr->type_count)) return false;
-                if (n.sub == 2 && n.ref >= PARSER_MAX_LOCALS) return false;
-                break;
-
-            case AST_TAGGED_SCOPE:
-                if (n.sub >= MEM_MAX_LABELS || !AST_REQ_OK(n.left)) return false;
-                break;
-
-            case AST_JUMP:
-            case AST_RUN_TAG:
-                if (n.sub >= MEM_MAX_LABELS) return false;
-                break;
-
-            case AST_BREAK:
-                if ((n.sub != 0xFFu && n.sub >= MEM_MAX_LABELS) || !AST_OPT_OK(n.left)) return false;
-                break;
-
-            case AST_CONTINUE:
-                if (n.sub != 0xFFu && n.sub >= MEM_MAX_LABELS) return false;
-                break;
-
-            case AST_RETURN:
-            case AST_MAT_LIT:
-                if (!AST_OPT_OK(n.left)) return false;
-                break;
-
-            case AST_INDEX:
-                if (!AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
-                break;
-
-            case AST_FOR_IN:
-                if (n.sub >= PARSER_MAX_LOCALS || !AST_REQ_OK(n.left) || !AST_REQ_OK(n.right)) return false;
-                break;
-
-            case AST_UNPACK_ELEM:
-                if (n.left >= PARSER_MAX_LOCALS) return false;
-                break;
-
-            case AST_LAMBDA:
-                if (n.sub > 4 || !AST_REQ_OK(n.ref)) return false;
-                break;
-
-            case AST_FN_CALL:
-                if (!AST_REQ_OK(n.left) || !AST_OPT_OK(n.right)) return false;
-                break;
-
-            default:
-                return false;
-        }
-    }
-
-    #undef AST_OPT_OK
-    #undef AST_REQ_OK
-    return true;
-}
-
-bool ext_validate_mathc_buf(const uint8_t *data, size_t len) {
-    if (!data || len < sizeof(MathcHeader)) return false;
-    MathcHeader hdr;
-    memcpy(&hdr, data, sizeof(MathcHeader));
-    if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) return false;
-    uint32_t expected_payload = calc_mathc_payload_bytes(&hdr);
-    if (hdr.payload_bytes != expected_payload ||
-        sizeof(MathcHeader) + (size_t)expected_payload > len) {
-        return false;
-    }
-    if (hdr.perm_src_len   > MEM_SRC_BUF_CAP   ||
-        hdr.perm_ast_count > MEM_MAX_AST_NODES ||
-        hdr.perm_pool_top  > MEM_MAX_F64_POOL  ||
-        hdr.mod_count      > SYM_MAX_MODULES   ||
-        hdr.type_count     > SYM_MAX_TYPES     ||
-        hdr.type_count     == 0                ||
-        hdr.unit_count     > SYM_MAX_UNITS     ||
-        hdr.pat_elem_count > SYM_MAX_PAT_ELEMS ||
-        hdr.field_count    > SYM_MAX_FIELDS    ||
-        hdr.sym_count      > SYM_MAX_SYMS      ||
-        hdr.overload_count > SYM_MAX_OVERLOADS ||
-        hdr.const_count    > SYM_MAX_CONSTS) {
-        return false;
-    }
-    uint32_t expected_csum = ext_calc_mathc_checksum(&hdr,
-                                                     data + sizeof(MathcHeader),
-                                                     hdr.payload_bytes);
-    if (hdr.checksum != expected_csum) return false;
-    return validate_mathc_payload(data + sizeof(MathcHeader), &hdr);
-}
-
-bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
-                        const uint8_t *data, size_t len) {
-    if (!mem || !tab) return false;
-    mem_clear_err(mem);
-    if (!data || len < sizeof(MathcHeader)) {
-        mem_err(mem, "Invalid or truncated .mathc image");
-        return false;
-    }
-
-    MathcHeader hdr;
-    memcpy(&hdr, data, sizeof(MathcHeader));
-    if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) {
-        mem_err(mem, "Bad .mathc magic or version mismatch");
-        return false;
-    }
-
-    uint32_t expected_payload = calc_mathc_payload_bytes(&hdr);
-    if (hdr.payload_bytes != expected_payload ||
-        sizeof(MathcHeader) + (size_t)expected_payload > len) {
-        mem_err(mem, "Corrupted .mathc payload size");
-        return false;
-    }
-
-    if (hdr.perm_src_len   > MEM_SRC_BUF_CAP   ||
-        hdr.perm_ast_count > MEM_MAX_AST_NODES ||
-        hdr.perm_pool_top  > MEM_MAX_F64_POOL  ||
-        hdr.mod_count      > SYM_MAX_MODULES   ||
-        hdr.type_count     > SYM_MAX_TYPES     ||
-        hdr.type_count     == 0                ||
-        hdr.unit_count     > SYM_MAX_UNITS     ||
-        hdr.pat_elem_count > SYM_MAX_PAT_ELEMS ||
-        hdr.field_count    > SYM_MAX_FIELDS    ||
-        hdr.sym_count      > SYM_MAX_SYMS      ||
-        hdr.overload_count > SYM_MAX_OVERLOADS ||
-        hdr.const_count    > SYM_MAX_CONSTS) {
-        mem_err(mem, ".mathc image exceeds compiled arena capacities");
-        return false;
-    }
-
-    /* Validate all payload table & AST child indices BEFORE touching mem or tab */
-    if (!validate_mathc_payload(data + sizeof(MathcHeader), &hdr)) {
-        mem_err(mem, "Corrupted .mathc index out of bounds");
-        return false;
-    }
-
-    uint32_t expected_csum = ext_calc_mathc_checksum(&hdr,
-                                                     data + sizeof(MathcHeader),
-                                                     hdr.payload_bytes);
-    if (hdr.checksum != expected_csum) {
-        mem_err(mem, "Corrupted .mathc checksum mismatch");
-        return false;
-    }
-
-    const uint8_t *cur = data + sizeof(MathcHeader);
-
-    #define COPY_SLICE(dst, byte_cnt) do { \
-        size_t _n = (size_t)(byte_cnt); \
-        if (_n > 0) { \
-            memcpy((dst), cur, _n); \
-            cur += _n; \
-        } \
-    } while (0)
-
-    COPY_SLICE(mem->src_buf,   hdr.perm_src_len);
-    COPY_SLICE(mem->ast,       hdr.perm_ast_count * sizeof(AstNode));
-    COPY_SLICE(mem->f64_pool,  hdr.perm_pool_top  * sizeof(double));
-    COPY_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
-    COPY_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
-    COPY_SLICE(tab->units,     hdr.unit_count     * sizeof(StrSlice));
-    COPY_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
-    COPY_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
-    COPY_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
-    COPY_SLICE(tab->overloads, hdr.overload_count * sizeof(OpOverload));
-    COPY_SLICE(tab->consts,    hdr.const_count    * sizeof(ConstDef));
-
-    #undef COPY_SLICE
-
-    mem->fast_real_type = hdr.fast_real_type;
-    mem->str_type_id    = hdr.str_type_id;
-    mem->vec_type_id    = hdr.vec_type_id;
-    mem->mat_type_id    = hdr.mat_type_id;
-    mem->fn_type_id     = 0;
-    for (uint16_t i = 1; i < hdr.type_count; ++i) {
-        if (tab->types[i].parser_intr == INTR_FN_TYPE) {
-            mem->fn_type_id = (uint8_t)i;
-            break;
-        }
-    }
-    mem->src_len        = hdr.perm_src_len;
-    mem->ast_count      = hdr.perm_ast_count;
-    mem->pool_top       = hdr.perm_pool_top;
-
-    tab->mod_count      = hdr.mod_count;
-    tab->type_count     = hdr.type_count;
-    tab->unit_count     = hdr.unit_count ? hdr.unit_count : 1;
-    tab->pat_elem_count = hdr.pat_elem_count;
-    tab->field_count    = hdr.field_count;
-    tab->sym_count      = hdr.sym_count;
-    tab->overload_count = hdr.overload_count;
-    tab->const_count    = hdr.const_count;
-    tab->active_modules = (uint64_t)hdr.active_modules;
-
-    /* Reconstruct ABI-specific Value representations for global constants IN-PLACE
-       using their saved `pool_idx` (zero new pool allocations). */
-    for (uint8_t i = 0; i < tab->const_count; ++i) {
-        uint16_t rtid = tab->consts[i].type_id;
-        uint8_t  ruid = tab->consts[i].unit_id;
-        uint16_t pidx = tab->consts[i].pool_idx;
-        tab->const_vals[i] = val_make_f64_at_pool(mem, rtid, ruid, pidx);
-    }
-
-    sym_rebuild_index(tab);
-    mem_snapshot_perm(mem);
     return true;
 }

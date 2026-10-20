@@ -60,12 +60,17 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     add_compile_options(-O2)
 endif()
 
-# Gather engine implementation sources:
-#   - Core/Code/*.c          : Core engine pipeline (arena, sym_table, lexer, parser, ext_loader, evaluator)
+# Gather engine implementation sources separated by folder/responsibility:
+#   - Core/Code/*.c          : Core engine pipeline (arena, sym_table, lexer, parser, evaluator, math_engine)
+#   - Core/compile/*.c       : Extension compiler (`compiler.c`), `<[dep]` linker (`linker.c`),
+#                              `.mathc` binary serializer (`mathc_bin.c`) & user loader (`user_loader.c`)
+#   - Core/session/*.c       : Parallel in-memory sessions (`session.c`) & order-tagged snapshots (`snapshot.c`)
 #   - Core/lib/delegate/*.c  : All `@` intrinsic C delegates (@add, @sin, @vnew, @mzero, @calc_*, etc.)
 #   - Core/lib/hardcode/*.c  : All hardcoded grammar & ergonomic rules (reserved kw, implicit *, UFCS, etc.)
 file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/Core/Code/*.c"
+    "${CMAKE_SOURCE_DIR}/Core/compile/*.c"
+    "${CMAKE_SOURCE_DIR}/Core/session/*.c"
     "${CMAKE_SOURCE_DIR}/Core/lib/delegate/*.c"
     "${CMAKE_SOURCE_DIR}/Core/lib/hardcode/*.c"
 )
@@ -75,6 +80,8 @@ file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Test/*.c")
 add_library(mathengine STATIC ${CORE_SOURCES})
 target_include_directories(mathengine PUBLIC
     "${CMAKE_SOURCE_DIR}/Core/Headers"
+    "${CMAKE_SOURCE_DIR}/Core/compile"
+    "${CMAKE_SOURCE_DIR}/Core/session"
     "${CMAKE_SOURCE_DIR}/Core/lib/delegate"
     "${CMAKE_SOURCE_DIR}/Core/lib/hardcode"
 )
@@ -84,7 +91,10 @@ target_link_libraries(mathengine PUBLIC m)
 add_executable(myapp ${TEST_SOURCES})
 target_link_libraries(myapp PRIVATE mathengine)
 
-# Optional standalone AOT extension text -> `.mathc` & header compiler (`make stdlib`)
+# Optional standalone AOT extension compiler & linker (`make stdlib`)
+# Note: Library/*.math files have no numerical prefixes and are passed in
+# alphabetical order (`algebra.math` first, `bootstrap.math` fourth, etc.);
+# `mathc` compiles each unit and topologically links them by `<[dep]`.
 if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
     add_executable(mathc EXCLUDE_FROM_ALL
         "${CMAKE_SOURCE_DIR}/Library/mathc.c"
@@ -96,20 +106,20 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/stdlib.mathc"
             "${CMAKE_SOURCE_DIR}/Core/Headers/stdlib_precompiled.h"
             k_stdlib_mathc
-            "${CMAKE_SOURCE_DIR}/Library/00_bootstrap.math"
-            "${CMAKE_SOURCE_DIR}/Library/10_arith.math"
-            "${CMAKE_SOURCE_DIR}/Library/20_trig.math"
-            "${CMAKE_SOURCE_DIR}/Library/30_complex.math"
-            "${CMAKE_SOURCE_DIR}/Library/40_geom.math"
-            "${CMAKE_SOURCE_DIR}/Library/50_algebra.math"
-            "${CMAKE_SOURCE_DIR}/Library/55_calculus.math"
-            "${CMAKE_SOURCE_DIR}/Library/60_units.math"
-            "${CMAKE_SOURCE_DIR}/Library/65_conversions.math"
-            "${CMAKE_SOURCE_DIR}/Library/70_physics.math"
-            "${CMAKE_SOURCE_DIR}/Library/80_chemistry.math"
-            "${CMAKE_SOURCE_DIR}/Library/90_biology.math"
+            "${CMAKE_SOURCE_DIR}/Library/algebra.math"
+            "${CMAKE_SOURCE_DIR}/Library/arith.math"
+            "${CMAKE_SOURCE_DIR}/Library/biology.math"
+            "${CMAKE_SOURCE_DIR}/Library/bootstrap.math"
+            "${CMAKE_SOURCE_DIR}/Library/calculus.math"
+            "${CMAKE_SOURCE_DIR}/Library/chemistry.math"
+            "${CMAKE_SOURCE_DIR}/Library/complex.math"
+            "${CMAKE_SOURCE_DIR}/Library/conversions.math"
+            "${CMAKE_SOURCE_DIR}/Library/geom.math"
+            "${CMAKE_SOURCE_DIR}/Library/physics.math"
+            "${CMAKE_SOURCE_DIR}/Library/trig.math"
+            "${CMAKE_SOURCE_DIR}/Library/units.math"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        COMMENT "Recompiling Library/* -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
+        COMMENT "Compiling & linking Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"
     )
 endif()

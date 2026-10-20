@@ -13,13 +13,22 @@ Key properties:
 - **Unit-aware.** Every value carries an entity type (`real`, `complex`, `vec2`…) and an orthogonal unit tag (`distance`, `angle`, `mass`…). Mixing incompatible units is an error.
 - **Isolated evaluations.** Each call to `eng_eval` is a fresh script: variables you declare do not survive to the next call (section 4.4). Loaded extensions and host callbacks do.
 
-### 1.1 Repository Layout & Three-Way Separation of Concerns
+### 1.1 Repository Layout & Modular Separation of Concerns
 
-- **`Core/Code/` & `Core/Headers/` (Core Pipeline)**: Arena (`mem_arena`), symbol table (`sym_table`), pattern-driven lexer (`lexer`), Pratt parser (`parser`), in-memory extension compiler & `.mathc` serializer (`ext_loader`, `user_loader`), and AST evaluator (`evaluator`).
+- **`Core/Code/` & `Core/Headers/` (Core Pipeline)**: Arena (`mem_arena`), symbol table (`sym_table`), pattern-driven lexer (`lexer`), Pratt parser (`parser`), AST evaluator (`evaluator`), and top-level engine wrapper (`math_engine`).
+- **`Core/compile/` (Compilation, Topological Linking, `.mathc` Binary & User Loader)**:
+  - `compiler.h` / `compiler.c`: `[module]` unit staging (`ext_compile_unit`), duplicate module rejection, and declaration compiler (`ext_compile_slice`).
+  - `linker.h` / `linker.c`: `<[dep]` dependency DAG resolution, missing/circular dependency detection via Kahn's topological sort, and transactional linking (`ext_link_units`, `ext_compile_and_link`, `ext_load_str`).
+  - `mathc_bin.h` / `mathc_bin.c`: 40-byte `MathcHeader`, FNV-1a checksum, pre-copy structural validator, and O(1) `.mathc` serializer/loader (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
+  - `user_loader.h` / `user_loader.c`: Host-facing user extension compile, link, and `.mathc` load API (`user_compile_unit`, `user_link_ext`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc`).
+  - `ext_loader.h`: Umbrella header including `compiler.h`, `linker.h`, and `mathc_bin.h`.
+- **`Core/session/` (Parallel In-Memory Sessions & Order-Tagged Snapshots)**:
+  - `session.h` / `session.c`: Isolated parallel session lifecycle (`eng_session_open`, `eng_session_close`, `eng_session_reset`) and stateful evaluation (`eng_session_eval`).
+  - `snapshot.h` / `snapshot.c`: Canonical value expression serializer, order-tagged FNV-1a hash-chained raw-text snapshot builder (`MSP1|seq:...|prev:...|hash:...`), iterative snapshot reader (`eng_session_snapshot_next`), and full-history session continuation (`eng_session_restore`).
 - **`Core/lib/delegate/` (`delegate.h` / `delegate.c` — C `@` Intrinsics)**: Contains the `@<intrinsic>` registry and all C implementations behind `@` delegates (`@add`, `@sin`, `@vpush`, `@vshift`, `@vpeek`, `@tostr`, `@fromstr`, `@mmul`, `@calc_integ`…). Every section in `delegate.h` and `delegate.c` is annotated with `/*Below section is the C's native ...*/` and `/*Construct ...*/` banners (section 16).
 - **`Core/lib/hardcode/` (`hardcode.h` / `hardcode.c` — Hardcoded Grammar & Ergonomic Rules)**: Isolates the grammar rules fixed in C (newline statement separators, reserved words, implicit multiplication, undefined iterator variables `i in 1...5 {}`, dual unit/variable `"in"` disambiguation `25m in km`, parameterized containers `vec<T>()` / `list<T>()` / `stack<T>()` / `queue<T>()`, comprehensions, lambdas, and pattern-matched `switch`). Every section in `hardcode.h` and `hardcode.c` is annotated with `/*code section below manages hardcoding ...*/` and `/*Construct ...*/` banners (section 16).
-- **`Library/*.math` (Standard Library)**: Precompiled into `stdlib_precompiled.h` (`Library/stdlib.mathc`) and loaded in one `memcpy` by `eng_init`.
-- **`Test/`**: Contains the host harness & 317-test verification suite (`Test/main.c`), sample user extension (`Test/user_physics.math`), and this canonical guidebook (`Test/Math Engine Language (MEP) — Complete Reference.md`).
+- **`Library/*.math` (Standard Library)**: Order-independent `.math` modules (no numerical prefixes) compiled and linked by `Library/mathc.c` into `stdlib_precompiled.h` (`Library/stdlib.mathc`) and loaded in one `memcpy` by `eng_init`.
+- **`Test/`**: Contains the host harness & 322-test verification suite (`Test/main.c`), sample user extension (`Test/user_physics.math`), and this canonical guidebook (`Test/Math Engine Language (MEP) — Complete Reference.md`).
 
 ## 2. Quick Start & Tutorial Tour
 
@@ -72,8 +81,9 @@ Build with the provided `makefile` (`make run`, `make run release`, `make stdlib
 
 ```bash
 gcc -std=c11 -Wall -Wextra -Wconversion -Werror -g -Og -fsanitize=address,undefined \
-    -ICore/Headers -ICore/lib/delegate -ICore/lib/hardcode \
-    Core/Code/*.c Core/lib/delegate/delegate.c Core/lib/hardcode/hardcode.c \
+    -ICore/Headers -ICore/compile -ICore/session -ICore/lib/delegate -ICore/lib/hardcode \
+    Core/Code/*.c Core/compile/*.c Core/session/*.c \
+    Core/lib/delegate/delegate.c Core/lib/hardcode/hardcode.c \
     Test/main.c -lm -o myapp && ./myapp
 ```
 
@@ -208,7 +218,8 @@ Higher numbers bind tighter. Everything here is declared in the library, so exte
 
 | Expression | Result Type | Behavior / Result |
 | :-- | :-- | :-- |
-| `5 into 5i`, `5i into 5`, `5 into 5` | `complex` | Combines real and imaginary parts into `5 + 5i` (`complex(5, 5)`) |
+| `5 into 5`, `50m into 20cm`, `5i into 3i`, `(1+2i) into (3+4i)`, `vec2 into vec2`, `vec3 into vec3` | same entity & unit | **Likewise entities & units return their sum**: `5 into 5` is `10`, `50m into 20cm` is `50.2 [distance]`, `5i into 3i` is `8i` |
+| `5 into 5i`, `5i into 5` | `complex` | Cross-entity `real` + `iota` combines into `5 + 5i` (`complex(5, 5)`) |
 | `2 into (3 + 4i)` | `complex` | Adds real component into complex: `5 + 4i` |
 | `3i into (3 + 4i)` | `complex` | Adds imaginary component into complex: `3 + 7i` |
 | `7 into vec2(3, 4)` or `vec2(3, 4) into 7` | `vec3` | Promotes 2D `vec2(x, y)` + `z` into 3D `vec3(x=3, y=4, z=7)` |
@@ -438,13 +449,13 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | Module | `[my_ext]` header, then `<[arith]` for each dependency. Text without a header joins `default`. |
 | Constant | `tau_const = 2π` or `"name" : real = 3.14` |
 | Function (shorthand) | `hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)`. Untyped parameters are `real`, the result defaults to `real`, and each default value synthesises a shorter overload. |
-| Function (full) | `"area"(w:real, h:real) -> real = w * h`. The body can be a `{ ... }` block using `return`, `if`, loops. |
-| Prefix operator | `"√"(x:real) :80 -> real = @sqrt(x)` |
-| Postfix operator | `(n:real) "²" :95 -> real = n * n` |
-| Infix operator | `(a:real) "<>" (b:real) :<30 -> real = @ne(a, b)`, where `:<` is left-associative and `:>` is right-associative |
-| Struct type | `$point(px:real, py:real)`, constructed with `point(3, 4)`; self-referential structs are rejected |
-| Unit group | name a new group after the result type: `(x:real) "KB" :95 -> real, data_size = x * 1024` |
-| Unit-typed parameters | `(d:real, distance)`; the generic `T` accepts any group and preserves it: `"span"(a:real, T, b:real, T) -> real, T = @abs(a - b)` |
+| Function (typed) | `avg_speed(d:real, distance, t:real, time) -> real, speed = d / t`. The body can be a `{ ... }` block using `return`, `if`, loops, and newline statement separation. |
+| Prefix operator | `"√"(x) :80 = @sqrt(x)` or `not(x) :25 = @lnot(x)` |
+| Postfix operator | `(n) "²" :95 = n * n` or `(x) km :95 -> real, distance = x * 1000` |
+| Infix operator | `(a) "<>" (b) :<30 = @ne(a, b)` or `(a) plus (b) :<45 = a + b`, where `:<` is left-associative and `:>` is right-associative |
+| Struct type | `$point(px, py)` (fields default to `real`, or `$circle(center:vec2, radius)`), constructed with `point(3, 4)` |
+| Unit group | name a new group after the result type: `(x) KB :95 -> real, data_size = x * 1024` |
+| Unit-typed parameters | `(d:real, distance)`; the generic `T` accepts any group and preserves it: `unit_span(a:real, T, b:real, T) -> real, T = @abs(a - b)` |
 
 ## 13. Embedding API and Limits
 
@@ -458,7 +469,9 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | `eng_last_error(&eng)` | last error message (127 characters max) |
 | `eng_set_module`, `eng_is_module_active` | toggle modules by name |
 | `eng_register_extern(&eng, name, fn, ctx)` | bind `@name(...)` to a C callback |
-| `user_compile_ext`, `user_load_mathc` | in-memory extension compile and cache load |
+| `eng_session_open`, `eng_session_close`, `eng_session_reset`, `eng_session_eval` | parallel in-memory evaluation sessions |
+| `eng_session_snapshot_next`, `eng_session_snapshot_rewind`, `eng_session_snapshot_count`, `eng_session_snapshot_at`, `eng_session_restore` | iterative order-tagged raw-text snapshots & session continuation |
+| `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | separated compilation, topological `<[dep]` linking, and `.mathc` binary cache load |
 
 **Capacity limits** (compile-time constants in `mem_arena.h` and `sym_table.h`):
 

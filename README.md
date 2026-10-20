@@ -3,9 +3,9 @@
 A lightweight, fast, embeddable **C11 mathematical programming engine** built on
 a *blank-slate* architecture. The engine ships with **zero hardcoded math,
 types, or operators** — every delimiter, type, operator, function, constant,
-control structure, and unit type group is compiled from modular `.math` files
-into a portable `.mathc` binary image. Modules can be enabled or disabled in
-**O(1)** via a bitmask flip.
+control structure, and unit type group is compiled and dependency-linked from
+modular `.math` files into a portable `.mathc` binary image. Modules can be
+enabled or disabled in **O(1)** via a bitmask flip.
 
 ---
 
@@ -13,46 +13,76 @@ into a portable `.mathc` binary image. Modules can be enabled or disabled in
 
 ### Architecture
 
-The design is a deliberate **three-way separation of concerns**:
+The codebase is organized by responsibility into dedicated folders for readability:
 
-- **`Core/Code/` + `Core/Headers/`** — the engine pipeline (arena, symbol table,
-  lexer, Pratt parser, extension loader, AST evaluator).
+- **`Core/Code/` + `Core/Headers/`** — the core engine pipeline: isolated memory
+  arena (`mem_arena`), symbol/type/overload registry (`sym_table`), pattern-driven
+  lexer (`lexer`), Pratt parser (`parser`), AST evaluator (`evaluator`), and
+  top-level engine wrapper (`math_engine`).
+- **`Core/compile/`** — extension compilation, topological dependency linking,
+  `.mathc` binary serialization, and host-facing user extension loading:
+  - `compiler.h` / `compiler.c`: `[module]` unit staging (`ext_compile_unit`),
+    duplicate module rejection, and module declaration compilation (`ext_compile_slice`).
+  - `linker.h` / `linker.c`: `<[dep]` dependency DAG resolution, missing/circular
+    dependency detection via Kahn's topological sort, and transactional linking
+    (`ext_link_units`, `ext_compile_and_link`, `ext_load_str`).
+  - `mathc_bin.h` / `mathc_bin.c`: 40-byte `MathcHeader`, FNV-1a checksum,
+    pre-copy structural validation, and O(1) `.mathc` binary serialization/loading
+    (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
+  - `user_loader.h` / `user_loader.c`: host-facing in-memory user extension
+    compiler, linker, and `.mathc` loader (`user_compile_unit`, `user_link_ext`,
+    `user_compile_and_link`, `user_compile_ext`, `user_load_mathc`).
+  - `ext_loader.h`: umbrella header including `compiler.h`, `linker.h`, and `mathc_bin.h`.
+- **`Core/session/`** — isolated parallel in-memory evaluation sessions and
+  order-tagged raw-text evaluation snapshots:
+  - `session.h` / `session.c`: parallel session lifecycle (`eng_session_open`,
+    `eng_session_close`, `eng_session_reset`) and stateful evaluation (`eng_session_eval`).
+  - `snapshot.h` / `snapshot.c`: canonical value expression serializer,
+    order-tagged FNV-1a hash-chained snapshot builder (`MSP1|seq:...|prev:...|hash:...`),
+    iterative snapshot reader (`eng_session_snapshot_next`), and full-history
+    session restoration (`eng_session_restore`).
 - **`Core/lib/delegate/`** — every C-backed `@` intrinsic (`@add`, `@sin`,
-  `@vnew`, `@mzero`, `@calc_diff`, `@calc_solve`, ...).
+  `@vnew`, `@mzero`, `@calc_diff`, `@calc_solve`, `@tostr`, `@fromstr`, ...).
 - **`Core/lib/hardcode/`** — the small set of *hardcoded* grammar/ergonomic rules
   (reserved keywords, default `:real`/`-> real` fallback, implicit
-  multiplication, keywordless loops, destructuring), kept explicitly isolated so
-  they are auditable in one place.
+  multiplication, keywordless loops, destructuring, parameterized `<T>`
+  containers), kept explicitly isolated so they are auditable in one place.
 - **`Library/`** — all operators, precedences, types, units, structs, constants,
-  and scientific functions.
+  and scientific functions, written without numerical filename prefixes and
+  linked via `<[dep]` topological resolution.
 
 The engine core (`Core/`) has **no filesystem, path, or networking
-dependencies**. The host frontend owns all file I/O; the engine compiles
-`.math` text and loads `.mathc` images strictly in memory, and can call back
-into host-provided C functions (`@extern`) for things like live web APIs,
-databases, or sensor reads.
+dependencies**. The host frontend owns all file I/O; the engine compiles and
+links `.math` text, loads `.mathc` images, and manages parallel evaluation
+sessions strictly in memory, and can call back into host-provided C functions
+(`@extern`) for things like live web APIs, databases, or sensor reads.
 
 ```
 Host Application (Test/main.c)
      │   Owns all platform file I/O, paths, storage & networking
      │
-     ├──► [math_engine]  Top-Level Wrapper — auto-boots embedded stdlib,
-     │        │          registers host externs
+     ├──► [Core/Headers + Core/Code]  Core Engine Pipeline
+     │        ├──► [math_engine]  Top-level wrapper, auto-boot stdlib & stateless eval
      │        ├──► [mem_arena]    Isolated memory & 8-byte NaN-boxed Values
      │        ├──► [sym_table]    Types, structs, modules, overloads, units, externs
      │        ├──► [lexer]        Pattern-driven consuming types & syntax tokens
      │        ├──► [parser]       Top-down operator precedence (Pratt) parser
-     │        ├──► [ext_loader]   In-memory `.math` compiler & `.mathc` serializer
-     │        ├──► [evaluator]    Type-dispatched AST evaluator
-     │        │
-     │        ├──► [delegate]     C `@<intrinsic>` implementations (@add, @sin,
-     │        │                   @vnew, @mzero, @calc_diff, @calc_solve, ...)
-     │        └──► [hardcode]     Hardcoded grammar & ergonomic rules (reserved
-     │                            keywords, implicit *, UFCS, `(i in ...){}`, ...)
+     │        └──► [evaluator]    Type- & unit-dispatched AST evaluator
      │
-     └──► [user_loader]  In-memory user extension utility
-               1. user_compile_ext : raw `.math` text -> hooks Engine + returns `.mathc`
-               2. user_load_mathc  : `.mathc` bytes   -> hooks Engine in O(1)
+     ├──► [Core/compile]              Compilation, Linking & `.mathc` Serialization
+     │        ├──► [compiler]     Stage raw `.math` module units & compile declarations
+     │        ├──► [linker]       Topological `<[dep]` DAG linker & cycle detector
+     │        ├──► [mathc_bin]    `.mathc` binary serializer, validator & O(1) loader
+     │        └──► [user_loader]  Host API: user_compile_unit, user_link_ext,
+     │                            user_compile_and_link, user_compile_ext, user_load_mathc
+     │
+     ├──► [Core/session]              Parallel In-Memory Sessions & Snapshots
+     │        ├──► [session]      eng_session_open / close / reset / eval
+     │        └──► [snapshot]     eng_session_snapshot_next / rewind / at / restore
+     │
+     └──► [Core/lib]                  C Intrinsics & Hardcoded Grammar Rules
+              ├──► [delegate]     C `@<intrinsic>` implementations (@add, @sin, ...)
+              └──► [hardcode]     Hardcoded grammar & ergonomic rules (implicit *, UFCS, ...)
 ```
 
 ### Repository Layout
@@ -60,36 +90,44 @@ Host Application (Test/main.c)
 ```
 CMakeLists.txt
 makefile
+README.md
 Core/
   Headers/    math_engine.h  mem_arena.h  sym_table.h  lexer.h
-              parser.h  ext_loader.h  evaluator.h  user_loader.h
+              parser.h  evaluator.h
               stdlib_precompiled.h   (auto-generated embedded stdlib image)
   Code/       math_engine.c  mem_arena.c  sym_table.c  lexer.c
-              parser.c  ext_loader.c  evaluator.c  user_loader.c
+              parser.c  evaluator.c
+  compile/    compiler.h     compiler.c      (.math unit staging & declaration compiler)
+              linker.h       linker.c        (topological <[dep] DAG linker & cycle guard)
+              mathc_bin.h    mathc_bin.c     (.mathc binary serializer, validator & loader)
+              user_loader.h  user_loader.c   (host user extension compile/link/load API)
+              ext_loader.h                   (umbrella header for compiler/linker/mathc_bin)
+  session/    session.h      session.c       (parallel in-memory session lifecycle & eval)
+              snapshot.h     snapshot.c      (order-tagged raw-text snapshots & restore)
   lib/
-    delegate/ delegate.h  delegate.c   C `@<intrinsic>` implementations
-    hardcode/ hardcode.h  hardcode.c   Hardcoded grammar & ergonomic rules
+    delegate/ delegate.h     delegate.c      (C `@<intrinsic>` implementations)
+    hardcode/ hardcode.h     hardcode.c      (hardcoded grammar & ergonomic rules)
 Library/
-  mathc.c             Standalone AOT `.math` -> `.mathc` + header compiler
-  00_bootstrap.math   Syntax, lexical types, control flow, scopes/booleans,
-                      `$vec`, `$mat`, expression-based calculus, `!`/`~`
-  10_arith.math       Arithmetic, comparisons, number theory, stats, commercial
-  20_trig.math        Trig, hyperbolic, exponential & log functions
-  30_complex.math     Postfix `i` operator & complex arithmetic
-  40_geom.math        2D/3D vectors, circle/sphere geometry
-  50_algebra.math     2x2 & multidim matrices, quadratics, polynomial algebra
-  55_calculus.math    Differential/integral calculus, Taylor, solids of rev.
-  60_units.math       SI/Imperial unit type groups & postfix suffixes
-  65_conversions.math Same-unit conversions (`in`, `to_*`, `<u1>_to_<u2>`)
-  70_physics.math     Mechanics, EM, waves, thermo, modern physics
-  80_chemistry.math   Stoichiometry, gas laws, pH, kinetics, electrochem
-  90_biology.math     Genetics, molecular biology, physiology, ecology
-  stdlib.mathc        Compiled standard library image (generated)
+  mathc.c           Standalone AOT `.math` compiler & dependency-resolved linker
+  bootstrap.math    Syntax, lexical types, control flow, scopes/booleans,
+                    `$vec`, `$mat`, `$fn`, expression-based calculus, `_`, `into`
+  arith.math        Arithmetic, comparisons, number theory, stats, commercial
+  trig.math         Trig, hyperbolic, exponential & log functions
+  complex.math      Postfix `i` operator, complex arithmetic & `into` composition
+  geom.math         2D/3D vectors, circle/sphere geometry & `into` promotion
+  algebra.math      2x2 & multidim matrices, quadratics, polynomial algebra
+  calculus.math     Differential/integral calculus, Taylor, solids of rev.
+  units.math        SI/Imperial unit type groups & postfix suffixes
+  conversions.math  Same-unit conversions (`in`, `to_*`, `<u1>_to_<u2>`)
+  physics.math      Mechanics, EM, waves, thermo, modern physics
+  chemistry.math    Stoichiometry, gas laws, pH, kinetics, electrochem
+  biology.math      Genetics, molecular biology, physiology, ecology
+  stdlib.mathc      Compiled & linked standard library image (generated)
 Test/
-  main.c              Host demo & automated test suite
-  user_physics.math   Sample user extension (host-backed functions)
+  main.c            Host demo & automated verification suite (Sections [1]–[9])
+  user_physics.math Sample user extension (host-backed functions)
   Math Engine Language (MEP) — Complete Reference.md
-                      Canonical language specification & tutorial guidebook
+                    Canonical language specification & tutorial guidebook
 ```
 
 ### Building
@@ -114,8 +152,8 @@ cmake --build build
 ```
 
 The core is built as the static library target **`mathengine`**
-(`libmathengine.a`); the demo (`myapp`) and the AOT compiler (`mathc`) both link
-against it, so the engine can be embedded directly into other hosts.
+(`libmathengine.a`); the demo (`myapp`) and the AOT compiler/linker (`mathc`)
+both link against it, so the engine can be embedded directly into other hosts.
 
 Run from the repository root (the demo looks for `Test/user_physics.math`).
 
@@ -123,39 +161,117 @@ Run from the repository root (the demo looks for `Test/user_physics.math`).
 
 Every `Value` is a strictly **8-byte IEEE-754 NaN-box** (`sizeof(Value) == 8`):
 unitless `$real`s are stored inline as `double` bits with zero pool allocation,
-while `$iota`, unit-tagged scalars, `$str`, structs, `$vec`, and `$mat` live in
-the quiet-NaN payload space.
+while `$iota`, unit-tagged scalars, `$str`, structs, `$vec`, `$mat`, and `$fn`
+live in the quiet-NaN payload space.
 
-### Recompiling the Standard Library
+### Separated Compilation and Dependency-Resolved Linking (`Core/compile/`)
 
-`Core/Headers/stdlib_precompiled.h` is the `mathc` image of `Library/*.math`
-embedded as a C array. Regenerate it (and `Library/stdlib.mathc`) after editing
-the standard library:
+Neither user-defined modules nor the engine's own `Library/*.math` files require
+numerical filename prefixes (`00_`, `10_`, etc.). Extension building in
+`Core/compile/` is split into dedicated files and phases:
+
+1. **Compilation (`Core/compile/compiler.c` — `ext_compile_unit` / `user_compile_unit`)**:
+   Scans each raw `.math` source string, splits it into individual `[module]`
+   blocks, extracts `<[dep_name]` dependency declarations into a `UserBuildCtx`
+   (`ExtBuildCtx`) staging buffer, and verifies that no named `[module]` is
+   already loaded in the engine or duplicated across compilation units.
+2. **Linking (`Core/compile/linker.c` — `ext_link_units` / `user_link_ext`)**:
+   Constructs the module dependency DAG over all `<[dep_name]` declarations,
+   verifies that every dependency exists (either already loaded in `Engine` or
+   staged in `UserBuildCtx`), detects circular dependencies via Kahn's
+   topological sort algorithm, compiles module bodies in resolved topological
+   order via `ext_compile_slice` with full transactional rollback on error, and
+   serializes a single unified `.mathc` binary image (`Core/compile/mathc_bin.c`)
+   that is guaranteed to work.
+
+`Library/mathc.c` uses this exact same two-phase pipeline for the standard
+library: `CMakeLists.txt` and `makefile` pass `Library/algebra.math`,
+`Library/arith.math`, `Library/biology.math`, `Library/bootstrap.math`, etc. in
+alphabetical order, and `mathc` topologically links all 14 standard library
+modules into `Library/stdlib.mathc` and `Core/Headers/stdlib_precompiled.h`:
 
 ```sh
 make stdlib
 ```
 
-Standalone use of `mathc`:
+Standalone use of `mathc` (input `.math` files may be passed in any order):
 
 ```sh
-./DebugBuild/mathc out.mathc out_header.h my_array in1.math in2.math ...
+./DebugBuild/mathc out.mathc out_header.h my_array mod_c.math mod_a.math mod_b.math
 ```
 
-### The `.mathc` Binary Format
+### Module Persistence vs. Expression Evaluation & Duplicate Load Protection
+
+- **Permanent Lifetime of Loaded Modules**: Once modules are loaded into an
+  `Engine` instance — whether compiled & linked from raw `.math` text
+  (`user_compile_unit` + `user_link_ext`, `user_compile_and_link`, or
+  `user_compile_ext`) or loaded from a precompiled `.mathc` binary
+  (`user_load_mathc`) — they reside in the **permanent region** of `MemArena`
+  and `SymTable` for the **entire lifetime of the `Engine`**. You never pass
+  library source text again when evaluating expressions.
+- **Duplicate Load Rejection**: Supplying the same named `[module]` raw text
+  more than once into an engine where that module is already loaded (or
+  supplying duplicate declarations in `[default]`) is rejected as an error
+  (`"Module '[name]' is already loaded"` or `"Duplicate declaration of '...' in module '[default]'"`)
+  with transactional rollback, preventing duplicate types, constants, or
+  overloads.
+- **Separate APIs for Module Loading vs. Expression Evaluation**:
+  - **Module Loading Functions (`Core/compile/user_loader.h`)**: `user_build_init`,
+    `user_compile_unit`, `user_link_ext`, `user_compile_and_link`,
+    `user_compile_ext`, and `user_load_mathc`.
+  - **Expression Evaluation Functions (`Core/Headers/math_engine.h` & `Core/session/session.h`)**:
+    `eng_eval` (stateless one-shot evaluation) and `eng_session_eval` (stateful
+    session evaluation).
+
+### Parallel In-Memory Sessions & Order-Tagged Raw-Text Snapshots (`Core/session/`)
+
+To support stateful multi-step workflows without losing variables between calls,
+`Core/session/` provides **independent, parallel, unnamed in-memory sessions**
+(`session.h` / `session.c`) and **order-tagged raw-text snapshots**
+(`snapshot.h` / `snapshot.c`):
+
+- **Parallel & Unnamed (`session.c`)**: `eng_session_open(&eng)` allocates an
+  isolated session slot in memory and returns an integer `session_id`
+  (`0 .. ENG_MAX_SESSIONS - 1`). Multiple sessions can evaluate expressions in
+  parallel on the same `Engine` without sharing variables, while stateless
+  `eng_eval` calls remain completely isolated.
+- **Independent of User Library Loading**: Compiling/linking new user modules
+  (or toggling modules via `eng_set_module`) is independent of sessions; any
+  active session can immediately use newly linked modules.
+- **Order-Tagged Iterative Raw-Text Snapshots (`snapshot.c`)**: Every successful
+  `eng_session_eval` records one order-tagged raw-text snapshot
+  (`MSP1|seq:<n>|prev:<hex>|hash:<hex>|vars:<k>|...|res:<type>:<unit>=<val>`)
+  capturing the evaluation sequence number (`seq:1, 2, ...`), a cryptographic
+  FNV-1a hash chain (`prev` and `hash`), all active session variables (including
+  entity types, unit groups, concrete type/unit locks, containers, structs, and
+  lambda closures), and the evaluation result.
+- **Iterative Retrieval & Full-Information Restoration (`snapshot.c`)**:
+  - Calling `eng_session_snapshot_next(&eng, sid)` in a loop yields each
+    evaluation's snapshot as raw text in order (`seq:1`, `seq:2`, ...) and
+    returns `NULL` when complete.
+  - Calling `eng_session_restore(&eng, snapshots, count)` takes an array of
+    raw-text snapshots (even if supplied out of order), uses the order tags and
+    hash chain to verify that **full, contiguous, uncorrupted history** (`1 .. count`)
+    is present, reconstructs the session state in memory, and returns a new
+    `session_id` ready to continue evaluating from `seq:count + 1` onwards.
+
+### The `.mathc` Binary Format (`Core/compile/mathc_bin.h`)
 
 A `.mathc` image is a compact, ABI- and OS-neutral snapshot of the engine's
 permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
-version, type/module/symbol/constant counts, arena watermarks, module bitmask)
-followed by the payload. Because the header is fixed-width and the payload is
-copied verbatim, loading is a single `memcpy` — hence O(1) boot. Host-registered
-externs are intentionally *not* serialized; they are re-bound by the host after
-loading.
+version, type/module/symbol/constant counts, arena watermarks, module bitmask,
+and 32-bit FNV-1a checksum) followed by the payload. Because the header is
+fixed-width and the payload is copied verbatim after pre-copy bounds and
+checksum verification, loading is O(1) `memcpy` time. Host-registered externs
+are intentionally *not* serialized; they are re-bound by the host after loading.
 
 ### C API Usage
 
+#### 1. Stateless Evaluation & Module Toggling
+
 ```c
-#include "math_engine.h"   /* + user_loader.h for user extensions */
+#include "math_engine.h"
+#include "user_loader.h"
 
 Engine eng;
 if (!eng_init(&eng)) { /* embedded stdlib is now ready */ }
@@ -170,48 +286,82 @@ if (eng_eval(&eng, "ke(2 kg, 36 kph)", &v)) {
 eng_set_module(&eng, "units", false);   /* O(1) toggle */
 ```
 
-Compiling and reloading a user extension:
+#### 2. Compiling & Linking Out-of-Order User Modules into a Single `.mathc` Binary
 
 ```c
+UserBuildCtx build;
+user_build_init(&build);
+
+/* Compile user modules in ANY order (even if mod_aero depends on mod_base) */
+user_compile_unit(&eng, &build, "[mod_aero]\n<[mod_base]\nlift(v) = base_fn(v) * 2\n");
+user_compile_unit(&eng, &build, "[mod_base]\n<[arith]\nbase_fn(x) = x + 10\n");
+
+/* Link in topological dependency order -> hooks `eng` + outputs single `.mathc` */
 const uint8_t *mathc = NULL;
 size_t mathc_len = 0;
+user_link_ext(&eng, &build, &mathc, &mathc_len);
 
-/* Compile raw `.math` text, hook it in, get back `.mathc` bytes */
-user_compile_ext(&eng, raw_math_text, &mathc, &mathc_len);
-/* ...host persists `mathc`/`mathc_len`... */
-
-/* Later: load a compiled image in O(1) memcpy time */
+/* Later (or in another process): load the linked `.mathc` binary in O(1) time */
 user_load_mathc(&eng, saved_bytes, saved_len);
 ```
 
-Key entry points (`math_engine.h` + `user_loader.h`):
+#### 3. Parallel In-Memory Sessions, Iterative Snapshots & Session Continuation
 
-| Function | Purpose |
-| --- | --- |
-| `eng_init` | Init engine + auto-boot embedded precompiled stdlib (returns `bool`) |
-| `eng_init_blank` | Init a completely blank-slate engine |
-| `eng_eval` | Parse & evaluate an expression |
-| `eng_register_extern` | Bind `@name(...)` to a host C callback |
-| `eng_set_module` / `eng_is_module_active` | Toggle a module in O(1) |
-| `eng_format_value` | Format any `Value` to a string |
-| `eng_val_type` / `eng_type_name` | Inspect a value's entity type |
-| `eng_val_unit` / `eng_unit_name` | Inspect a value's unit type group |
-| `eng_last_error` | Last error message |
-| `user_compile_ext` | Raw `.math` text → hooks engine + returns `.mathc` bytes |
-| `user_load_mathc` | `.mathc` bytes → hooks engine in O(1) |
+```c
+int s1 = eng_session_open(&eng);
+int s2 = eng_session_open(&eng);
+
+eng_session_eval(&eng, s1, "x : real, distance := 50m ; scale := a => a * 3", &v);
+eng_session_eval(&eng, s2, "x := 999", &v);            /* independent of s1 */
+eng_session_eval(&eng, s1, "x += 25m ; scale(4)", &v); /* x is 75m, v is 12 */
+
+/* Iteratively extract order-tagged raw-text snapshots from s1 */
+const char *saved[32];
+size_t n_snaps = 0;
+const char *raw = NULL;
+while ((raw = eng_session_snapshot_next(&eng, s1)) != NULL) {
+    saved[n_snaps++] = raw; /* host can persist each raw-text snapshot */
+}
+
+/* Later: restore and continue the session from its snapshots */
+int s_cont = eng_session_restore(&eng, saved, n_snaps);
+eng_session_eval(&eng, s_cont, "x + 25m", &v);         /* 100 [distance] */
+eng_session_close(&eng, s1);
+eng_session_close(&eng, s2);
+eng_session_close(&eng, s_cont);
+```
+
+Key entry points (`math_engine.h`, `session.h`, `snapshot.h`, `user_loader.h`):
+
+| Function | Header | Purpose |
+| --- | --- | --- |
+| `eng_init` / `eng_init_blank` | `Core/Headers/math_engine.h` | Init engine + auto-boot embedded stdlib, or init blank-slate engine |
+| `eng_eval` | `Core/Headers/math_engine.h` | Stateless expression parse & evaluation |
+| `eng_register_extern` | `Core/Headers/math_engine.h` | Bind `@name(...)` to a host C callback |
+| `eng_set_module` / `eng_is_module_active` | `Core/Headers/math_engine.h` | Toggle a module in O(1) |
+| `eng_format_value` / `eng_val_type` / `eng_val_unit` / `eng_last_error` | `Core/Headers/math_engine.h` | Format values and inspect types, units, or errors |
+| `eng_session_open` / `eng_session_close` / `eng_session_reset` | `Core/session/session.h` | Open, close, or reset an isolated parallel in-memory session |
+| `eng_session_eval` | `Core/session/session.h` | Evaluate an expression in a session (persists state & appends order-tagged snapshot) |
+| `eng_session_snapshot_next` / `eng_session_snapshot_rewind` | `Core/session/snapshot.h` | Iteratively retrieve each evaluation's order-tagged snapshot as raw text |
+| `eng_session_snapshot_count` / `eng_session_snapshot_at` | `Core/session/snapshot.h` | Query snapshot count or inspect a snapshot by index |
+| `eng_session_restore` | `Core/session/snapshot.h` | Verify full order-tagged snapshot chain and continue session in memory |
+| `user_build_init` / `user_compile_unit` / `user_link_ext` | `Core/compile/user_loader.h` | Multi-unit order-independent `.math` compilation & topological linking into `Engine` + `.mathc` |
+| `user_compile_and_link` / `user_compile_ext` | `Core/compile/user_loader.h` | Batch or single-string `.math` compile & link convenience wrappers |
+| `user_load_mathc` | `Core/compile/user_loader.h` | `.mathc` bytes → hooks engine in O(1) |
 
 ### Testing
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
-stdlib, exercises the `user_loader` workflow (compile `.math` → `.mathc` →
-reload), registers host externs, prints an architecture report, and runs an
-automated suite (stdlib + control flow + booleans + multi-var +
-concrete units + array/matrix + calculus + conversions + algebra + physics +
-chemistry + biology + host externs + ergonomics), followed by type-safety &
-reserved-keyword guardrails, O(1) module-toggling checks, and an audit regression
-suite (unit constants in `.mathc`, transactional rollback, nesting-depth and
-input-length guards, self-referential structs, pool integrity, headerless user
-extensions, and safe float→int indexing). Run it with `make run`.
+stdlib, exercises the `user_loader` workflow, registers host externs, prints an
+architecture report, and runs an automated suite (stdlib + control flow +
+booleans + multi-var + concrete units + array/matrix + calculus + conversions +
+algebra + physics + chemistry + biology + host externs + ergonomics), followed
+by type-safety & reserved-keyword guardrails, O(1) module-toggling checks, the
+10-case audit regression & 3,000-iteration fuzzer suite, the separated
+compilation & dependency-resolved linking suite (reverse-order modules,
+duplicate module/declaration rejection, missing/circular dependency rejection),
+and the parallel in-memory session & order-tagged snapshot suite. Run it with
+`make run`.
 
 ### Design Goals
 
@@ -219,12 +369,17 @@ extensions, and safe float→int indexing). Run it with `make run`.
    `.math`; the only hardcoded grammar/ergonomic rules are quarantined in
    `Core/lib/hardcode/` so they are predictable and auditable.
 2. **Data-driven language** — syntax and semantics live in `.math`, not C.
-3. **No engine-side I/O** — the host owns files/network; the engine owns memory.
-4. **Instant boot** — precompiled, embedded, O(1) `memcpy` load.
-5. **Composability** — modules layer via `<[parent]` and toggle O(1).
-6. **Host extensibility** — native callbacks via `@extern` with no core coupling.
-7. **Small footprint** — fixed-capacity arenas, compact 8-byte AST nodes.
-8. **Portability** — plain C11 + libm, ABI/OS-neutral binary format.
+3. **Order-independent compilation & linking** — modules declare `<[parent]`
+   dependencies and link topologically (`Core/compile/`) without relying on
+   filename prefixes.
+4. **No engine-side I/O** — the host owns files/network; the engine owns memory.
+5. **Instant boot** — precompiled, embedded, O(1) `memcpy` load.
+6. **Stateful parallel sessions** — isolated in-memory sessions (`Core/session/`)
+   with iterative order-tagged raw-text snapshots for host-managed persistence
+   and continuation.
+7. **Host extensibility** — native callbacks via `@extern` with no core coupling.
+8. **Small footprint & portability** — fixed-capacity arenas, compact 8-byte
+   `Value` and `AstNode`, plain C11 + libm, ABI/OS-neutral binary format.
 
 ---
 
@@ -234,14 +389,14 @@ extensions, and safe float→int indexing). Run it with `make run`.
 
 ### 2.1 Overview
 
-MEP is an extension-driven expression language and C11 engine for scientific and everyday math. A small C core provides memory, parsing, and evaluation; almost everything else (operators, units, types, functions) is defined in text extensions (`.math`) that are compiled into the engine at start-up.
+MEP is an extension-driven expression language and C11 engine for scientific and everyday math. A small C core provides memory, parsing, linking, and evaluation; almost everything else (operators, units, types, functions) is defined in text extensions (`.math`) that are compiled and linked into the engine.
 
 Key properties:
 
-- **Embeddable.** The engine is plain C11, makes zero `malloc` calls, never touches the filesystem, and runs from fixed-size arenas (`sizeof(Engine) ≈ 247 KB`, `sizeof(Value) == 8`, `sizeof(AstNode) == 8`). It targets the Android NDK but builds anywhere.
-- **Extensible.** Operators, precedences, types, unit groups, constants, and functions are all declared in `.math` source, not hard-coded in C.
+- **Embeddable.** The engine is plain C11, makes zero `malloc` calls, never touches the filesystem, and runs from fixed-size arenas (`sizeof(Value) == 8`, `sizeof(AstNode) == 8`). It targets the Android NDK but builds anywhere.
+- **Extensible & Order-Independent.** Operators, precedences, types, unit groups, constants, and functions are all declared in `.math` source and linked topologically via `<[dep]` declarations.
 - **Unit-aware.** Every value carries an entity type (`real`, `complex`, `vec2`…) and an orthogonal unit tag (`distance`, `angle`, `mass`…). Mixing incompatible units is an error.
-- **Isolated evaluations.** Each call to `eng_eval` is a fresh script: variables you declare do not survive to the next call. Loaded extensions and host callbacks do.
+- **Stateless or Session-Based Evaluations.** `eng_eval` runs an isolated one-shot script, while `eng_session_eval` runs inside an isolated parallel session that persists variables and emits an order-tagged raw-text snapshot per evaluation. Loaded extensions and host callbacks persist across the engine's lifetime independently of sessions.
 
 ### 2.2 Lexical Structure
 
@@ -307,7 +462,7 @@ Because postfix operators only fire after a complete operand, `m := 5 ; m + 10` 
 
 Multiple variables: `x, y := 5` broadcasts a scalar. Destructuring unpacks a struct, `vec` or `mat` in order: `r1, r2 := quad_roots(1, -5, 6)` gives `r1 = 3`, `r2 = 2`; `a, b, c := vec(10, 20, 30)`.
 
-#### 2.3.4 Scope and Lifetime
+#### 2.3.4 Scope, Stateless Calls, and Sessions
 
 `{ ... }` opens a lexical scope and evaluates to its last expression. `:=` inside it shadows an outer variable; `=` mutates it:
 
@@ -317,7 +472,7 @@ x := 1 ; { x = 99 } ; x           # 99
 { a := 3 ; b := 4 ; a^2 + b^2 }   # 25
 ```
 
-Variables live only for the current `eng_eval` call. `eng_eval("x := 10")` followed by `eng_eval("x")` fails with `Undefined symbol or constant 'x'`. Pass multi-step work as one script, or keep state in the host through extern callbacks.
+In stateless `eng_eval` calls, variables live only for that single call (`eng_eval("x := 10")` followed by `eng_eval("x")` fails with `Undefined symbol or constant 'x'`). In session calls (`eng_session_eval`), top-level variables (along with their concrete type/unit locks, containers, structs, and lambda closures) persist across evaluations within the session and are captured in each evaluation's order-tagged raw-text snapshot.
 
 ### 2.4 Operators and Precedence
 
@@ -370,11 +525,12 @@ Higher numbers bind tighter. Everything here is declared in the library, so exte
 
 #### 2.4.2 The `"into"` Insert & Composition Operator
 
-`"into"` is a right-associative infix operator (`:>55`) that inserts a component or element into another value and returns the resulting composite type or container:
+`"into"` is a right-associative infix operator (`:>55`) that sums likewise entities & units, composes cross-entity values, or inserts an element into a container:
 
 | Expression | Result Type | Behavior / Result |
 | :-- | :-- | :-- |
-| `5 into 5i`, `5i into 5`, `5 into 5` | `complex` | Combines real and imaginary parts into `5 + 5i` (`complex(5, 5)`) |
+| `5 into 5`, `50m into 20cm`, `5i into 3i`, `(1+2i) into (3+4i)`, `vec2 into vec2`, `vec3 into vec3` | same entity & unit | **Likewise entities & units return their sum**: `5 into 5` is `10`, `50m into 20cm` is `50.2 [distance]`, `5i into 3i` is `8i` |
+| `5 into 5i`, `5i into 5` | `complex` | Cross-entity `real` + `iota` combines into `5 + 5i` (`complex(5, 5)`) |
 | `2 into (3 + 4i)` | `complex` | Adds real component into complex: `5 + 4i` |
 | `3i into (3 + 4i)` | `complex` | Adds imaginary component into complex: `3 + 7i` |
 | `7 into vec2(3, 4)` or `vec2(3, 4) into 7` | `vec3` | Promotes 2D `vec2(x, y)` + `z` into 3D `vec3(x=3, y=4, z=7)` |
@@ -468,10 +624,10 @@ All elements in a container must share the locked element type `T` (and unit loc
 | :-- | :-- |
 | `push(v, x)`, `v.push(x)`, `x into v` | append to back (mutates `v`) |
 | `pop(v)`, `v.pop()` | remove and return last element (LIFO pop) |
-| `peek(v)`, `top(v)`, `back(v)` | inspect last element without removing (`@vpeek(v, -1)`) |
+| `peek(v)`, `top(v)`, `back(v)` | inspect last element without removing (`@vpeek(v, 0)`) |
 | `enqueue(q, x)`, `q.enqueue(x)` | append to back of queue (`@vpush(q, x)`) |
 | `dequeue(q)`, `shift(q)`, `pop_front(q)` | remove and return first element (`@vshift(q)`, FIFO dequeue) |
-| `front(q)`, `q.front()` | inspect first element without removing (`@vpeek(q, 0)`) |
+| `front(q)`, `q.front()` | inspect first element without removing (`@vpeek(q, 1)`) |
 | `is_empty(v)`, `v.is_empty()` | returns `1` if `len(v) == 0`, else `0` |
 | `at(v, i)`, `set(v, i, x)`, `v[i]` | read / write; negative `i` counts from the end |
 | `len`, `cap`, `resize(v, n)`, `shrink`, `clear` | size and capacity management |
@@ -563,19 +719,19 @@ Temperature uses functions rather than suffixes: `c_to_k`, `k_to_c`, `c_to_f`, `
 
 `eng_init` loads 14 named modules plus an implicit `default` module (where headerless user extensions land). Each module can be switched off and on in O(1) with `eng_set_module`; disabling `units` makes `100 km` fail with `Undefined symbol or constant 'km'`.
 
-| Module | Contents |
-| :-- | :-- |
-| `boot_syntax`, `boot_types`, `boot_control` | brackets, `$real $iota $str $vec $mat $fn`, assignment, loops, `if/switch`, jumps, `_` (`@tostr`/`@fromstr`), `into`, `vec<T>/list<T>/stack<T>/queue<T>`, sublist helpers (`enqueue`, `dequeue`, `shift`, `pop_front`, `peek`, `top`, `back`, `front`, `is_empty`), collection and calculus constructs, `type_of`, `unit_of`, `error`, `assert` |
-| `arith` | operators; `abs floor ceil round(x, digits = 0) trunc fract sign min max clamp abs_diff is_even is_odd is_close gcd lcm npr ncr fib is_prime mod_pow`; `sum mean variance stddev sma`; constants `π pi e phi φ ϕ`; commercial maths |
-| `trig` | `sin cos tan sec csc cot asin acos atan atan2 sinh cosh tanh asinh acosh atanh ln log10 log2 logb exp sqrt cbrt root hypot sigmoid` |
-| `complex_ext` | `complex`, `conj`, `cabs`, `carg`, `cexp_i`, `polar`, complex `into` overloads |
-| `geom_ext` | `vec2`, `vec3`, `circle`; `dot`, `cross2`, `cross3`, `dot3`, `vec2_mag`, `vec3_mag`, `vec2_dist`, `vec3_dist`, `lerp`, `circle_area`, `circle_circum`, `sphere_vol`, `sphere_area`, `vec2` -> `vec3` `into` overloads |
-| `algebra` | `mat2`, `det`, `trace`, `transpose`, `inv`, `inv_mat2`, `solve_2x2`, `quad_disc`, `quad_roots`, `quad_croot`, polynomial helpers, `mat_*` |
-| `calculus` | polynomial and geometric calculus |
-| `units`, `conversions` | unit groups and conversion operators |
-| `physics` | about 100 functions and constants |
-| `chemistry` | about 60 functions and constants |
-| `biology` | about 60 functions |
+| Module | Source File | Contents |
+| :-- | :-- | :-- |
+| `boot_syntax`, `boot_types`, `boot_control` | `Library/bootstrap.math` | brackets, `$real $iota $str $vec $mat $fn`, assignment, loops, `if/switch`, jumps, `_` (`@tostr`/`@fromstr`), `into`, `vec<T>/list<T>/stack<T>/queue<T>`, sublist helpers (`enqueue`, `dequeue`, `shift`, `pop_front`, `peek`, `top`, `back`, `front`, `is_empty`), collection and calculus constructs, `type_of`, `unit_of`, `error`, `assert` |
+| `arith` | `Library/arith.math` | operators; `abs floor ceil round(x, digits = 0) trunc fract sign min max clamp abs_diff is_even is_odd is_close gcd lcm npr ncr fib is_prime mod_pow`; `sum mean variance stddev sma`; constants `π pi e phi φ ϕ`; commercial maths |
+| `trig` | `Library/trig.math` | `sin cos tan sec csc cot asin acos atan atan2 sinh cosh tanh asinh acosh atanh ln log10 log2 logb exp sqrt cbrt root hypot sigmoid` |
+| `complex_ext` | `Library/complex.math` | `complex`, `conj`, `cabs`, `carg`, `cexp_i`, `polar`, complex `into` overloads |
+| `geom_ext` | `Library/geom.math` | `vec2`, `vec3`, `circle`; `dot`, `cross2`, `cross3`, `dot3`, `vec2_mag`, `vec3_mag`, `vec2_dist`, `vec3_dist`, `lerp`, `circle_area`, `circle_circum`, `sphere_vol`, `sphere_area`, `vec2` -> `vec3` `into` overloads |
+| `algebra` | `Library/algebra.math` | `mat2`, `det`, `trace`, `transpose`, `inv`, `inv_mat2`, `solve_2x2`, `quad_disc`, `quad_roots`, `quad_croot`, polynomial helpers, `mat_*` |
+| `calculus` | `Library/calculus.math` | polynomial and geometric calculus |
+| `units`, `conversions` | `Library/units.math`, `Library/conversions.math` | unit groups and conversion operators |
+| `physics` | `Library/physics.math` | about 100 functions and constants |
+| `chemistry` | `Library/chemistry.math` | about 60 functions and constants |
+| `biology` | `Library/biology.math` | about 60 functions |
 
 ### 2.10 Calculus and Solvers
 
@@ -597,20 +753,20 @@ Polynomials are coefficient vectors `[c0, c1, ..., cn]`. `poly_val`, `poly_deriv
 
 ### 2.11 Writing Extensions
 
-An extension is UTF-8 text with `#` comments. The host passes it to `user_compile_ext`; the engine does not care about file names or extensions. A compile error leaves the engine exactly as it was.
+An extension is UTF-8 text with `#` comments. The host compiles and links one or more extension texts via `user_compile_unit` + `user_link_ext` (or `user_compile_and_link` / `user_compile_ext`); the engine does not care about file names or numerical prefixes and resolves `<[dep]` dependencies topologically. A compile or link error leaves the engine exactly as it was.
 
 | Declaration | Form |
 | :-- | :-- |
 | Module | `[my_ext]` header, then `<[arith]` for each dependency. Text without a header joins `default`. |
 | Constant | `tau_const = 2π` or `"name" : real = 3.14` |
 | Function (shorthand) | `hyp_3d(x, y, z = 0) = √(x^2 + y^2 + z^2)`. Untyped parameters are `real`, the result defaults to `real`, and each default value synthesises a shorter overload. |
-| Function (full) | `"area"(w:real, h:real) -> real = w * h`. The body can be a `{ ... }` block using `return`, `if`, loops. |
-| Prefix operator | `"√"(x:real) :80 -> real = @sqrt(x)` |
-| Postfix operator | `(n:real) "²" :95 -> real = n * n` |
-| Infix operator | `(a:real) "<>" (b:real) :<30 -> real = @ne(a, b)`, where `:<` is left-associative and `:>` is right-associative |
-| Struct type | `$point(px:real, py:real)`, constructed with `point(3, 4)`; self-referential structs are rejected |
-| Unit group | name a new group after the result type: `(x:real) "KB" :95 -> real, data_size = x * 1024` |
-| Unit-typed parameters | `(d:real, distance)`; the generic `T` accepts any group and preserves it: `"span"(a:real, T, b:real, T) -> real, T = @abs(a - b)` |
+| Function (typed) | `avg_speed(d:real, distance, t:real, time) -> real, speed = d / t`. The body can be a `{ ... }` block using `return`, `if`, loops, and newline statement separation. |
+| Prefix operator | `"√"(x) :80 = @sqrt(x)` or `not(x) :25 = @lnot(x)` |
+| Postfix operator | `(n) "²" :95 = n * n` or `(x) km :95 -> real, distance = x * 1000` |
+| Infix operator | `(a) "<>" (b) :<30 = @ne(a, b)` or `(a) plus (b) :<45 = a + b`, where `:<` is left-associative and `:>` is right-associative |
+| Struct type | `$point(px, py)` (fields default to `real`, or `$circle(center:vec2, radius)`), constructed with `point(3, 4)`; self-referential structs are rejected |
+| Unit group | name a new group after the result type: `(x) KB :95 -> real, data_size = x * 1024` |
+| Unit-typed parameters | `(d:real, distance)`; the generic `T` accepts any group and preserves it: `unit_span(a:real, T, b:real, T) -> real, T = @abs(a - b)` |
 
 ### 2.12 Embedding API and Capacity Limits
 
@@ -618,15 +774,20 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | :-- | :-- |
 | `eng_init(&eng)` | boot all standard modules from the embedded image |
 | `eng_init_blank(&eng)` | empty engine with no types or operators (for tools and tests) |
-| `eng_eval(&eng, src, &out)` | evaluate a script; returns false and sets the error on failure |
+| `eng_eval(&eng, src, &out)` | stateless evaluation of a script; returns false and sets the error on failure |
+| `eng_session_open(&eng)`, `eng_session_close(&eng, sid)`, `eng_session_reset(&eng, sid)` | open, close, or reset an isolated parallel in-memory session (`Core/session/session.h`) |
+| `eng_session_eval(&eng, sid, src, &out)` | evaluate a script inside session `sid`, persisting variables and emitting an order-tagged snapshot (`Core/session/session.h`) |
+| `eng_session_snapshot_next(&eng, sid)`, `eng_session_snapshot_rewind(&eng, sid)` | iteratively retrieve each evaluation's order-tagged snapshot as raw text (`Core/session/snapshot.h`) |
+| `eng_session_snapshot_count(&eng, sid)`, `eng_session_snapshot_at(&eng, sid, idx)` | inspect session snapshot count or retrieve snapshot by index (`Core/session/snapshot.h`) |
+| `eng_session_restore(&eng, snaps, count)` | verify full order-tagged snapshot sequence and continue session in memory (`Core/session/snapshot.h`) |
 | `eng_format_value(&eng, v, buf, cap)` | render any value to text |
 | `eng_val_type`, `eng_type_name`, `eng_val_unit`, `eng_unit_name` | inspect a result |
 | `eng_last_error(&eng)` | last error message (127 characters max) |
 | `eng_set_module`, `eng_is_module_active` | toggle modules by name |
 | `eng_register_extern(&eng, name, fn, ctx)` | bind `@name(...)` to a C callback |
-| `user_compile_ext`, `user_load_mathc` | in-memory extension compile and cache load |
+| `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | in-memory extension compilation, topological dependency linking, and `.mathc` binary cache load (`Core/compile/user_loader.h`) |
 
-**Capacity limits** (compile-time constants in `mem_arena.h` and `sym_table.h`):
+**Capacity limits** (compile-time constants in `mem_arena.h`, `sym_table.h`, `compiler.h`, `mathc_bin.h`, and `session.h`):
 
 | Resource | Limit |
 | :-- | :-- |
@@ -636,15 +797,17 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | Float pool (vectors, structs, matrices) | 8,192 doubles |
 | Call stack | 256 slots |
 | Evaluation depth / parse nesting | 128 |
-| Evaluation step budget | 2,000,000 per `eng_eval` |
+| Evaluation step budget | 2,000,000 per eval |
 | Tagged scopes | 16 |
 | Modules / types / unit groups | 32 / 64 / 64 |
 | Overloads / symbols / constants / externs | 2,048 / 2,048 / 128 / 32 |
+| Parallel in-memory sessions | 8 (`ENG_MAX_SESSIONS`) |
+| Snapshots / persistent vars per session | 32 (`ENG_SESSION_MAX_EVALS`) / 16 (`ENG_SESSION_MAX_VARS`) |
 
 ### 2.13 Quirks and Notes
 
 - **`++`, `--`, `+++`, `---` do not modify variables.** They are pure operators returning `x + 1`, `x - 1`, `x + 2`, `x - 2`, in prefix or postfix form. `a := 5 ; a++ ; a` is `5`. Use `a += 1`.
-- **Variables do not persist between `eng_eval` calls.** Only extensions, constants and host state do.
+- **Stateless `eng_eval` vs. Stateful `eng_session_eval`**: Variables do not persist between stateless `eng_eval` calls; use `eng_session_eval` when you want variables, locks, containers, and closures to persist across evaluations in a session. Loaded extensions, constants, and host callbacks persist across the engine's lifetime independently of sessions.
 - **`**` is only the `vec3` dot product** and binds at 20, below `+`, so parenthesise it. For `vec2` use `dot(a, b)`.
 - **Prefix `!` vs `~`**: `~` is infix approximate equality (`<= 0.001`), and boolean NOT is `!` (or `not`).
 - **Golden ratio**: `phi`, `φ`, and `ϕ` are all defined and equal `1.618033989`.
@@ -654,7 +817,14 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 
 | Message | Cause |
 | :-- | :-- |
-| `Undefined symbol or constant 'x'` | unknown name, or a variable from an earlier `eng_eval` call |
+| `Undefined symbol or constant 'x'` | unknown name, or a variable from an earlier stateless `eng_eval` call |
+| `Module '[name]' is already loaded` | supplying the same named `[module]` raw text a second time |
+| `Duplicate declaration of 'fn' in module '[default]'` | supplying the same headerless `[default]` raw text a second time |
+| `Unresolved module dependency '<[dep]' required by '[mod]'` | linking a module whose `<[dep]` was neither loaded nor staged |
+| `Circular module dependency involving '[mod]'` | cycle in `<[dep]` declarations across staged modules |
+| `Incomplete session snapshots: missing evaluation seq:k` | restoring a session with a missing evaluation snapshot in `1..count` |
+| `Broken session snapshot chain at seq:k` | mixing snapshots from different sessions or out-of-sequence hash chain |
+| `Corrupted session snapshot checksum mismatch at seq:k` | modified or truncated snapshot string passed to `eng_session_restore` |
 | `Unexpected trailing token 'y'` | two statements on one line without `;` |
 | `Unexpected token in expression` | incomplete expression such as `1 +` |
 | `No active overload for '**' with types (real, real)` | no definition matches the operand types |
@@ -672,4 +842,4 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 
 ## License
 
-Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE).
+Licensed under the **Apache License, Version 2.0**. See [LICENSE](https://www.google.com/search?q=LICENSE).

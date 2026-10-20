@@ -60,11 +60,12 @@ int parser_add_local(Parser *P, const char *name, uint16_t len, uint16_t type_id
     }
     uint8_t slot = P->local_count++;
     uint8_t vidx = P->vis_count++;
-    P->locals[vidx].name        = mem_intern_str(P->lex.mem, name, len);
-    P->locals[vidx].type_id     = type_id;
-    P->locals[vidx].slot        = slot;
-    P->locals[vidx].scope_depth = P->scope_depth;
-    P->slot_types[slot]         = type_id;
+    P->locals[vidx].name         = mem_intern_str(P->lex.mem, name, len);
+    P->locals[vidx].type_id      = type_id;
+    P->locals[vidx].slot         = slot;
+    P->locals[vidx].scope_depth  = P->scope_depth;
+    P->locals[vidx].is_loop_iter = 0;
+    P->slot_types[slot]          = type_id;
     return (int)slot;
 }
 
@@ -873,9 +874,29 @@ static uint16_t parse_branch_body(Parser *P) {
     return parser_parse_expr(P, 16);
 }
 
+static void record_lambda_src(Parser *P, uint16_t body_ast, uint16_t start_off) {
+    MemArena *mem = P->lex.mem;
+    if (mem->fn_src_count >= 16) return;
+    uint16_t end_off = (P->lex.cur.kind == TOK_EOF) ? P->lex.pos : P->lex.cur.off;
+    while (end_off > start_off) {
+        char c = P->lex.src[end_off - 1];
+        if (c == ' ' || c == '\t' || c == '\r' || c == '\n') end_off--;
+        else break;
+    }
+    if (end_off > start_off) {
+        StrSlice s = mem_intern_str(mem, P->lex.src + start_off, (uint16_t)(end_off - start_off));
+        if (!mem->has_error) {
+            mem->fn_body_ast[mem->fn_src_count]  = body_ast;
+            mem->fn_src_slice[mem->fn_src_count] = s;
+            mem->fn_src_count++;
+        }
+    }
+}
+
 static uint16_t parse_lambda_from_paren(Parser *P) {
     MemArena       *mem = P->lex.mem;
     const SymTable *tab = P->lex.tab;
+    uint16_t lam_start  = P->lex.cur.off;
     lex_next(&P->lex); /* consume '(' */
 
     const char *pnames[4] = { NULL, NULL, NULL, NULL };
@@ -958,6 +979,7 @@ static uint16_t parse_lambda_from_paren(Parser *P) {
     P->last_was_block = false;
     if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
 
+    record_lambda_src(P, body_ast, lam_start);
     uint16_t packed_01 = (uint16_t)((uint32_t)pslots[0] | ((uint32_t)pslots[1] << 8u));
     uint16_t packed_23 = (uint16_t)((uint32_t)pslots[2] | ((uint32_t)pslots[3] << 8u));
     return mem_alloc_ast(mem, AST_LAMBDA, pcnt, body_ast, packed_01, packed_23);
@@ -984,6 +1006,7 @@ static uint16_t parse_lambda_from_ident(Parser *P, const char *id_str, uint16_t 
     P->last_was_block = false;
     if (mem->has_error || body_ast == MEM_NO_IDX) return MEM_NO_IDX;
 
+    record_lambda_src(P, body_ast, (uint16_t)(id_str - P->lex.src));
     return mem_alloc_ast(mem, AST_LAMBDA, 1, body_ast, (uint16_t)pslot, 0);
 }
 
@@ -1637,6 +1660,7 @@ static uint16_t resolve_var_for_assign(Parser *P, const char *name, uint16_t len
             slot = (uint8_t)parser_add_local(P, name, len, init_tid);
             if (mem->has_error) return MEM_NO_IDX;
         } else {
+            P->locals[vidx].is_loop_iter = 0;
             slot = P->locals[vidx].slot;
             if (lock_type != 0) {
                 P->slot_types[slot] = lock_type;
@@ -2056,6 +2080,7 @@ static uint16_t parse_nud(Parser *P) {
             if (!is_active_const) {
                 int slot = parser_add_local(P, id_str, id_len, mem->fast_real_type);
                 if (mem->has_error) return MEM_NO_IDX;
+                P->locals[P->vis_count - 1].is_loop_iter = 1;
                 StrSlice vslice  = P->locals[P->vis_count - 1].name;
                 uint16_t var_sym = sym_intern((SymTable *)tab, mem, vslice);
                 return mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)slot,
