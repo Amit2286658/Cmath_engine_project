@@ -15,6 +15,7 @@
 #include "math_engine.h"
 #include "stdlib_precompiled.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void eng_init_blank(Engine *eng) {
@@ -28,6 +29,27 @@ bool eng_init(Engine *eng) {
     if (!eng) return false;
     eng_init_blank(eng);
     return ext_load_mathc_mem(&eng->mem, &eng->sym, k_stdlib_mathc, sizeof(k_stdlib_mathc));
+}
+
+Engine *eng_create_blank(void) {
+    Engine *eng = (Engine *)malloc(sizeof(Engine));
+    if (!eng) return NULL;
+    eng_init_blank(eng);
+    return eng;
+}
+
+Engine *eng_create(void) {
+    Engine *eng = (Engine *)malloc(sizeof(Engine));
+    if (!eng) return NULL;
+    if (!eng_init(eng)) {
+        free(eng);
+        return NULL;
+    }
+    return eng;
+}
+
+void eng_destroy(Engine *eng) {
+    free(eng);
 }
 
 bool eng_register_extern(Engine *eng, const char *name,
@@ -178,8 +200,8 @@ static void format_mat_slice(const Engine *eng, uint16_t data_idx,
 
 void eng_format_mat_at(const Engine *eng, uint16_t hdr_idx, bool high_prec,
                        char *buf, size_t cap) {
-    uint8_t  rank     = (uint8_t)mem_read_pool(&eng->mem, hdr_idx + 0);
-    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 2);
+    uint8_t  rank     = (uint8_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
+    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 2));
     uint16_t dims[4]  = { 0, 0, 0, 0 };
     for (uint8_t i = 0; i < 4; ++i) {
         dims[i] = (i < rank) ? (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 4u + i)) : 0;
@@ -198,10 +220,10 @@ static void format_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
         snprintf(buf, cap, "[...]");
         return;
     }
-    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 1);
-    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 3);
+    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
+    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 3));
     uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)
                         ? eng->sym.types[elem_tid].flat_size : 1;
 
@@ -243,7 +265,7 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         return;
     }
     if (type_id == eng->mem.fn_type_id && type_id != 0) {
-        unsigned pcnt = (unsigned)mem_read_pool(&eng->mem, pool_idx + 1);
+        unsigned pcnt = (unsigned)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
         snprintf(buf, cap, "<fn/%u>", pcnt);
         return;
     }
@@ -254,7 +276,7 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
 
     if (strcmp(tname, "complex") == 0 && td->flat_size == 2) {
         double re = mem_read_pool(&eng->mem, pool_idx);
-        double im = mem_read_pool(&eng->mem, pool_idx + 1);
+        double im = mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
         if (im >= 0.0) {
             snprintf(buf, cap, "%.6g + %.6gi", re, im);
         } else {
@@ -268,10 +290,10 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         const FieldDef *fd = &eng->sym.fields[td->start_idx + i];
         char f_str[64];
         if (!eng->sym.types[fd->type_id].is_consuming) {
-            format_struct_at(eng, fd->type_id, pool_idx + fd->flat_offset,
+            format_struct_at(eng, fd->type_id, (uint16_t)(pool_idx + fd->flat_offset),
                              (uint8_t)(depth + 1), f_str, sizeof(f_str));
         } else {
-            snprintf(f_str, sizeof(f_str), "%.6g", mem_read_pool(&eng->mem, pool_idx + fd->flat_offset));
+            snprintf(f_str, sizeof(f_str), "%.6g", mem_read_pool(&eng->mem, (uint16_t)(pool_idx + fd->flat_offset)));
         }
         used += (size_t)snprintf(buf + used, cap - used, "%s%.*s=%s",
                                  (i > 0 ? ", " : ""),

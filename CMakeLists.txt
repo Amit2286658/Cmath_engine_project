@@ -1,18 +1,34 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyProject C)
+project(cmath_engine VERSION 1.0.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
-add_compile_options(-Wall -Wextra)
+# Strict warning parity between CMake and Makefile builds
+add_compile_options(
+    -Wall
+    -Wextra
+    -Wconversion
+    -Wcast-qual
+    -Wshadow
+    -Wformat=2
+    -Werror
+)
 
+# Optional shared library build (e.g. for Android NDK / JNI `libmathengine.so`)
+option(MATH_ENGINE_BUILD_SHARED "Build mathengine as a shared library (.so/.dylib)" OFF)
 
-# Hardening flags that work without needing virtual-address-space tricks --
-# useful on sandboxed environments (proot, etc.) where ASan/Valgrind can't run.
-# _FORTIFY_SOURCE needs at least some optimization to do anything at -O0, it's
-# effectively a no-op there -- hence -Og instead of -O0 in Debug below.
-add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
-add_compile_options(-fstack-protector-strong)
+# Android NDK configuration support
+if(ANDROID)
+    message(STATUS "Configuring cmath_engine for Android NDK (ABI=${ANDROID_ABI}, API=${ANDROID_PLATFORM})")
+    add_compile_options(-fPIC -fvisibility=hidden)
+else()
+    # Hardening flags for host builds
+    add_compile_options(-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+    add_compile_options(-fstack-protector-strong)
+    add_compile_options(-fvisibility=hidden)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Debug)
@@ -23,35 +39,37 @@ endif()
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     add_compile_options(-g -Og)
 
-    include(CheckCSourceRuns)
+    if(NOT ANDROID)
+        include(CheckCSourceRuns)
 
-    set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
-    check_c_source_runs("int main(void) { return 0; }" ASAN_SUPPORTED)
-    unset(CMAKE_REQUIRED_FLAGS)
+        set(CMAKE_REQUIRED_FLAGS "-fsanitize=address")
+        check_c_source_runs("int main(void) { return 0; }" ASAN_SUPPORTED)
+        unset(CMAKE_REQUIRED_FLAGS)
 
-    set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
-    check_c_source_runs("int main(void) { return 0; }" UBSAN_SUPPORTED)
-    unset(CMAKE_REQUIRED_FLAGS)
+        set(CMAKE_REQUIRED_FLAGS "-fsanitize=undefined")
+        check_c_source_runs("int main(void) { return 0; }" UBSAN_SUPPORTED)
+        unset(CMAKE_REQUIRED_FLAGS)
 
-    set(ENABLED_SANITIZERS "")
-    if(ASAN_SUPPORTED)
-        list(APPEND ENABLED_SANITIZERS "address")
-    else()
-        message(WARNING "ASan not available on this toolchain -- skipping")
-    endif()
-    if(UBSAN_SUPPORTED)
-        list(APPEND ENABLED_SANITIZERS "undefined")
-    else()
-        message(WARNING "UBSan not available on this toolchain -- skipping")
-    endif()
+        set(ENABLED_SANITIZERS "")
+        if(ASAN_SUPPORTED)
+            list(APPEND ENABLED_SANITIZERS "address")
+        else()
+            message(WARNING "ASan not available on this toolchain -- skipping")
+        endif()
+        if(UBSAN_SUPPORTED)
+            list(APPEND ENABLED_SANITIZERS "undefined")
+        else()
+            message(WARNING "UBSan not available on this toolchain -- skipping")
+        endif()
 
-    if(ENABLED_SANITIZERS)
-        list(JOIN ENABLED_SANITIZERS "," SANITIZER_FLAG_LIST)
-        message(STATUS "Enabling sanitizers: ${SANITIZER_FLAG_LIST}")
-        add_compile_options(-fsanitize=${SANITIZER_FLAG_LIST})
-        add_link_options(-fsanitize=${SANITIZER_FLAG_LIST})
-    else()
-        message(WARNING "No sanitizers available on this toolchain -- building plain debug")
+        if(ENABLED_SANITIZERS)
+            list(JOIN ENABLED_SANITIZERS "," SANITIZER_FLAG_LIST)
+            message(STATUS "Enabling sanitizers: ${SANITIZER_FLAG_LIST}")
+            add_compile_options(-fsanitize=${SANITIZER_FLAG_LIST})
+            add_link_options(-fsanitize=${SANITIZER_FLAG_LIST})
+        else()
+            message(WARNING "No sanitizers available on this toolchain -- building plain debug")
+        endif()
     endif()
 endif()
 
@@ -76,8 +94,19 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
 )
 file(GLOB_RECURSE TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Test/*.c")
 
-# Reusable static library target (ready for Android NDK / host embedding)
-add_library(mathengine STATIC ${CORE_SOURCES})
+# Reusable library target (STATIC by default; SHARED when MATH_ENGINE_BUILD_SHARED=ON for JNI/NDK)
+if(MATH_ENGINE_BUILD_SHARED)
+    add_library(mathengine SHARED ${CORE_SOURCES})
+    target_compile_definitions(mathengine PRIVATE MATH_ENGINE_SHARED=1)
+else()
+    add_library(mathengine STATIC ${CORE_SOURCES})
+endif()
+
+set_target_properties(mathengine PROPERTIES
+    C_VISIBILITY_PRESET hidden
+    POSITION_INDEPENDENT_CODE ON
+)
+
 target_include_directories(mathengine PUBLIC
     "${CMAKE_SOURCE_DIR}/Core/Headers"
     "${CMAKE_SOURCE_DIR}/Core/compile"
@@ -87,15 +116,22 @@ target_include_directories(mathengine PUBLIC
 )
 target_link_libraries(mathengine PUBLIC m)
 
-# Test & demo executable linked against `mathengine`
-add_executable(myapp ${TEST_SOURCES})
-target_link_libraries(myapp PRIVATE mathengine)
+# Test & demo executable (`myapp` / `cmath_tests`) linked against `mathengine`
+if(NOT ANDROID)
+    add_executable(myapp ${TEST_SOURCES})
+    target_link_libraries(myapp PRIVATE mathengine)
+
+    include(CTest)
+    enable_testing()
+    add_test(
+        NAME cmath_suite
+        COMMAND myapp
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+endif()
 
 # Optional standalone AOT extension compiler & linker (`make stdlib`)
-# Note: Library/*.math files have no numerical prefixes and are passed in
-# alphabetical order (`algebra.math` first, `bootstrap.math` fourth, etc.);
-# `mathc` compiles each unit and topologically links them by `<[dep]`.
-if(EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
+if(NOT ANDROID AND EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
     add_executable(mathc EXCLUDE_FROM_ALL
         "${CMAKE_SOURCE_DIR}/Library/mathc.c"
     )

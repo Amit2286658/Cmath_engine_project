@@ -167,7 +167,7 @@ static uint16_t skip_raw_ws_hc(const char *src, uint16_t p, uint16_t len) {
 }
 
 static uint8_t token_func_meta_hc(const Parser *P, Token t) {
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     const MemArena *mem = P->lex.mem;
     if (t.kind == TOK_OP) {
         return sym_active_meta_tag(tab, t.sym_id, FIX_FUNC);
@@ -184,7 +184,7 @@ static uint8_t token_func_meta_hc(const Parser *P, Token t) {
 /*code section below manages hardcoding newline as a default ';' statement separator when a new statement begins*/
 /*Construct \n (newline statement separator)*/
 bool hardcode_can_start_newline_stmt(const Parser *P) {
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     Token t = P->lex.cur;
 
     if (!t.had_newline) return false;
@@ -450,7 +450,7 @@ bool hardcode_scan_comprehension_var(const Parser *P,
 /*code section below manages hardcoding same-line implicit multiplication rules*/
 /*Construct 2x, 2π, 3(x + 1), (a + b)(c + d), 2 sin(x)*/
 bool hardcode_can_start_implicit_mul_rhs(const Parser *P) {
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     Token t = P->lex.cur;
 
     /* Never implicitly multiply across a line break */
@@ -579,7 +579,7 @@ bool hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16
     if (kind_code < 0) return false;
 
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
 
     if (P->lex.cur.had_newline || P->lex.cur.kind != TOK_OP) return false;
     StrSlice op_s = tab->syms[P->lex.cur.sym_id];
@@ -615,7 +615,7 @@ bool hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16
                     (int)s1_len, s1_ptr, (int)id_len, id_str);
             return false;
         }
-        uint8_t uid = sym_find_or_add_unit((SymTable *)tab, mem, s2_ptr, s2_len);
+        uint8_t uid = sym_find_or_add_unit(tab, mem, s2_ptr, s2_len);
         if (mem->has_error) return false;
         locked_tid = (tid == SYM_TYPE_ANY) ? 0 : (uint8_t)tid;
         locked_uid = (uid == SYM_UNIT_GENERIC || uid == SYM_UNIT_OMITTED || uid == SYM_UNIT_LOCK_NONE) ? 0 : uid;
@@ -661,7 +661,7 @@ bool hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16
     return true;
 }
 
-bool hardcode_try_eval_variadic_vec(MemArena *mem, const SymTable *tab,
+bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
                                     const AstNode *n, uint16_t frame_base,
                                     uint8_t cur_ret_type, Value *out_val) {
     if (n->ref >= tab->sym_count || mem->vec_type_id == 0) return false;
@@ -788,7 +788,7 @@ static bool is_direct_vrange_binary(const MemArena *mem, const SymTable *tab,
     return false;
 }
 
-bool hardcode_eval_in_vrange_fast(MemArena *mem, const SymTable *tab,
+bool hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
                                   const AstNode *n, uint16_t frame_base,
                                   uint8_t cur_ret_type, Value *out_val) {
     int vrange_mode = 0;
@@ -844,7 +844,7 @@ bool hardcode_eval_in_vrange_fast(MemArena *mem, const SymTable *tab,
 
 /*code section below manages hardcoding range and collection iteration loops and vector comprehensions*/
 /*Construct (i in a...b) { ... }, i in a...b { ... }, (x in vec) { ... }, [expr for x in iter]*/
-Value hardcode_eval_for_in_ast(MemArena *mem, const SymTable *tab,
+Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                                const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type) {
     uint8_t  var_slot   = n->sub;
     uint16_t iter_ast   = n->left;
@@ -1114,7 +1114,7 @@ Value hardcode_eval_unpack_elem_ast(MemArena *mem, const SymTable *tab,
 
 /*code section below manages hardcoding pattern-matched 'switch' case evaluation (exact values, ranges, struct/vector destructuring)*/
 /*Construct switch (expr) { case pat if guard : { ... } else : { ... } }*/
-Value hardcode_eval_switch_eq_ast(MemArena *mem, const SymTable *tab,
+Value hardcode_eval_switch_eq_ast(MemArena *mem, SymTable *tab,
                                   const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type) {
     /* sub == 2: Pattern variable binding (`slot` in `n->ref`, value expr in `n->left`), returns 1.0 */
     if (n->sub == 2) {

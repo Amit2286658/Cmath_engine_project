@@ -30,7 +30,8 @@ The codebase is organized by responsibility into dedicated folders for readabili
     pre-copy structural validation, and O(1) `.mathc` binary serialization/loading
     (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
   - `user_loader.h` / `user_loader.c`: host-facing in-memory user extension
-    compiler, linker, and `.mathc` loader (`user_compile_unit`, `user_link_ext`,
+    compiler, linker, and `.mathc` loader (`user_build_create`, `user_build_destroy`,
+    `user_compile_unit`, `user_link_ext`, `user_link_ext_buf`,
     `user_compile_and_link`, `user_compile_ext`, `user_load_mathc`).
   - `ext_loader.h`: umbrella header including `compiler.h`, `linker.h`, and `mathc_bin.h`.
 - **`Core/session/`** — isolated parallel in-memory evaluation sessions and
@@ -216,9 +217,9 @@ Standalone use of `mathc` (input `.math` files may be passed in any order):
   with transactional rollback, preventing duplicate types, constants, or
   overloads.
 - **Separate APIs for Module Loading vs. Expression Evaluation**:
-  - **Module Loading Functions (`Core/compile/user_loader.h`)**: `user_build_init`,
-    `user_compile_unit`, `user_link_ext`, `user_compile_and_link`,
-    `user_compile_ext`, and `user_load_mathc`.
+  - **Module Loading Functions (`Core/compile/user_loader.h`)**: `user_build_create`,
+    `user_build_destroy`, `user_build_init`, `user_compile_unit`, `user_link_ext`,
+    `user_link_ext_buf`, `user_compile_and_link`, `user_compile_ext`, and `user_load_mathc`.
   - **Expression Evaluation Functions (`Core/Headers/math_engine.h` & `Core/session/session.h`)**:
     `eng_eval` (stateless one-shot evaluation) and `eng_session_eval` (stateful
     session evaluation).
@@ -241,8 +242,8 @@ To support stateful multi-step workflows without losing variables between calls,
 - **Order-Tagged Iterative Raw-Text Snapshots (`snapshot.c`)**: Every successful
   `eng_session_eval` records one order-tagged raw-text snapshot
   (`MSP1|seq:<n>|prev:<hex>|hash:<hex>|vars:<k>|...|res:<type>:<unit>=<val>`)
-  capturing the evaluation sequence number (`seq:1, 2, ...`), a cryptographic
-  FNV-1a hash chain (`prev` and `hash`), all active session variables (including
+  capturing the evaluation sequence number (`seq:1, 2, ...`), a 32-bit FNV-1a
+  integrity hash chain (`prev` and `hash` over `uint32_t seq` — catches accidental corruption or out-of-order replay; use a host-side SHA-256/HMAC wrapper if cryptographic tamper resistance is required), all active session variables (including
   entity types, unit groups, concrete type/unit locks, containers, structs, and
   lambda closures), and the evaluation result.
 - **Iterative Retrieval & Full-Information Restoration (`snapshot.c`)**:
@@ -257,52 +258,69 @@ To support stateful multi-step workflows without losing variables between calls,
 
 ### The `.mathc` Binary Format (`Core/compile/mathc_bin.h`)
 
-A `.mathc` image is a compact, ABI- and OS-neutral snapshot of the engine's
+A `.mathc` image is a compact **little-endian** binary snapshot of the engine's
 permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
 version, type/module/symbol/constant counts, arena watermarks, module bitmask,
-and 32-bit FNV-1a checksum) followed by the payload. Because the header is
-fixed-width and the payload is copied verbatim after pre-copy bounds and
-checksum verification, loading is O(1) `memcpy` time. Host-registered externs
-are intentionally *not* serialized; they are re-bound by the host after loading.
+and 32-bit FNV-1a checksum) followed by the serialized slices (`StrSlice`,
+`AstNode`, `double`, `TypeDef`, `PatElem`, `FieldDef`, `OpOverload`, and
+`ConstDef`).
+
+- **Compile-Time Layout & Endianness Guards**: `Core/compile/mathc_bin.h`
+  enforces little-endian byte order (`__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__`)
+  and exact `sizeof(...)` + `offsetof(...)` layout invariants via `_Static_assert`
+  for every serialized struct so host-generated images (`stdlib_precompiled.h`)
+  and target builds (e.g., Android NDK ARM64/x86_64) are guaranteed binary-compatible.
+- **Zero Global State & O(1) Load**: Loading verifies the header, capacities, and
+  FNV-1a checksum before copying in O(1) `memcpy` time. Each `Engine` carries its
+  own isolated `.mathc` output buffer (`eng->mathc_buf`), or callers can supply an
+  external buffer via `user_link_ext_buf`. Host-registered externs are re-bound by
+  the host after loading.
 
 ### C API Usage
 
-#### 1. Stateless Evaluation & Module Toggling
+#### 1. Heap-Safe Lifecycle, Stateless Evaluation & Module Toggling
+
+Because `Engine` (~693 KB including its isolated 256 KB `.mathc` buffer) and
+`UserBuildCtx` (~149 KB) are large arena structs, prefer `eng_create()` /
+`eng_destroy()` and `user_build_create()` / `user_build_destroy()` rather than
+placing them on constrained thread stacks (such as Android/NDK worker threads):
 
 ```c
 #include "math_engine.h"
 #include "user_loader.h"
 
-Engine eng;
-if (!eng_init(&eng)) { /* embedded stdlib is now ready */ }
+Engine *eng = eng_create();   /* heap-allocates & boots embedded stdlib */
+if (!eng) { /* handle allocation/init failure */ }
 
 Value v;
-if (eng_eval(&eng, "ke(2 kg, 36 kph)", &v)) {
+if (eng_eval(eng, "ke(2 kg, 36 kph)", &v)) {
     char buf[128];
-    eng_format_value(&eng, v, buf, sizeof buf);
+    eng_format_value(eng, v, buf, sizeof buf);
     printf("%s\n", buf);           /* 100 */
 }
 
-eng_set_module(&eng, "units", false);   /* O(1) toggle */
+eng_set_module(eng, "units", false);   /* O(1) toggle */
+eng_destroy(eng);
 ```
 
 #### 2. Compiling & Linking Out-of-Order User Modules into a Single `.mathc` Binary
 
 ```c
-UserBuildCtx build;
-user_build_init(&build);
+UserBuildCtx *build = user_build_create();
 
 /* Compile user modules in ANY order (even if mod_aero depends on mod_base) */
-user_compile_unit(&eng, &build, "[mod_aero]\n<[mod_base]\nlift(v) = base_fn(v) * 2\n");
-user_compile_unit(&eng, &build, "[mod_base]\n<[arith]\nbase_fn(x) = x + 10\n");
+user_compile_unit(eng, build, "[mod_aero]\n<[mod_base]\nlift(v) = base_fn(v) * 2\n");
+user_compile_unit(eng, build, "[mod_base]\n<[arith]\nbase_fn(x) = x + 10\n");
 
-/* Link in topological dependency order -> hooks `eng` + outputs single `.mathc` */
+/* Link in topological dependency order -> hooks `eng` + outputs single `.mathc`
+ * (stored in `eng->mathc_buf`, or pass a caller buffer to `user_link_ext_buf`) */
 const uint8_t *mathc = NULL;
 size_t mathc_len = 0;
-user_link_ext(&eng, &build, &mathc, &mathc_len);
+user_link_ext(eng, build, &mathc, &mathc_len);
+user_build_destroy(build);
 
 /* Later (or in another process): load the linked `.mathc` binary in O(1) time */
-user_load_mathc(&eng, saved_bytes, saved_len);
+user_load_mathc(eng, saved_bytes, saved_len);
 ```
 
 #### 3. Parallel In-Memory Sessions, Iterative Snapshots & Session Continuation
@@ -335,7 +353,8 @@ Key entry points (`math_engine.h`, `session.h`, `snapshot.h`, `user_loader.h`):
 
 | Function | Header | Purpose |
 | --- | --- | --- |
-| `eng_init` / `eng_init_blank` | `Core/Headers/math_engine.h` | Init engine + auto-boot embedded stdlib, or init blank-slate engine |
+| `eng_create` / `eng_create_blank` / `eng_destroy` | `Core/Headers/math_engine.h` | Heap-allocate & initialize `Engine` (recommended for small thread stacks) and free it |
+| `eng_init` / `eng_init_blank` | `Core/Headers/math_engine.h` | Init caller-allocated `Engine` + auto-boot embedded stdlib, or init blank-slate engine |
 | `eng_eval` | `Core/Headers/math_engine.h` | Stateless expression parse & evaluation |
 | `eng_register_extern` | `Core/Headers/math_engine.h` | Bind `@name(...)` to a host C callback |
 | `eng_set_module` / `eng_is_module_active` | `Core/Headers/math_engine.h` | Toggle a module in O(1) |
@@ -345,7 +364,8 @@ Key entry points (`math_engine.h`, `session.h`, `snapshot.h`, `user_loader.h`):
 | `eng_session_snapshot_next` / `eng_session_snapshot_rewind` | `Core/session/snapshot.h` | Iteratively retrieve each evaluation's order-tagged snapshot as raw text |
 | `eng_session_snapshot_count` / `eng_session_snapshot_at` | `Core/session/snapshot.h` | Query snapshot count or inspect a snapshot by index |
 | `eng_session_restore` | `Core/session/snapshot.h` | Verify full order-tagged snapshot chain and continue session in memory |
-| `user_build_init` / `user_compile_unit` / `user_link_ext` | `Core/compile/user_loader.h` | Multi-unit order-independent `.math` compilation & topological linking into `Engine` + `.mathc` |
+| `user_build_create` / `user_build_destroy` / `user_build_init` | `Core/compile/user_loader.h` | Heap-allocate, free, or in-place init a ~149 KB `UserBuildCtx` staging context |
+| `user_compile_unit` / `user_link_ext` / `user_link_ext_buf` | `Core/compile/user_loader.h` | Multi-unit order-independent `.math` compilation & topological linking into `Engine` + `.mathc` |
 | `user_compile_and_link` / `user_compile_ext` | `Core/compile/user_loader.h` | Batch or single-string `.math` compile & link convenience wrappers |
 | `user_load_mathc` | `Core/compile/user_loader.h` | `.mathc` bytes → hooks engine in O(1) |
 
@@ -772,7 +792,8 @@ An extension is UTF-8 text with `#` comments. The host compiles and links one or
 
 | Function | Purpose |
 | :-- | :-- |
-| `eng_init(&eng)` | boot all standard modules from the embedded image |
+| `eng_create()`, `eng_create_blank()`, `eng_destroy(eng)` | heap-allocate & initialize an isolated `Engine` (~693 KB) and free it |
+| `eng_init(&eng)` | boot all standard modules into a static/caller-allocated `Engine` |
 | `eng_init_blank(&eng)` | empty engine with no types or operators (for tools and tests) |
 | `eng_eval(&eng, src, &out)` | stateless evaluation of a script; returns false and sets the error on failure |
 | `eng_session_open(&eng)`, `eng_session_close(&eng, sid)`, `eng_session_reset(&eng, sid)` | open, close, or reset an isolated parallel in-memory session (`Core/session/session.h`) |
@@ -785,19 +806,20 @@ An extension is UTF-8 text with `#` comments. The host compiles and links one or
 | `eng_last_error(&eng)` | last error message (127 characters max) |
 | `eng_set_module`, `eng_is_module_active` | toggle modules by name |
 | `eng_register_extern(&eng, name, fn, ctx)` | bind `@name(...)` to a C callback |
-| `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | in-memory extension compilation, topological dependency linking, and `.mathc` binary cache load (`Core/compile/user_loader.h`) |
+| `user_build_create`, `user_build_destroy`, `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_link_ext_buf`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | in-memory extension compilation, topological dependency linking, and `.mathc` binary cache load (`Core/compile/user_loader.h`) |
 
 **Capacity limits** (compile-time constants in `mem_arena.h`, `sym_table.h`, `compiler.h`, `mathc_bin.h`, and `session.h`):
 
 | Resource | Limit |
 | :-- | :-- |
-| Expression length | 65,534 bytes |
-| String pool | 32,768 bytes |
-| AST nodes | 8,192 |
-| Float pool (vectors, structs, matrices) | 8,192 doubles |
-| Call stack | 256 slots |
-| Evaluation depth / parse nesting | 128 |
-| Evaluation step budget | 2,000,000 per eval |
+| Expression length | 65,534 bytes (16-bit source offset) |
+| String pool (`MEM_SRC_BUF_CAP`) | 32,768 bytes (32 KB interned UTF-8 buffer) |
+| AST nodes (`MEM_MAX_AST_NODES`) | 8,192 nodes (8 bytes each; `0xFFFF` = `MEM_NO_IDX`) |
+| Float pool (`MEM_MAX_F64_POOL`) | 8,192 doubles (shared by literals, structs, vectors, and matrices — e.g., a single ~90×90 matrix exhausts the pool; failed allocations return `MEM_NO_IDX`) |
+| First-class lambdas (`MEM_MAX_FN_POOL`) | 16 closures per evaluation |
+| Call stack / local variables | 256 slots (`MEM_MAX_CALL_STACK`) / 64 locals per scope (`PARSER_MAX_LOCALS`) |
+| Evaluation depth / parse nesting | 128 levels (all `Core/` stack frames are bounded under 2 KB) |
+| Evaluation step budget | 2,000,000 steps per eval |
 | Tagged scopes | 16 |
 | Modules / types / unit groups | 32 / 64 / 64 |
 | Overloads / symbols / constants / externs | 2,048 / 2,048 / 128 / 32 |

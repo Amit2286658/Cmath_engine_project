@@ -2,9 +2,15 @@
  * mathc_bin.h — In-Memory `.mathc` Binary Image Format, Serializer & O(1) Loader
  *
  * Purpose:
- *   Defines the 40-byte ABI- & OS-neutral `MathcHeader` binary format and
- *   provides in-memory `.mathc` serialization, FNV-1a checksumming, structural
- *   validation, and O(1) `memcpy` loading inside `Core/compile/`.
+ *   Defines the 40-byte `MathcHeader` binary format and provides in-memory
+ *   `.mathc` serialization, FNV-1a checksumming, structural validation, and
+ *   O(1) `memcpy` loading inside `Core/compile/`.
+ *
+ * Portability & Layout Guarantees:
+ *   - The `.mathc` binary format is little-endian (matching x86-64, ARM/AArch64
+ *     Android NDK, and RISC-V targets) and relies on exact fixed-width C11
+ *     struct layouts verified at compile time via `_Static_assert(sizeof(...))`
+ *     and `_Static_assert(offsetof(...))` checks below.
  */
 
 #ifndef MATHC_BIN_H
@@ -12,14 +18,20 @@
 
 #include "mem_arena.h"
 #include "sym_table.h"
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /* ============================================================================
- * 1. PRECOMPILED `.mathc` BINARY IMAGE HEADER (40 BYTES, ABI- & OS-NEUTRAL)
+ * 1. PRECOMPILED `.mathc` BINARY IMAGE HEADER (40 BYTES, LITTLE-ENDIAN)
  * ============================================================================ */
+
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__,
+               ".mathc binary serialization requires a little-endian target (x86_64/ARM64/ARMv7)");
+#endif
 
 #define MATHC_MAGIC            0x4348544Du  /* "MTHC" in little-endian        */
 #define MATHC_VERSION          1u
@@ -48,7 +60,63 @@ typedef struct {
     uint32_t checksum;           /* 32-bit FNV-1a checksum of header+payload  */
 } MathcHeader;
 
+/* Compile-time size and field-offset verification for all serialized `.mathc` structs */
 _Static_assert(sizeof(MathcHeader) == 40, "MathcHeader must be strictly 40 bytes");
+_Static_assert(offsetof(MathcHeader, magic)          == 0,  "MathcHeader.magic offset");
+_Static_assert(offsetof(MathcHeader, version)        == 4,  "MathcHeader.version offset");
+_Static_assert(offsetof(MathcHeader, sym_count)      == 12, "MathcHeader.sym_count offset");
+_Static_assert(offsetof(MathcHeader, perm_src_len)   == 16, "MathcHeader.perm_src_len offset");
+_Static_assert(offsetof(MathcHeader, payload_bytes)  == 28, "MathcHeader.payload_bytes offset");
+_Static_assert(offsetof(MathcHeader, active_modules) == 32, "MathcHeader.active_modules offset");
+_Static_assert(offsetof(MathcHeader, checksum)       == 36, "MathcHeader.checksum offset");
+
+_Static_assert(sizeof(StrSlice) == 4, "StrSlice must be 4 bytes");
+_Static_assert(offsetof(StrSlice, off) == 0 && offsetof(StrSlice, len) == 2, "StrSlice layout");
+
+_Static_assert(sizeof(AstNode) == 8, "AstNode must be 8 bytes");
+_Static_assert(offsetof(AstNode, kind)  == 0 && offsetof(AstNode, sub)   == 1 &&
+               offsetof(AstNode, ref)   == 2 && offsetof(AstNode, left)  == 4 &&
+               offsetof(AstNode, right) == 6, "AstNode layout");
+
+_Static_assert(sizeof(PatElem) == 6, "PatElem must be 6 bytes");
+_Static_assert(offsetof(PatElem, kind)  == 0 && offsetof(PatElem, quant) == 1 &&
+               offsetof(PatElem, chars) == 2, "PatElem layout");
+
+_Static_assert(sizeof(FieldDef) == 8, "FieldDef must be 8 bytes");
+_Static_assert(offsetof(FieldDef, name)        == 0 &&
+               offsetof(FieldDef, type_id)     == 4 &&
+               offsetof(FieldDef, flat_offset) == 6, "FieldDef layout");
+
+_Static_assert(sizeof(TypeDef) == 12, "TypeDef must be 12 bytes");
+_Static_assert(offsetof(TypeDef, name)         == 0 &&
+               offsetof(TypeDef, mod_id)       == 4 &&
+               offsetof(TypeDef, is_consuming) == 5 &&
+               offsetof(TypeDef, parser_intr)  == 6 &&
+               offsetof(TypeDef, field_count)  == 7 &&
+               offsetof(TypeDef, start_idx)    == 8 &&
+               offsetof(TypeDef, flat_size)    == 10, "TypeDef layout");
+
+_Static_assert(sizeof(OpOverload) == 28, "OpOverload must be 28 bytes");
+_Static_assert(offsetof(OpOverload, sym_id)      == 0  &&
+               offsetof(OpOverload, mod_id)      == 2  &&
+               offsetof(OpOverload, fixity)      == 3  &&
+               offsetof(OpOverload, prec)        == 4  &&
+               offsetof(OpOverload, param_count) == 5  &&
+               offsetof(OpOverload, local_count) == 6  &&
+               offsetof(OpOverload, ret_type)    == 7  &&
+               offsetof(OpOverload, ret_unit)    == 8  &&
+               offsetof(OpOverload, meta_tag)    == 9  &&
+               offsetof(OpOverload, param_types) == 10 &&
+               offsetof(OpOverload, param_units) == 18 &&
+               offsetof(OpOverload, body_ast)    == 26, "OpOverload layout");
+
+_Static_assert(sizeof(ConstDef) == 8, "ConstDef must be 8 bytes");
+_Static_assert(offsetof(ConstDef, sym_id)   == 0 &&
+               offsetof(ConstDef, mod_id)   == 2 &&
+               offsetof(ConstDef, type_id)  == 3 &&
+               offsetof(ConstDef, unit_id)  == 4 &&
+               offsetof(ConstDef, val_idx)  == 5 &&
+               offsetof(ConstDef, pool_idx) == 6, "ConstDef layout");
 
 /* ============================================================================
  * 2. IN-MEMORY `.mathc` BINARY SERIALIZER & O(1) LOADER API

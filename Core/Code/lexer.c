@@ -211,7 +211,7 @@ static bool skip_ws_and_comments(Lexer *lex, bool *out_had_nl) {
     return false;
 }
 
-void lex_init(Lexer *lex, MemArena *mem, const SymTable *tab,
+void lex_init(Lexer *lex, MemArena *mem, SymTable *tab,
               const char *src, uint16_t len, uint16_t start_pos, bool stop_at_newline) {
     memset(lex, 0, sizeof(*lex));
     lex->mem             = mem;

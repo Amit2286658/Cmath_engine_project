@@ -22,32 +22,33 @@ extern "C" {
  * ============================================================================ */
 
 /* Return the number of order-tagged evaluation snapshots in `session_id` */
-uint16_t    eng_session_snapshot_count(const Engine *eng, int session_id);
+MATH_ENGINE_API uint16_t    eng_session_snapshot_count(const Engine *eng, int session_id);
 
 /* Rewind the iterative snapshot cursor for `session_id` back to evaluation #1 */
-bool        eng_session_snapshot_rewind(Engine *eng, int session_id);
+MATH_ENGINE_API bool        eng_session_snapshot_rewind(Engine *eng, int session_id);
 
 /*
  * Iteratively return each evaluation's order-tagged snapshot as raw text.
  * Advances the session's internal cursor on each call; when all snapshots have
  * been yielded, resets the cursor to 0 and returns NULL.
  */
-const char *eng_session_snapshot_next(Engine *eng, int session_id);
+MATH_ENGINE_API const char *eng_session_snapshot_next(Engine *eng, int session_id);
 
 /* Random-access helper: return the raw-text snapshot at 0-based `idx` (`0 .. count - 1`) */
-const char *eng_session_snapshot_at(const Engine *eng, int session_id, uint16_t idx);
+MATH_ENGINE_API const char *eng_session_snapshot_at(const Engine *eng, int session_id, uint16_t idx);
 
 /*
  * Reconstruct and continue a session from all prior evaluation snapshots:
- *   - Uses the order tags (`seq:1 .. snapshot_count`) and hash chain (`prev`/`hash`)
- *     inside the raw-text snapshots (even if passed out of order) to verify that
- *     full, contiguous, uncorrupted session history is present.
+ *   - Uses the order tags (`seq:1 .. snapshot_count`) and 32-bit FNV-1a integrity
+ *     hash chain (`prev`/`hash`) inside the raw-text snapshots (even if passed
+ *     out of order) to verify that full, contiguous, uncorrupted session history
+ *     is present.
  *   - Allocates a new in-memory session populated with the full history and variables
  *     so the host can continue evaluating expressions from there on.
  *   - Returns the new `session_id >= 0` on success, or `-1` if snapshots are missing,
  *     out of sequence, from mismatched sessions, or corrupted.
  */
-int         eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapshot_count);
+MATH_ENGINE_API int         eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapshot_count);
 
 /* ============================================================================
  * 2. INTERNAL SESSION <-> SNAPSHOT HELPERS (USED BY `Core/session/session.c`)

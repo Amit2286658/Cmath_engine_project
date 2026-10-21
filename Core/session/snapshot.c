@@ -4,14 +4,14 @@
  * Implements:
  *   - `eng_snapshot_format_canonical_val`: Lossless MEP expression serializer
  *     for scalars, strings, structs, vectors, matrices, and lambda closures.
- *   - `eng_snapshot_record_eval`: Order-tagged (`seq:1..N`), FNV-1a hash-chained
- *     (`prev`/`hash`) raw-text snapshot builder.
+ *   - `eng_snapshot_record_eval`: Order-tagged (`seq:1..N`), 32-bit FNV-1a
+ *     integrity hash-chained (`prev`/`hash`) raw-text snapshot builder.
  *   - `eng_session_snapshot_count`, `eng_session_snapshot_rewind`,
  *     `eng_session_snapshot_next`, `eng_session_snapshot_at`: Iterative and
  *     indexed snapshot accessors.
  *   - `eng_session_restore`: Verifies full, contiguous, uncorrupted snapshot
  *     history (even if supplied out of order) and reconstructs an active
- *     in-memory session ready to continue evaluation.
+ *     in-memory session ready to continue evaluation with minimal stack usage.
  */
 
 #include "snapshot.h"
@@ -29,10 +29,10 @@ static void format_canonical_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t
         snprintf(buf, cap, "vec()");
         return;
     }
-    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 1);
-    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 3);
+    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
+    uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 3));
     uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)
                         ? eng->sym.types[elem_tid].flat_size : 1;
 
@@ -87,7 +87,7 @@ static void format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint
         return;
     }
     if (type_id == eng->mem.fn_type_id && type_id != 0) {
-        uint16_t body_ast = (uint16_t)mem_read_pool(&eng->mem, pool_idx + 0);
+        uint16_t body_ast = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 0));
         for (uint8_t i = 0; i < eng->mem.fn_src_count; ++i) {
             if (eng->mem.fn_body_ast[i] == body_ast) {
                 StrSlice s = eng->mem.fn_src_slice[i];
@@ -178,10 +178,17 @@ static void unescape_snap_field(const char *in, size_t in_len, char *out, size_t
     out[w] = '\0';
 }
 
-static uint32_t calc_snapshot_hash(uint16_t seq, uint32_t prev_hash, const char *payload) {
+/*
+ * 32-bit FNV-1a integrity hash over the 32-bit sequence number, previous hash,
+ * and snapshot payload string (detects accidental corruption, truncation, or
+ * out-of-sequence snapshots).
+ */
+static uint32_t calc_snapshot_hash(uint32_t seq, uint32_t prev_hash, const char *payload) {
     uint32_t h = 2166136261u;
-    h ^= (uint32_t)(seq & 0xFFu);        h *= 16777619u;
-    h ^= (uint32_t)((seq >> 8) & 0xFFu); h *= 16777619u;
+    for (int b = 0; b < 4; ++b) {
+        h ^= (uint32_t)((seq >> (b * 8)) & 0xFFu);
+        h *= 16777619u;
+    }
     for (int b = 0; b < 4; ++b) {
         h ^= (uint32_t)((prev_hash >> (b * 8)) & 0xFFu);
         h *= 16777619u;
@@ -226,7 +233,7 @@ void eng_snapshot_record_eval(const Engine *eng, EngSession *S, Value res) {
 
     uint16_t seq       = (uint16_t)(S->eval_count + 1);
     uint32_t prev_hash = S->chain_hash;
-    uint32_t cur_hash  = calc_snapshot_hash(seq, prev_hash, payload);
+    uint32_t cur_hash  = calc_snapshot_hash((uint32_t)seq, prev_hash, payload);
 
     snprintf(S->snapshots[S->eval_count], ENG_SNAPSHOT_MAX_LEN,
              "MSP1|seq:%u|prev:%08X|hash:%08X|%s",
@@ -316,7 +323,7 @@ static bool parse_snapshot_header_and_verify(MemArena *mem, const char *snap,
         return false;
     }
     const char *payload = p + 9;
-    uint32_t expected_h = calc_snapshot_hash((uint16_t)seq_ul, prev_h, payload);
+    uint32_t expected_h = calc_snapshot_hash((uint32_t)seq_ul, prev_h, payload);
     if (cur_h != expected_h) {
         mem_err(mem, "Corrupted session snapshot checksum mismatch at seq:%lu", seq_ul);
         return false;
@@ -493,27 +500,24 @@ int eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapsh
         expected_prev = ordered_hash[k];
     }
 
-    /* 3. Parse and validate all variables from each snapshot in order */
-    EngSessionVar final_vars[ENG_SESSION_MAX_VARS];
-    uint8_t       final_var_cnt = 0;
-    memset(final_vars, 0, sizeof(final_vars));
-
-    for (size_t k = 0; k < snapshot_count; ++k) {
-        if (!parse_snapshot_vars(&eng->mem, ordered_payload[k], final_vars, &final_var_cnt)) {
-            return -1;
-        }
-    }
-
-    /* 4. Allocate a new in-memory session and populate its full history and variable state */
+    /* 3. Allocate a new in-memory session and parse variables directly into `S->vars`
+     *    (avoiding a 6 KB stack buffer in `eng_session_restore`). */
     int sid = eng_session_open(eng);
     if (sid < 0) return -1;
 
     EngSession *S = &eng->sessions[sid];
+    uint8_t final_var_cnt = 0;
+    for (size_t k = 0; k < snapshot_count; ++k) {
+        if (!parse_snapshot_vars(&eng->mem, ordered_payload[k], S->vars, &final_var_cnt)) {
+            memset(S, 0, sizeof(*S));
+            return -1;
+        }
+    }
+
     S->eval_count       = (uint16_t)snapshot_count;
     S->snap_iter_cursor = 0;
     S->chain_hash       = expected_prev;
     S->var_count        = final_var_cnt;
-    memcpy(S->vars, final_vars, sizeof(final_vars));
 
     for (size_t k = 0; k < snapshot_count; ++k) {
         snprintf(S->snapshots[k], ENG_SNAPSHOT_MAX_LEN, "%s", snapshots[ordered_idx[k]]);

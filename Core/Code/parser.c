@@ -121,7 +121,7 @@ bool parser_check_labels(Parser *P) {
     return true;
 }
 
-void parser_init(Parser *P, MemArena *mem, const SymTable *tab,
+void parser_init(Parser *P, MemArena *mem, SymTable *tab,
                  const char *src, uint16_t len, uint16_t start_pos,
                  bool in_ext_body, bool stop_at_newline) {
     memset(P, 0, sizeof(*P));
@@ -134,7 +134,7 @@ void parser_init(Parser *P, MemArena *mem, const SymTable *tab,
  * ============================================================================ */
 
 static uint8_t token_func_meta(const Parser *P, Token t) {
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     const MemArena *mem = P->lex.mem;
     if (t.kind == TOK_OP) {
         return sym_active_meta_tag(tab, t.sym_id, FIX_FUNC);
@@ -281,7 +281,7 @@ static uint16_t resolve_annot_type(const SymTable *tab, const MemArena *mem,
 
 static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t *out_lock_unit) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     *out_lock_type = 0;
     *out_lock_unit = 0;
 
@@ -327,7 +327,7 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
             mem_err(mem, "Unknown entity type '%.*s' in variable declaration", (int)s1_len, s1_ptr);
             return false;
         }
-        uint8_t uid = sym_find_or_add_unit((SymTable *)tab, mem, s2_ptr, s2_len);
+        uint8_t uid = sym_find_or_add_unit(tab, mem, s2_ptr, s2_len);
         *out_lock_type = (tid == SYM_TYPE_ANY) ? 0 : (uint8_t)tid;
         *out_lock_unit = (uid == SYM_UNIT_GENERIC) ? 0 : uid;
         return !mem->has_error;
@@ -345,7 +345,7 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
         return true;
     }
 
-    uint8_t uid = sym_find_or_add_unit((SymTable *)tab, mem, s1_ptr, s1_len);
+    uint8_t uid = sym_find_or_add_unit(tab, mem, s1_ptr, s1_len);
     *out_lock_type = 0;
     *out_lock_unit = (uid == SYM_UNIT_GENERIC) ? 0 : uid;
     return !mem->has_error;
@@ -354,7 +354,7 @@ static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t
 static uint16_t build_store_or_compound(Parser *P, uint16_t op_sym_id,
                                         uint16_t lhs_ast, uint16_t rhs_ast) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     if (lhs_ast == MEM_NO_IDX || rhs_ast == MEM_NO_IDX) return MEM_NO_IDX;
 
     bool is_colon_eq = false;
@@ -420,7 +420,7 @@ static bool ast_cnot_meta(const MemArena *mem, const SymTable *tab,
 static uint16_t build_distributed_comp(Parser *P, OpFixity fix, uint16_t comp_sym,
                                        uint16_t left, uint16_t right) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     uint16_t comb_sym = 0;
 
     if (ast_cand_cor_meta(mem, tab, left, &comb_sym) != 0) {
@@ -456,7 +456,7 @@ static uint16_t build_distributed_comp(Parser *P, OpFixity fix, uint16_t comp_sy
 
 static uint16_t parse_field_step(Parser *P, uint16_t left) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
 
     if (P->lex.cur.kind != TOK_IDENT &&
         !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
@@ -895,7 +895,7 @@ static void record_lambda_src(Parser *P, uint16_t body_ast, uint16_t start_off) 
 
 static uint16_t parse_lambda_from_paren(Parser *P) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     uint16_t lam_start  = P->lex.cur.off;
     lex_next(&P->lex); /* consume '(' */
 
@@ -1144,7 +1144,7 @@ static bool tok_is_underscore(const Parser *P, Token t) {
 
 static bool is_pattern_bind_ident(const Parser *P, const char *name, uint16_t len, uint8_t end_syn) {
     const MemArena *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
 
     if (!lex_at_is_syntax(&P->lex, P->lex.pos, INTR_COMMA) &&
         !lex_at_is_syntax(&P->lex, P->lex.pos, end_syn)) {
@@ -1166,7 +1166,7 @@ static bool is_pattern_bind_ident(const Parser *P, const char *name, uint16_t le
 static uint16_t parse_single_switch_pattern(Parser *P, uint16_t slot_ast, uint8_t sw_slot,
                                             int cand_sym) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
 
     /* 1. Relational guard pattern: `case > 10 :`, `case <= 0 :`, `case != 5 :`, `case ~ 3.14 :` */
     if (P->lex.cur.kind == TOK_OP && hardcode_is_rel_comparison_op(mem, tab, P->lex.cur.sym_id)) {
@@ -1318,7 +1318,7 @@ static uint16_t parse_single_switch_pattern(Parser *P, uint16_t slot_ast, uint8_
 
 static uint16_t parse_switch_construct(Parser *P) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
 
     int store_sym = find_active_meta_sym(tab, INTR_STORE);
     int seq_sym   = find_active_meta_sym(tab, INTR_SEQ);
@@ -1643,7 +1643,7 @@ static uint16_t resolve_var_for_assign(Parser *P, const char *name, uint16_t len
                                        uint16_t op_sym_id,
                                        uint8_t lock_type, uint8_t lock_unit) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     if (sym_is_reserved_kw(tab, mem, name, len)) {
         mem_err(mem, "Cannot use reserved keyword '%.*s' as a variable name",
                 (int)len, name);
@@ -1683,7 +1683,7 @@ static uint16_t resolve_var_for_assign(Parser *P, const char *name, uint16_t len
 
 static uint16_t parse_nud(Parser *P) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     Token t = P->lex.cur;
     P->last_was_block = false;
 
@@ -1810,7 +1810,7 @@ static uint16_t parse_nud(Parser *P) {
         }
 
         StrSlice ext_slice  = mem_intern_str(mem, iname, ilen);
-        uint16_t ext_sym_id = sym_intern((SymTable *)tab, mem, ext_slice);
+        uint16_t ext_sym_id = sym_intern(tab, mem, ext_slice);
         uint16_t head = MEM_NO_IDX;
         uint16_t tail = MEM_NO_IDX;
         uint8_t  argc = 0;
@@ -2082,7 +2082,7 @@ static uint16_t parse_nud(Parser *P) {
                 if (mem->has_error) return MEM_NO_IDX;
                 P->locals[P->vis_count - 1].is_loop_iter = 1;
                 StrSlice vslice  = P->locals[P->vis_count - 1].name;
-                uint16_t var_sym = sym_intern((SymTable *)tab, mem, vslice);
+                uint16_t var_sym = sym_intern(tab, mem, vslice);
                 return mem_alloc_ast(mem, AST_SLOT_LOAD, (uint8_t)slot,
                                      (uint16_t)(AST_SLOT_UNDEF_ITER_BIT | (var_sym & AST_SLOT_SYM_MASK)),
                                      0, 0);
@@ -2202,7 +2202,7 @@ uint16_t parser_parse_expr(Parser *P, int min_prec) {
 
 static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
     MemArena       *mem = P->lex.mem;
-    const SymTable *tab = P->lex.tab;
+    SymTable *tab = P->lex.tab;
     uint16_t left = parse_nud(P);
     if (mem->has_error || left == MEM_NO_IDX) return MEM_NO_IDX;
 

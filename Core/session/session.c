@@ -156,9 +156,9 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
             if (val_get_type(&eng->mem, iv) == eng->mem.vec_type_id && eng->mem.vec_type_id != 0) {
                 if (uid != MEM_UNIT_NONE) {
                     uint16_t hdr_idx  = val_get_pool_idx(iv);
-                    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+                    uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
                     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-                    mem_write_pool(&eng->mem, hdr_idx + 0,
+                    mem_write_pool(&eng->mem, (uint16_t)(hdr_idx + 0),
                                    (double)(elem_tid | ((uint16_t)uid << 8u)));
                 }
             } else if (uid != MEM_UNIT_NONE) {
@@ -226,7 +226,7 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
 
         if (stid == eng->mem.vec_type_id && eng->mem.vec_type_id != 0) {
             uint16_t hdr_idx  = val_get_pool_idx(sval);
-            uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, hdr_idx + 0);
+            uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
             uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8u) & 0xFFu);
             eng_unit_name(eng, elem_uid, sv->unit_name, sizeof(sv->unit_name));
         } else {
@@ -237,16 +237,16 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
         if (lt != 0 && lt != SYM_TYPE_ANY) {
             eng_type_name(eng, lt, sv->lock_type_name, sizeof(sv->lock_type_name));
         } else {
-            strcpy(sv->lock_type_name, "*");
+            memcpy(sv->lock_type_name, "*", 2);
         }
 
         uint8_t lu = eng->mem.slot_locked_unit[frame_base + slot];
         if (lu == SYM_UNIT_LOCK_NONE) {
-            strcpy(sv->lock_unit_name, "none");
+            memcpy(sv->lock_unit_name, "none", 5);
         } else if (lu != 0 && lu != SYM_UNIT_GENERIC && lu != SYM_UNIT_OMITTED) {
             eng_unit_name(eng, lu, sv->lock_unit_name, sizeof(sv->lock_unit_name));
         } else {
-            strcpy(sv->lock_unit_name, "*");
+            memcpy(sv->lock_unit_name, "*", 2);
         }
 
         eng_snapshot_format_canonical_val(eng, sval, sv->val_text, sizeof(sv->val_text));

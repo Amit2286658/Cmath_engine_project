@@ -57,7 +57,7 @@ typedef struct {
     uint8_t    label_count;
 } Parser;
 
-void     parser_init(Parser *P, MemArena *mem, const SymTable *tab,
+void     parser_init(Parser *P, MemArena *mem, SymTable *tab,
                      const char *src, uint16_t len, uint16_t start_pos,
                      bool in_ext_body, bool stop_at_newline);
 

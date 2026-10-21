@@ -13,7 +13,11 @@
 
 void mem_init(MemArena *mem) {
     memset(mem, 0, sizeof(*mem));
-    mem->jump_val = val_void();
+    mem->jump_val              = val_void();
+    mem->invalid_ast_mut.kind  = 0xFFu;
+    mem->invalid_ast_mut.ref   = MEM_NO_IDX;
+    mem->invalid_ast_mut.left  = MEM_NO_IDX;
+    mem->invalid_ast_mut.right = MEM_NO_IDX;
 }
 
 void mem_err(MemArena *mem, const char *fmt, ...) {
@@ -94,21 +98,21 @@ bool mem_slice_eq_cstr(const MemArena *mem, StrSlice s, const char *cstr) {
  * ============================================================================ */
 
 uint16_t mem_alloc_pool(MemArena *mem, uint16_t count) {
-    if ((uint32_t)mem->pool_top + (uint32_t)count > (uint32_t)MEM_MAX_F64_POOL) {
-        mem_err(mem, "Float value pool exhausted");
-        return 0;
+    if (!mem || (uint32_t)mem->pool_top + (uint32_t)count > (uint32_t)MEM_MAX_F64_POOL) {
+        if (mem) mem_err(mem, "Float value pool exhausted");
+        return MEM_NO_IDX;
     }
     uint16_t idx = mem->pool_top;
-    mem->pool_top += count;
+    mem->pool_top = (uint16_t)(mem->pool_top + count);
     return idx;
 }
 
 double mem_read_pool(const MemArena *mem, uint16_t idx) {
-    return (idx < MEM_MAX_F64_POOL) ? mem->f64_pool[idx] : 0.0;
+    return (mem && idx < MEM_MAX_F64_POOL) ? mem->f64_pool[idx] : 0.0;
 }
 
 void mem_write_pool(MemArena *mem, uint16_t idx, double val) {
-    if (mem->has_error) return;
+    if (!mem || mem->has_error) return;
     if (idx < MEM_MAX_F64_POOL) {
         mem->f64_pool[idx] = val;
     }
@@ -123,19 +127,23 @@ void mem_write_pool(MemArena *mem, uint16_t idx, double val) {
  */
 uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap) {
     uint16_t hdr_idx = mem_alloc_pool(mem, MEM_VEC_HDR_SLOTS);
-    if (mem->has_error) return 0;
-    mem_write_pool(mem, hdr_idx + 0, (double)elem_tid);
-    mem_write_pool(mem, hdr_idx + 1, 0.0);
-    mem_write_pool(mem, hdr_idx + 2, (double)init_cap);
-    mem_write_pool(mem, hdr_idx + 3, 0.0);
+    if (hdr_idx == MEM_NO_IDX || mem->has_error) return MEM_NO_IDX;
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 0), (double)elem_tid);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 1), 0.0);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)init_cap);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 3), 0.0);
     return hdr_idx;
 }
 
 bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t min_cap) {
+    if (!mem || hdr_idx == MEM_NO_IDX || (uint32_t)hdr_idx + MEM_VEC_HDR_SLOTS > MEM_MAX_F64_POOL) {
+        if (mem) mem_err(mem, "Invalid vector header index");
+        return false;
+    }
     if (stride == 0) stride = 1;
-    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
-    uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
-    uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+    uint16_t len      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 1));
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 2));
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 3));
 
     if (data_idx == 0) {
         uint16_t target_cap = (cap >= min_cap) ? cap : min_cap;
@@ -145,10 +153,10 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
             return false;
         }
         uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(target_cap * stride));
-        if (mem->has_error) return false;
+        if (new_data == MEM_NO_IDX || mem->has_error) return false;
         memset(&mem->f64_pool[new_data], 0, (size_t)(target_cap * stride) * sizeof(double));
-        mem_write_pool(mem, hdr_idx + 2, (double)target_cap);
-        mem_write_pool(mem, hdr_idx + 3, (double)new_data);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)target_cap);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 3), (double)new_data);
         return true;
     }
 
@@ -165,14 +173,14 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
 
     if ((uint16_t)(data_idx + cap * stride) == mem->pool_top) {
         uint16_t ext_idx = mem_alloc_pool(mem, extra_slots);
-        if (mem->has_error) return false;
+        if (ext_idx == MEM_NO_IDX || mem->has_error) return false;
         memset(&mem->f64_pool[ext_idx], 0, (size_t)extra_slots * sizeof(double));
-        mem_write_pool(mem, hdr_idx + 2, (double)new_cap);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)new_cap);
         return true;
     }
 
     uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(new_cap * stride));
-    if (mem->has_error) return false;
+    if (new_data == MEM_NO_IDX || mem->has_error) return false;
     uint16_t copy_slots = (uint16_t)(len * stride);
     if (copy_slots > 0) {
         memcpy(&mem->f64_pool[new_data], &mem->f64_pool[data_idx],
@@ -182,25 +190,28 @@ bool mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t 
         memset(&mem->f64_pool[new_data + copy_slots], 0,
                (size_t)(new_cap * stride - copy_slots) * sizeof(double));
     }
-    mem_write_pool(mem, hdr_idx + 2, (double)new_cap);
-    mem_write_pool(mem, hdr_idx + 3, (double)new_data);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)new_cap);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 3), (double)new_data);
     return true;
 }
 
 void mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride) {
+    if (!mem || hdr_idx == MEM_NO_IDX || (uint32_t)hdr_idx + MEM_VEC_HDR_SLOTS > MEM_MAX_F64_POOL) {
+        return;
+    }
     if (stride == 0) stride = 1;
-    uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
-    uint16_t cap      = (uint16_t)mem_read_pool(mem, hdr_idx + 2);
-    uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+    uint16_t len      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 1));
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 2));
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 3));
 
     if (cap <= len) return;
     if (data_idx != 0 && (uint16_t)(data_idx + cap * stride) == mem->pool_top) {
         mem->pool_top = (uint16_t)(data_idx + len * stride);
     }
     if (len == 0) {
-        mem_write_pool(mem, hdr_idx + 3, 0.0);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 3), 0.0);
     }
-    mem_write_pool(mem, hdr_idx + 2, (double)len);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)len);
 }
 
 /*
@@ -218,27 +229,27 @@ uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
                            uint16_t *out_total_len, uint16_t *out_data_idx) {
     if (rank == 0 || rank > 4) {
         mem_err(mem, "Matrix rank must be between 1 and 4 (got %u)", (unsigned)rank);
-        return 0;
+        return MEM_NO_IDX;
     }
     uint32_t total = 1;
     for (uint8_t i = 0; i < rank; ++i) {
         total *= (uint32_t)dims[i];
         if (total > MEM_MAX_F64_POOL) {
             mem_err(mem, "Matrix dimensions exceed pool capacity");
-            return 0;
+            return MEM_NO_IDX;
         }
     }
     uint16_t hdr_idx = mem_alloc_pool(mem, MEM_MAT_HDR_SLOTS);
-    if (mem->has_error) return 0;
+    if (hdr_idx == MEM_NO_IDX || mem->has_error) return MEM_NO_IDX;
     uint16_t data_idx = (total > 0) ? mem_alloc_pool(mem, (uint16_t)total) : 0;
-    if (mem->has_error) return 0;
+    if (total > 0 && (data_idx == MEM_NO_IDX || mem->has_error)) return MEM_NO_IDX;
     if (total > 0) {
         memset(&mem->f64_pool[data_idx], 0, (size_t)total * sizeof(double));
     }
-    mem_write_pool(mem, hdr_idx + 0, (double)rank);
-    mem_write_pool(mem, hdr_idx + 1, (double)total);
-    mem_write_pool(mem, hdr_idx + 2, (double)data_idx);
-    mem_write_pool(mem, hdr_idx + 3, (double)mem->fast_real_type);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 0), (double)rank);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 1), (double)total);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)data_idx);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 3), (double)mem->fast_real_type);
     for (uint8_t i = 0; i < 4; ++i) {
         mem_write_pool(mem, (uint16_t)(hdr_idx + 4u + i), (i < rank) ? (double)dims[i] : 0.0);
     }
@@ -263,28 +274,22 @@ uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,
     return idx;
 }
 
-static const AstNode s_invalid_ast = { 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX, MEM_NO_IDX };
+static const AstNode k_invalid_ast = { 0xFFu, 0, MEM_NO_IDX, MEM_NO_IDX, MEM_NO_IDX };
 
 const AstNode *mem_get_ast(const MemArena *mem, uint16_t idx) {
     if (!mem || idx >= mem->ast_count || idx >= MEM_MAX_AST_NODES) {
-        return &s_invalid_ast;
+        return &k_invalid_ast;
     }
     return &mem->ast[idx];
 }
 
 AstNode *mem_get_ast_mut(MemArena *mem, uint16_t idx) {
-    static AstNode s_invalid_ast_mut;
-    if (!mem || idx >= mem->ast_count || idx >= MEM_MAX_AST_NODES) {
-        if (mem) {
-            mem_err(mem, "AST node index %u out of bounds (count=%u)",
-                    (unsigned)idx, (unsigned)mem->ast_count);
-        }
-        memset(&s_invalid_ast_mut, 0, sizeof(s_invalid_ast_mut));
-        s_invalid_ast_mut.kind  = 0xFFu;
-        s_invalid_ast_mut.ref   = MEM_NO_IDX;
-        s_invalid_ast_mut.left  = MEM_NO_IDX;
-        s_invalid_ast_mut.right = MEM_NO_IDX;
-        return &s_invalid_ast_mut;
+    if (!mem) return NULL;
+    if (idx >= mem->ast_count || idx >= MEM_MAX_AST_NODES) {
+        mem_err(mem, "AST node index %u out of bounds (count=%u)",
+                (unsigned)idx, (unsigned)mem->ast_count);
+        mem->invalid_ast_mut = k_invalid_ast;
+        return &mem->invalid_ast_mut;
     }
     return &mem->ast[idx];
 }
@@ -299,7 +304,7 @@ uint16_t mem_push_frame(MemArena *mem, uint8_t slot_count) {
         memset(&mem->slot_locked_type[base], 0, slot_count);
         memset(&mem->slot_locked_unit[base], 0, slot_count);
     }
-    mem->sp += slot_count;
+    mem->sp = (uint16_t)(mem->sp + slot_count);
     return base;
 }
 
@@ -370,7 +375,7 @@ Value val_make_f64_unit(MemArena *mem, uint16_t type_id, uint8_t unit_id, double
         return f64_to_bits(d);
     }
     uint16_t idx = mem_alloc_pool(mem, 1);
-    if (mem->has_error) return val_void();
+    if (idx == MEM_NO_IDX || mem->has_error) return val_void();
     mem_write_pool(mem, idx, d);
     return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
          | ((uint64_t)unit_id << NANBOX_UNIT_SHIFT)
@@ -408,6 +413,7 @@ StrSlice val_get_str(const MemArena *mem, Value v) {
 
 Value val_make_comp(MemArena *mem, uint16_t type_id, uint16_t pool_idx, uint16_t flat_size) {
     (void)mem;
+    if (pool_idx == MEM_NO_IDX) return val_void();
     uint32_t payload = ((uint32_t)flat_size << 16) | (uint32_t)pool_idx;
     return (NB_TAG_POOL << NANBOX_TAG_SHIFT)
          | ((uint64_t)(type_id & 0xFFu) << NANBOX_TYPE_SHIFT)
@@ -454,13 +460,13 @@ Value val_with_unit(MemArena *mem, Value v, uint8_t unit_id) {
 }
 
 Value val_clone_comp(MemArena *mem, Value v, uint16_t flat_size) {
-    uint16_t tid  = val_get_type(mem, v);
-    uint8_t  unit = val_get_unit(mem, v);
+    uint16_t tid     = val_get_type(mem, v);
+    uint8_t  unit    = val_get_unit(mem, v);
     uint16_t old_idx = val_get_pool_idx(v);
     uint16_t new_idx = mem_alloc_pool(mem, flat_size);
-    if (mem->has_error) return val_void();
+    if (new_idx == MEM_NO_IDX || mem->has_error) return val_void();
     for (uint16_t i = 0; i < flat_size; ++i) {
-        mem_write_pool(mem, new_idx + i, mem_read_pool(mem, old_idx + i));
+        mem_write_pool(mem, (uint16_t)(new_idx + i), mem_read_pool(mem, (uint16_t)(old_idx + i)));
     }
     return val_with_unit(mem, val_make_comp(mem, tid, new_idx, flat_size), unit);
 }
@@ -479,14 +485,14 @@ Value val_from_cstr(MemArena *mem, const char *cstr) {
 Value val_from_f64_vec(MemArena *mem, const double *vals, uint16_t count) {
     if (mem->vec_type_id == 0) return val_void();
     uint16_t hdr_idx = mem_vec_alloc_hdr(mem, mem->fast_real_type, count);
-    if (mem->has_error) return val_void();
+    if (hdr_idx == MEM_NO_IDX || mem->has_error) return val_void();
     if (count > 0 && vals != NULL) {
         if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
-        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 3));
         for (uint16_t i = 0; i < count; ++i) {
-            mem_write_pool(mem, data_idx + i, vals[i]);
+            mem_write_pool(mem, (uint16_t)(data_idx + i), vals[i]);
         }
-        mem_write_pool(mem, hdr_idx + 1, (double)count);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 1), (double)count);
     }
     return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
 }

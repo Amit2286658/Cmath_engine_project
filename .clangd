@@ -1,8 +1,16 @@
 CompileFlags:
   Add:
-    - -ICore/Headers
-    - -ICore/lib/delegate
-    - -ICore/lib/hardcode
+    - -xc
     - -std=c11
     - -Wall
     - -Wextra
+    - -Wconversion
+    - -Wcast-qual
+    - -Wshadow
+    - -Wformat=2
+    - -ICore/Headers
+    - -ICore/compile
+    - -ICore/session
+    - -ICore/lib/delegate
+    - -ICore/lib/hardcode
+    - -DUSE_TAGGED_12B=0

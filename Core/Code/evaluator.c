@@ -67,7 +67,7 @@ static void collect_seq_stmts(const MemArena *mem, const SymTable *tab,
     stmts[(*count)++] = node_idx;
 }
 
-static Value eval_seq_chain(MemArena *mem, const SymTable *tab,
+static Value eval_seq_chain(MemArena *mem, SymTable *tab,
                             uint16_t seq_root, uint16_t frame_base, uint8_t cur_ret_type) {
     uint16_t stmts[64];
     uint16_t count = 0;
@@ -119,7 +119,7 @@ static Value eval_seq_chain(MemArena *mem, const SymTable *tab,
  * 2. MULTIPLE DISPATCH (ENTITY TYPES + UNIT TYPES + GENERIC `T`)
  * ============================================================================ */
 
-static Value dispatch_overload(MemArena *mem, const SymTable *tab,
+static Value dispatch_overload(MemArena *mem, SymTable *tab,
                                uint16_t sym_id, OpFixity fixity,
                                uint8_t argc, const Value *args) {
     uint8_t arg_types[8] = { 0 };
@@ -364,7 +364,7 @@ static bool extract_slice_indices(MemArena *mem, const SymTable *tab,
     return false;
 }
 
-static Value eval_index_op(MemArena *mem, const SymTable *tab,
+static Value eval_index_op(MemArena *mem, SymTable *tab,
                            const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type,
                            bool is_write, Value rhs) {
     Value base = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
@@ -750,7 +750,7 @@ static Value eval_index_op(MemArena *mem, const SymTable *tab,
     return val_void();
 }
 
-static Value eval_mat_lit_ast(MemArena *mem, const SymTable *tab,
+static Value eval_mat_lit_ast(MemArena *mem, SymTable *tab,
                               const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type) {
     if (mem->mat_type_id == 0) {
         mem_err(mem, "Multidimensional matrix type ($mat) is not loaded");
@@ -844,10 +844,10 @@ static Value eval_mat_lit_ast(MemArena *mem, const SymTable *tab,
  * 4. RECURSIVE AST EVALUATOR
  * ============================================================================ */
 
-static Value eval_ast_inner(MemArena *mem, const SymTable *tab,
+static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                             uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type);
 
-Value eval_ast(MemArena *mem, const SymTable *tab,
+Value eval_ast(MemArena *mem, SymTable *tab,
                uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type) {
     if (mem->has_error || mem->jump_active != JUMP_NONE || node_idx == MEM_NO_IDX) return val_void();
     if (++mem->eval_steps > MEM_MAX_EVAL_STEPS) {
@@ -864,7 +864,7 @@ Value eval_ast(MemArena *mem, const SymTable *tab,
     return res;
 }
 
-static Value eval_ast_inner(MemArena *mem, const SymTable *tab,
+static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                             uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type) {
     const AstNode *n = mem_get_ast(mem, node_idx);
 

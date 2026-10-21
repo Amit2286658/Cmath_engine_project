@@ -35,7 +35,7 @@ extern "C" {
 #define MEM_MAX_EVAL_DEPTH    128   /* Max recursive AST evaluation depth         */
 #define MEM_MAX_EVAL_STEPS 2000000u /* Global AST evaluation step budget per eval */
 
-#define MEM_NO_IDX        0xFFFFu  /* Null 16-bit index sentinel                 */
+#define MEM_NO_IDX        0xFFFFu  /* Null / failed 16-bit index sentinel        */
 #define MEM_TYPE_VOID          0u  /* Invalid / void entity type ID              */
 #define MEM_UNIT_NONE          0u  /* Dimensionless / no unit tag                */
 #define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
@@ -88,8 +88,9 @@ typedef struct {
     uint16_t    src_len;
     uint16_t    perm_src_len;
 
-    /* 8-Byte AST Node Pool */
+    /* 8-Byte AST Node Pool + Per-Arena Mutable Fallback Sentinel */
     AstNode     ast[MEM_MAX_AST_NODES];
+    AstNode     invalid_ast_mut;
     uint16_t    ast_count;
     uint16_t    perm_ast_count;
 
@@ -149,7 +150,7 @@ const char *mem_str_ptr(const MemArena *mem, StrSlice s);
 bool     mem_slice_eq(const MemArena *mem, StrSlice a, StrSlice b);
 bool     mem_slice_eq_cstr(const MemArena *mem, StrSlice s, const char *cstr);
 
-/* Flat Float Pool Allocation & Access */
+/* Flat Float Pool Allocation & Access (returns `MEM_NO_IDX` on failure) */
 uint16_t mem_alloc_pool(MemArena *mem, uint16_t count);
 double   mem_read_pool(const MemArena *mem, uint16_t idx);
 void     mem_write_pool(MemArena *mem, uint16_t idx, double val);

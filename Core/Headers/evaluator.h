@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-Value eval_ast(MemArena *mem, const SymTable *tab,
+Value eval_ast(MemArena *mem, SymTable *tab,
                uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type);
 
 #ifdef __cplusplus

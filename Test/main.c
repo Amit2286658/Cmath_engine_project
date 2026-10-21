@@ -1343,9 +1343,26 @@ int main(void) {
 
     double saved_pool0 = g_eng.mem.f64_pool[0];
     bool bug6_exhaust = !eng_eval(&g_eng, "v := vec(9000, 5)", &v);
-    bool bug6_ok = bug6_exhaust && (g_eng.mem.f64_pool[0] == saved_pool0);
-    printf("    - [Bug 6] Pool exhaustion f64_pool[0] integrity: %s (pool[0]=%g)\n",
-           bug6_ok ? "PASS" : "FAIL", g_eng.mem.f64_pool[0]);
+    uint16_t fail_pool_idx = mem_alloc_pool(&g_eng.mem, 9000);
+    mem_clear_err(&g_eng.mem);
+    uint16_t fail_vec_idx  = mem_vec_alloc_hdr(&g_eng.mem, 1, 9000);
+    /* Force pool_top near limit to verify mem_vec_alloc_hdr and mem_mat_alloc_hdr return MEM_NO_IDX */
+    uint16_t saved_top = g_eng.mem.pool_top;
+    g_eng.mem.pool_top = MEM_MAX_F64_POOL - 2;
+    mem_clear_err(&g_eng.mem);
+    fail_vec_idx = mem_vec_alloc_hdr(&g_eng.mem, 1, 4);
+    mem_clear_err(&g_eng.mem);
+    uint16_t big_dims[4] = { 100, 100, 0, 0 };
+    uint16_t fail_mat_idx = mem_mat_alloc_hdr(&g_eng.mem, 2, big_dims, NULL, NULL);
+    g_eng.mem.pool_top = saved_top;
+    mem_clear_err(&g_eng.mem);
+    bool bug6_ok = bug6_exhaust &&
+                   (fail_pool_idx == MEM_NO_IDX) &&
+                   (fail_vec_idx  == MEM_NO_IDX) &&
+                   (fail_mat_idx  == MEM_NO_IDX) &&
+                   (g_eng.mem.f64_pool[0] == saved_pool0);
+    printf("    - [Bug 6] Pool exhaustion MEM_NO_IDX & pool[0] : %s (ret=0x%04X, pool[0]=%g)\n",
+           bug6_ok ? "PASS" : "FAIL", (unsigned)fail_pool_idx, g_eng.mem.f64_pool[0]);
 
     bool bug7_compile = user_compile_ext(&g_eng, "\"anon_mod_fn\"(x:real) -> real = x * 3\n", NULL, NULL);
     eng_set_module(&g_eng, "biology", false);
@@ -1598,7 +1615,45 @@ int main(void) {
     (void)eng_session_close(&g_eng, sess_b);
     (void)eng_session_close(&g_eng, sess_restored);
 
-    return (passed == total && blank_ok && load_mathc_ok && vec_type_guard &&
+    /* 10. Verify Heap-Allocated Lifecycle (`eng_create`/`eng_destroy`) & Multi-Engine Isolation */
+    printf("[10] Heap-Allocated Engines (`eng_create`/`eng_destroy`) & Multi-Engine Isolation:\n");
+    Engine *heap_e1 = eng_create();
+    Engine *heap_e2 = eng_create();
+    UserBuildCtx *heap_b1 = user_build_create();
+    UserBuildCtx *heap_b2 = user_build_create();
+    const uint8_t *e1_mathc = NULL;
+    const uint8_t *e2_mathc = NULL;
+    size_t e1_mathc_len = 0, e2_mathc_len = 0;
+    bool multi_eng_ok = false;
+    if (heap_e1 && heap_e2 && heap_b1 && heap_b2) {
+        /* Interleave compilation across two independent engines and build contexts */
+        bool c1 = user_compile_unit(heap_e1, heap_b1, "[mod_e1]\n<[arith]\ne1_fn(x) = x + 111\n");
+        bool c2 = user_compile_unit(heap_e2, heap_b2, "[mod_e2]\n<[arith]\ne2_fn(x) = x + 222\n");
+        bool l1 = c1 && user_link_ext(heap_e1, heap_b1, &e1_mathc, &e1_mathc_len);
+        /* Snapshot first 16 bytes of e1_mathc before linking heap_e2 */
+        uint8_t e1_head_before[40];
+        if (l1 && e1_mathc && e1_mathc_len >= sizeof(e1_head_before)) {
+            memcpy(e1_head_before, e1_mathc, sizeof(e1_head_before));
+        }
+        bool l2 = c2 && user_link_ext(heap_e2, heap_b2, &e2_mathc, &e2_mathc_len);
+        /* Verify e1_mathc pointer & bytes were NOT overwritten by heap_e2 link */
+        bool buf_isolated = l1 && l2 && (e1_mathc != e2_mathc) &&
+                            (memcmp(e1_head_before, e1_mathc, sizeof(e1_head_before)) == 0);
+        Value ve1 = 0, ve2 = 0;
+        bool eval_isolated = eng_eval(heap_e1, "e1_fn(9)", &ve1) && (val_get_f64(&heap_e1->mem, ve1) == 120.0) &&
+                             !eng_eval(heap_e1, "e2_fn(9)", &ve1) &&
+                             eng_eval(heap_e2, "e2_fn(8)", &ve2) && (val_get_f64(&heap_e2->mem, ve2) == 230.0) &&
+                             !eng_eval(heap_e2, "e1_fn(8)", &ve2);
+        multi_eng_ok = buf_isolated && eval_isolated;
+    }
+    user_build_destroy(heap_b1);
+    user_build_destroy(heap_b2);
+    eng_destroy(heap_e1);
+    eng_destroy(heap_e2);
+    printf("    - Heap `eng_create`/`eng_destroy` & isolated `.mathc` buffers : %s\n\n",
+           multi_eng_ok ? "PASS" : "FAIL");
+
+    return (passed == total && blank_ok && load_mathc_ok && vec_type_guard && multi_eng_ok &&
             link_order_ok && dup_mod_guard && dup_def_guard && missing_dep_guard && cycle_dep_guard &&
             parallel_sess_ok && snap_iter_ok && restore_continue_ok && snap_guards_ok &&
             same_line_semi_guard && scope_isolation_guard && multi_else_guard && else_if_guard &&

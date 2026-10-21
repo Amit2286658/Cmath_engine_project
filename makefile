@@ -4,7 +4,9 @@ DEBUG_DIR   := DebugBuild
 RELEASE_DIR := ReleaseBuild
 
 # Defaults to clang. Override at the command line, e.g:  make build CC=gcc
-CC := clang
+CC := cc
+
+WARN_FLAGS := -Wall -Wextra -Wconversion -Wcast-qual -Wshadow -Wformat=2 -Werror -fvisibility=hidden
 
 ifneq (,$(filter release,$(MAKECMDGOALS)))
 	BUILD_DIR  := $(RELEASE_DIR)
@@ -49,7 +51,7 @@ INCLUDES := \
 	-ICore/lib/delegate \
 	-ICore/lib/hardcode
 
-.PHONY: clean build run stdlib debug release
+.PHONY: clean build run test stdlib debug release
 
 debug release: ;
 
@@ -66,7 +68,7 @@ build:
 		cmake --build $(BUILD_DIR); \
 	else \
 		mkdir -p $(BUILD_DIR); \
-		$(CC) -std=c11 -Wall -Wextra -Wconversion -Werror $(CFLAGS_OPT) $(SAN_FLAGS) \
+		$(CC) -std=c11 $(WARN_FLAGS) $(CFLAGS_OPT) $(SAN_FLAGS) \
 			$(INCLUDES) $(CORE_SRCS) Test/main.c -lm -o $(BIN); \
 	fi
 
@@ -78,6 +80,13 @@ run:
 	fi
 	./$(BIN)
 
+test: build
+	@if command -v ctest >/dev/null 2>&1 && [ -f $(BUILD_DIR)/CTestTestfile.cmake ]; then \
+		ctest --test-dir $(BUILD_DIR) --output-on-failure; \
+	else \
+		./$(BIN); \
+	fi
+
 stdlib:
 	@if command -v cmake >/dev/null 2>&1; then \
 		if [ ! -d $(BUILD_DIR) ]; then \
@@ -86,7 +95,7 @@ stdlib:
 		cmake --build $(BUILD_DIR) --target stdlib; \
 	else \
 		mkdir -p $(BUILD_DIR); \
-		$(CC) -std=c11 -Wall -Wextra -Wconversion -Werror $(CFLAGS_OPT) $(SAN_FLAGS) \
+		$(CC) -std=c11 $(WARN_FLAGS) $(CFLAGS_OPT) $(SAN_FLAGS) \
 			$(INCLUDES) $(CORE_SRCS) Library/mathc.c -lm -o $(MATHC); \
 		./$(MATHC) Library/stdlib.mathc Core/Headers/stdlib_precompiled.h k_stdlib_mathc $(STDLIB_SOURCES); \
 	fi

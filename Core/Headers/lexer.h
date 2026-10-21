@@ -45,17 +45,17 @@ typedef struct {
 } Token;
 
 typedef struct {
-    MemArena       *mem;
-    const SymTable *tab;
-    const char     *src;
-    uint16_t        len;
-    uint16_t        pos;
-    uint8_t         paren_depth;
-    bool            stop_at_newline;
-    Token           cur;
+    MemArena   *mem;
+    SymTable   *tab;
+    const char *src;
+    uint16_t    len;
+    uint16_t    pos;
+    uint8_t     paren_depth;
+    bool        stop_at_newline;
+    Token       cur;
 } Lexer;
 
-void lex_init(Lexer *lex, MemArena *mem, const SymTable *tab,
+void lex_init(Lexer *lex, MemArena *mem, SymTable *tab,
               const char *src, uint16_t len, uint16_t start_pos, bool stop_at_newline);
 
 void lex_next(Lexer *lex);

@@ -24,7 +24,7 @@ Key properties:
   - `ext_loader.h`: Umbrella header including `compiler.h`, `linker.h`, and `mathc_bin.h`.
 - **`Core/session/` (Parallel In-Memory Sessions & Order-Tagged Snapshots)**:
   - `session.h` / `session.c`: Isolated parallel session lifecycle (`eng_session_open`, `eng_session_close`, `eng_session_reset`) and stateful evaluation (`eng_session_eval`).
-  - `snapshot.h` / `snapshot.c`: Canonical value expression serializer, order-tagged FNV-1a hash-chained raw-text snapshot builder (`MSP1|seq:...|prev:...|hash:...`), iterative snapshot reader (`eng_session_snapshot_next`), and full-history session continuation (`eng_session_restore`).
+  - `snapshot.h` / `snapshot.c`: Canonical value expression serializer, order-tagged 32-bit FNV-1a integrity hash-chained raw-text snapshot builder (`MSP1|seq:...|prev:...|hash:...`), iterative snapshot reader (`eng_session_snapshot_next`), and full-history session continuation (`eng_session_restore`).
 - **`Core/lib/delegate/` (`delegate.h` / `delegate.c` — C `@` Intrinsics)**: Contains the `@<intrinsic>` registry and all C implementations behind `@` delegates (`@add`, `@sin`, `@vpush`, `@vshift`, `@vpeek`, `@tostr`, `@fromstr`, `@mmul`, `@calc_integ`…). Every section in `delegate.h` and `delegate.c` is annotated with `/*Below section is the C's native ...*/` and `/*Construct ...*/` banners (section 16).
 - **`Core/lib/hardcode/` (`hardcode.h` / `hardcode.c` — Hardcoded Grammar & Ergonomic Rules)**: Isolates the grammar rules fixed in C (newline statement separators, reserved words, implicit multiplication, undefined iterator variables `i in 1...5 {}`, dual unit/variable `"in"` disambiguation `25m in km`, parameterized containers `vec<T>()` / `list<T>()` / `stack<T>()` / `queue<T>()`, comprehensions, lambdas, and pattern-matched `switch`). Every section in `hardcode.h` and `hardcode.c` is annotated with `/*code section below manages hardcoding ...*/` and `/*Construct ...*/` banners (section 16).
 - **`Library/*.math` (Standard Library)**: Order-independent `.math` modules (no numerical prefixes) compiled and linked by `Library/mathc.c` into `stdlib_precompiled.h` (`Library/stdlib.mathc`) and loaded in one `memcpy` by `eng_init`.
@@ -38,7 +38,7 @@ Key properties:
 #include "math_engine.h"
 #include <stdio.h>
 
-static Engine g_eng;   /* ~247 KB: keep it static or on the heap */
+/* Engine (~693 KB) holds isolated arenas + 256 KB .mathc buffer: use eng_create() or static */
 
 int main(void) {
     if (!eng_init(&g_eng)) { fprintf(stderr, "%s\n", eng_last_error(&g_eng)); return 1; }
@@ -461,7 +461,8 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 
 | Function | Purpose |
 | :-- | :-- |
-| `eng_init(&eng)` | boot all standard modules from the embedded image |
+| `eng_create()`, `eng_create_blank()`, `eng_destroy(eng)` | heap-allocate & initialize an isolated `Engine` (~693 KB) and free it |
+| `eng_init(&eng)` | boot all standard modules into a static/caller-allocated `Engine` |
 | `eng_init_blank(&eng)` | empty engine with no types or operators (for tools and tests) |
 | `eng_eval(&eng, src, &out)` | evaluate a script; returns false and sets the error on failure |
 | `eng_format_value(&eng, v, buf, cap)` | render any value to text |
@@ -471,7 +472,7 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | `eng_register_extern(&eng, name, fn, ctx)` | bind `@name(...)` to a C callback |
 | `eng_session_open`, `eng_session_close`, `eng_session_reset`, `eng_session_eval` | parallel in-memory evaluation sessions |
 | `eng_session_snapshot_next`, `eng_session_snapshot_rewind`, `eng_session_snapshot_count`, `eng_session_snapshot_at`, `eng_session_restore` | iterative order-tagged raw-text snapshots & session continuation |
-| `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | separated compilation, topological `<[dep]` linking, and `.mathc` binary cache load |
+| `user_build_create`, `user_build_destroy`, `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_link_ext_buf`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc` | separated compilation, topological `<[dep]` linking, and little-endian `.mathc` binary cache load |
 
 **Capacity limits** (compile-time constants in `mem_arena.h` and `sym_table.h`):
 
@@ -480,7 +481,8 @@ An extension is UTF-8 text with `#` comments. The host passes it to `user_compil
 | Expression length | 65,534 bytes |
 | String pool | 32,768 bytes |
 | AST nodes | 8,192 |
-| Float pool (vectors, structs, matrices) | 8,192 doubles |
+| Float pool (vectors, structs, matrices) | 8,192 doubles (~90×90 matrix max; returns `MEM_NO_IDX` on exhaustion) |
+| First-class lambdas (`MEM_MAX_FN_POOL`) | 16 closures per evaluation |
 | Call stack | 256 slots |
 | Evaluation depth / parse nesting | 128 |
 | Evaluation step budget | 2,000,000 per `eng_eval` |

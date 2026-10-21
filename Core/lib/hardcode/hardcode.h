@@ -77,7 +77,7 @@ bool     hardcode_check_undef_in_lhs(MemArena *mem, const SymTable *tab, uint16_
 bool     hardcode_should_use_unit_for_in_rhs(const MemArena *mem, const SymTable *tab,
                                              const AstNode *in_node, Value lhs_val,
                                              Value rhs_val, uint16_t *out_unit_sym);
-bool     hardcode_eval_in_vrange_fast(MemArena *mem, const SymTable *tab,
+bool     hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
                                       const AstNode *n, uint16_t frame_base,
                                       uint8_t cur_ret_type, Value *out_val);
 
@@ -85,17 +85,17 @@ bool     hardcode_eval_in_vrange_fast(MemArena *mem, const SymTable *tab,
 /*Construct vec<T>(...), list<T>(...), stack<T>(...), queue<T>(...), vec(...), list(...), stack(...), queue(...)*/
 bool     hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16_t id_len,
                                                uint16_t *out_spec);
-bool     hardcode_try_eval_variadic_vec(MemArena *mem, const SymTable *tab,
+bool     hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
                                         const AstNode *n, uint16_t frame_base,
                                         uint8_t cur_ret_type, Value *out_val);
 
 /*code section below manages hardcoding range/collection loops, multi-variable destructuring, and pattern-matched 'switch'*/
 /*Construct (i in a...b) { ... }, [expr for x in iter], r1, r2 := quad_roots(...), switch (x) { case ... }*/
-Value    hardcode_eval_for_in_ast(MemArena *mem, const SymTable *tab,
+Value    hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                                   const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type);
 Value    hardcode_eval_unpack_elem_ast(MemArena *mem, const SymTable *tab,
                                        const AstNode *n, uint16_t frame_base);
-Value    hardcode_eval_switch_eq_ast(MemArena *mem, const SymTable *tab,
+Value    hardcode_eval_switch_eq_ast(MemArena *mem, SymTable *tab,
                                      const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type);
 
 #ifdef __cplusplus

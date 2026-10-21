@@ -8,12 +8,12 @@
  *     circular `<[dep]` dependencies.
  *   - Invokes `ext_compile_slice` in resolved topological order with full
  *     transactional rollback on error.
+ *   - Zero global or static mutable state across engines or threads.
  */
 
 #include "linker.h"
+#include <stdlib.h>
 #include <string.h>
-
-static ExtBuildCtx s_internal_build_ctx;
 
 bool ext_link_units(MemArena *mem, SymTable *tab, const ExtBuildCtx *ctx) {
     if (!mem || !tab || !ctx) return false;
@@ -187,6 +187,23 @@ bool ext_link_units(MemArena *mem, SymTable *tab, const ExtBuildCtx *ctx) {
     return true;
 }
 
+bool ext_compile_and_link_ctx(MemArena *mem, SymTable *tab, ExtBuildCtx *ctx,
+                              const char *const *raw_texts, size_t unit_count) {
+    if (!mem || !tab || !ctx) return false;
+    mem_clear_err(mem);
+    if (!raw_texts && unit_count > 0) {
+        mem_err(mem, "Null extension source array");
+        return false;
+    }
+    ext_build_init(ctx);
+    for (size_t i = 0; i < unit_count; ++i) {
+        if (!ext_compile_unit(mem, tab, ctx, raw_texts[i])) {
+            return false;
+        }
+    }
+    return ext_link_units(mem, tab, ctx);
+}
+
 bool ext_compile_and_link(MemArena *mem, SymTable *tab,
                           const char *const *raw_texts, size_t unit_count) {
     if (!mem || !tab) return false;
@@ -195,13 +212,14 @@ bool ext_compile_and_link(MemArena *mem, SymTable *tab,
         mem_err(mem, "Null extension source array");
         return false;
     }
-    ext_build_init(&s_internal_build_ctx);
-    for (size_t i = 0; i < unit_count; ++i) {
-        if (!ext_compile_unit(mem, tab, &s_internal_build_ctx, raw_texts[i])) {
-            return false;
-        }
+    ExtBuildCtx *ctx = ext_build_create();
+    if (!ctx) {
+        mem_err(mem, "Out of memory allocating temporary ExtBuildCtx");
+        return false;
     }
-    return ext_link_units(mem, tab, &s_internal_build_ctx);
+    bool ok = ext_compile_and_link_ctx(mem, tab, ctx, raw_texts, unit_count);
+    ext_build_destroy(ctx);
+    return ok;
 }
 
 bool ext_load_str(MemArena *mem, SymTable *tab, const char *ext_src) {

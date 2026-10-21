@@ -240,7 +240,7 @@ bool delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
 
 /*Below section is the C's native for operator delegate @lambda and function delegate @fcall*/
 /*Construct (x) => expr, (a, b) => expr, () => expr, f(x), call(f, x)*/
-Value delegate_call_fn(MemArena *mem, const SymTable *tab,
+Value delegate_call_fn(MemArena *mem, SymTable *tab,
                        Value fn_val, uint8_t argc, const Value *args) {
     if (mem->fn_type_id == 0 || val_get_type(mem, fn_val) != mem->fn_type_id) {
         mem_err(mem, "Expected function ($fn) handle");
@@ -387,7 +387,7 @@ static Value seq_coll_get(MemArena *mem, const SymTable *tab, Value coll, uint16
 
 /*Below section is the C's native for operator/function delegates @fcall, @vmap, @vfilter, @vreduce, @vany, @vall, @vfind, @vcount, @vnew, @vfill, @vrange, @vin, @vpush, @vpop, @vshift, @vpeek, @vget, @vset, @vlen, @vcap, @vresize, @vshrink, @vclear*/
 /*Construct call(f, ...), map, filter, reduce, fold, any, all, find, count_if, vec/list/stack/queue, .., ..., ..<, <.., in, into, push, pop, enqueue, dequeue, shift, peek, top, front, back*/
-Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
+Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
                                   IntrinsicId intr, Value a, Value b, Value c) {
     /*Below section is the C's native for operator delegate @fcall*/
     /*Construct call(f, a) and call(f, a, b)*/
@@ -1112,10 +1112,13 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                 mem_err(mem, "det() requires a square 2D matrix (1x1 up to 16x16)");
                 return val_void();
             }
-            uint16_t N = da[0];
-            double tmp[256];
+            uint16_t N          = da[0];
+            uint16_t saved_pool = mem->pool_top;
+            uint16_t tmp_idx    = mem_alloc_pool(mem, (uint16_t)(N * N));
+            if (tmp_idx == MEM_NO_IDX || mem->has_error) return val_void();
+            double *tmp = &mem->f64_pool[tmp_idx];
             for (uint16_t i = 0; i < (uint16_t)(N * N); ++i) {
-                tmp[i] = mem_read_pool(mem, dat_a + i);
+                tmp[i] = mem_read_pool(mem, (uint16_t)(dat_a + i));
             }
             double det_val = 1.0;
             for (uint16_t i = 0; i < N; ++i) {
@@ -1125,7 +1128,10 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                     double v = fabs(tmp[r * N + i]);
                     if (v > max_v) { max_v = v; piv = r; }
                 }
-                if (max_v <= 1e-14) return val_make_f64(mem, mem->fast_real_type, 0.0);
+                if (max_v <= 1e-14) {
+                    mem->pool_top = saved_pool;
+                    return val_make_f64(mem, mem->fast_real_type, 0.0);
+                }
                 if (piv != i) {
                     for (uint16_t col = i; col < N; ++col) {
                         double t = tmp[i * N + col];
@@ -1143,6 +1149,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                     }
                 }
             }
+            mem->pool_top = saved_pool;
             return val_make_f64(mem, mem->fast_real_type, det_val);
         }
         case INTR_MINV: {
@@ -1150,8 +1157,17 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                 mem_err(mem, "inv() requires a square 2D matrix (1x1 up to 16x16)");
                 return val_void();
             }
-            uint16_t N = da[0];
-            double aug[512];
+            uint16_t N          = da[0];
+            uint16_t out_dims[4] = { N, N, 0, 0 };
+            uint16_t tot_out = 0, dat_out = 0;
+            uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, out_dims, &tot_out, &dat_out);
+            if (hdr_out == MEM_NO_IDX || mem->has_error) return val_void();
+
+            uint16_t saved_pool = mem->pool_top;
+            uint16_t aug_idx    = mem_alloc_pool(mem, (uint16_t)(2u * N * N));
+            if (aug_idx == MEM_NO_IDX || mem->has_error) return val_void();
+            double *aug = &mem->f64_pool[aug_idx];
+
             for (uint16_t r = 0; r < N; ++r) {
                 for (uint16_t col = 0; col < N; ++col) {
                     aug[r * (2 * N) + col]     = mem_read_pool(mem, (uint16_t)(dat_a + r * N + col));
@@ -1166,6 +1182,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                     if (v > max_v) { max_v = v; piv = r; }
                 }
                 if (max_v <= 1e-14) {
+                    mem->pool_top = saved_pool;
                     mem_err(mem, "Singular matrix cannot be inverted (det == 0)");
                     return val_void();
                 }
@@ -1190,10 +1207,6 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                     }
                 }
             }
-            uint16_t out_dims[4] = { N, N, 0, 0 };
-            uint16_t tot_out = 0, dat_out = 0;
-            uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, out_dims, &tot_out, &dat_out);
-            if (mem->has_error) return val_void();
             for (uint16_t r = 0; r < N; ++r) {
                 for (uint16_t col = 0; col < N; ++col) {
                     double v = aug[r * (2 * N) + N + col];
@@ -1201,6 +1214,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                     mem_write_pool(mem, (uint16_t)(dat_out + r * N + col), v);
                 }
             }
+            mem->pool_top = saved_pool;
             return val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS);
         }
         default:
@@ -1372,7 +1386,7 @@ static Value delegate_eval_tostr(MemArena *mem, const SymTable *tab, Value val) 
     return val_from_cstr(mem, buf);
 }
 
-static Value delegate_eval_fromstr(MemArena *mem, const SymTable *tab, Value str_val) {
+static Value delegate_eval_fromstr(MemArena *mem, SymTable *tab, Value str_val) {
     if (mem->str_type_id == 0 || val_get_type(mem, str_val) != mem->str_type_id) {
         mem_err(mem, "No compatible type found");
         return val_void();
@@ -1552,7 +1566,7 @@ static Value delegate_eval_fromstr(MemArena *mem, const SymTable *tab, Value str
 
 /*Below section is the C's native top-level dispatcher for operator/function delegates @add..@err, @tostr, @fromstr*/
 /*Construct +, -, *, /, %, ^, √, sin..tanh, ==..~, &&..nand, type_of, unit_of, x_, _s, error*/
-Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
+Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
                               IntrinsicId intr, Value a, Value b, Value c, uint8_t ret_type) {
     if (intr >= INTR_VNEW && intr <= INTR_VCOUNT) {
         return delegate_eval_vec_intrinsic(mem, tab, intr, a, b, c);
@@ -1714,7 +1728,7 @@ Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
 
 /*Below section is the C's native for operator/function delegates @calc_diff, @calc_diff2, @calc_diffn, @calc_integ, @calc_lim, @calc_lim_l, @calc_lim_r, @calc_sigma, @calc_prod, @calc_solve, @calc_fmin, @calc_fmax*/
 /*Construct diff, diff2, diff_n, integrate, ntg, lim, lim_left, lim_right, sigma, prod, solve, fmin, fmax*/
-static double eval_calc_point(MemArena *mem, const SymTable *tab,
+static double eval_calc_point(MemArena *mem, SymTable *tab,
                               uint8_t var_slot, uint16_t expr_ast,
                               uint16_t frame_base, uint8_t cur_ret_type, double x_val) {
     mem_set_slot(mem, frame_base, var_slot, val_make_f64(mem, mem->fast_real_type, x_val));
@@ -1722,7 +1736,7 @@ static double eval_calc_point(MemArena *mem, const SymTable *tab,
     return val_get_f64(mem, v);
 }
 
-static double eval_solve_residual(MemArena *mem, const SymTable *tab,
+static double eval_solve_residual(MemArena *mem, SymTable *tab,
                                   uint8_t var_slot, uint16_t expr_ast,
                                   uint16_t frame_base, uint8_t cur_ret_type, double x_val) {
     const AstNode *en = mem_get_ast(mem, expr_ast);
@@ -1745,7 +1759,7 @@ static double snap_calc_noise(double res, double tol) {
     return res;
 }
 
-Value delegate_eval_calculus_meta(MemArena *mem, const SymTable *tab,
+Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
                                   uint8_t mtag, const AstNode *n,
                                   uint16_t frame_base, uint8_t cur_ret_type) {
     uint16_t arg_asts[6];

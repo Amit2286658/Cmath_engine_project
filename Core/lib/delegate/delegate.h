@@ -42,7 +42,7 @@ bool  delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
 
 /*Below section is the C's native closure invocation engine for operator/function delegates @lambda and @fcall*/
 /*Construct (x) => expr, f(x), call(f, x)*/
-Value delegate_call_fn(MemArena *mem, const SymTable *tab,
+Value delegate_call_fn(MemArena *mem, SymTable *tab,
                        Value fn_val, uint8_t argc, const Value *args);
 
 /*Below section is the C's native for operator/function delegates @vnew, @vfill, @vpush, @vpop, @vshift, @vpeek, @vget, @vset, @vlen, @vcap, @vresize, @vshrink, @vclear, @vrange, @vin, @vmap..@vcount*/
@@ -51,7 +51,7 @@ void  delegate_vec_write_elem(MemArena *mem, const SymTable *tab,
                               uint16_t elem_tid, uint16_t dst_pidx, Value item);
 Value delegate_vec_read_elem(MemArena *mem, const SymTable *tab,
                              uint16_t elem_tid, uint8_t elem_uid, uint16_t src_pidx);
-Value delegate_eval_vec_intrinsic(MemArena *mem, const SymTable *tab,
+Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
                                   IntrinsicId intr, Value a, Value b, Value c);
 
 /*Below section is the C's native for operator/function delegates @mzero, @mones, @meye, @mfill, @mrows, @mcols, @mrank, @mlen, @mshape, @madd, @msub, @mscal, @mmul, @mtrans, @mtrace, @mdet, @minv*/
@@ -64,12 +64,12 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
 
 /*Below section is the C's native top-level dispatcher for operator/function delegates @add..@err, @tostr, @fromstr*/
 /*Construct +, -, *, /, %, ^, √, sin..tanh, ==..~, &&..nand, type_of, unit_of, x_, _s, error*/
-Value delegate_eval_intrinsic(MemArena *mem, const SymTable *tab,
+Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
                               IntrinsicId intr, Value a, Value b, Value c, uint8_t ret_type);
 
 /*Below section is the C's native for calculus and solver delegates @calc_diff, @calc_diff2, @calc_diffn, @calc_integ, @calc_lim, @calc_lim_l, @calc_lim_r, @calc_sigma, @calc_prod, @calc_solve, @calc_fmin, @calc_fmax*/
 /*Construct diff, diff2, diff_n, integrate, ntg, lim, lim_left, lim_right, sigma, prod, solve, fmin, fmax*/
-Value delegate_eval_calculus_meta(MemArena *mem, const SymTable *tab,
+Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
                                   uint8_t mtag, const AstNode *n,
                                   uint16_t frame_base, uint8_t cur_ret_type);
 

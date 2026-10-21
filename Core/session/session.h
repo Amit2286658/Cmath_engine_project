@@ -10,6 +10,16 @@
 #ifndef SESSION_H
 #define SESSION_H
 
+#ifndef MATH_ENGINE_API
+#  if defined(_WIN32) && defined(MATH_ENGINE_SHARED)
+#    define MATH_ENGINE_API __declspec(dllexport)
+#  elif defined(__GNUC__) || defined(__clang__)
+#    define MATH_ENGINE_API __attribute__((visibility("default")))
+#  else
+#    define MATH_ENGINE_API
+#  endif
+#endif
+
 #include "mem_arena.h"
 #include "sym_table.h"
 
@@ -55,13 +65,13 @@ typedef struct {
  * Allocate a new unnamed, independent in-memory session.
  * Returns a session handle (`0 .. ENG_MAX_SESSIONS - 1`), or `-1` if all slots are full.
  */
-int  eng_session_open(Engine *eng);
+MATH_ENGINE_API int  eng_session_open(Engine *eng);
 
 /* Close an active in-memory session and release its slot */
-bool eng_session_close(Engine *eng, int session_id);
+MATH_ENGINE_API bool eng_session_close(Engine *eng, int session_id);
 
 /* Reset an active session's variables and evaluation snapshots while keeping it open */
-bool eng_session_reset(Engine *eng, int session_id);
+MATH_ENGINE_API bool eng_session_reset(Engine *eng, int session_id);
 
 /*
  * Evaluate `expr` within `session_id`:
@@ -70,7 +80,7 @@ bool eng_session_reset(Engine *eng, int session_id);
  *   - Persists updated/newly declared variables back into `session_id`.
  *   - Records a new order-tagged raw-text snapshot for this evaluation.
  */
-bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_val);
+MATH_ENGINE_API bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_val);
 
 #ifdef __cplusplus
 }

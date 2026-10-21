@@ -2,9 +2,9 @@
  * compiler.c — In-Memory `.math` Compilation Unit Stager & Declaration Compiler
  *
  * Implements Phase 1 (Compilation) of extension building:
- *   - `ext_build_init` / `ext_compile_unit`: Scans raw `.math` source strings,
- *     splits them into `[module]` compilation units, extracts `<[dep]` module
- *     dependencies, and rejects duplicate named modules.
+ *   - `ext_build_init` / `ext_build_create` / `ext_build_destroy` / `ext_compile_unit`:
+ *     Scans raw `.math` source strings, splits them into `[module]` compilation units,
+ *     extracts `<[dep]` module dependencies, and rejects duplicate named modules.
  *   - `ext_compile_slice`: Compiles `$type`, syntax delimiter, constant, and
  *     function/operator overload declarations for a single module slice.
  */
@@ -51,7 +51,7 @@ static StrSlice ext_read_ident(ExtLoader *L) {
     while (L->pos < L->len && lex_is_ident_cont((unsigned char)L->src[L->pos])) {
         L->pos++;
     }
-    return mem_intern_str(L->mem, L->src + start, L->pos - start);
+    return mem_intern_str(L->mem, L->src + start, (uint16_t)(L->pos - start));
 }
 
 static StrSlice ext_read_quoted(ExtLoader *L) {
@@ -141,7 +141,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
         while (L->pos < L->len && !mem->has_error) {
             ext_skip_ws(L);
             if (L->pos + 1 < L->len && L->src[L->pos] == '=' && L->src[L->pos + 1] == '>') {
-                L->pos += 2;
+                L->pos = (uint16_t)(L->pos + 2);
                 break;
             }
             if (tab->pat_elem_count >= SYM_MAX_PAT_ELEMS) {
@@ -155,7 +155,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
             char c = L->src[L->pos];
             if (c == '\\' && L->pos + 1 < L->len) {
                 char esc = L->src[L->pos + 1];
-                L->pos += 2;
+                L->pos = (uint16_t)(L->pos + 2);
                 if (esc == 'd') {
                     pe->kind = PAT_DIGIT;
                 } else if (esc == 'a') {
@@ -168,7 +168,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
                 pe->kind  = PAT_LIT;
                 pe->chars = ext_read_quoted(L);
             } else if (c == '[' && L->pos + 1 < L->len && L->src[L->pos + 1] == '^') {
-                L->pos += 2;
+                L->pos = (uint16_t)(L->pos + 2);
                 char excl[32];
                 uint16_t elen = 0;
                 while (L->pos < L->len && L->src[L->pos] != ']') {
@@ -270,7 +270,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
             fd->type_id     = ftid;
             fd->flat_offset = flat_off;
 
-            flat_off += tab->types[ftid].flat_size;
+            flat_off = (uint16_t)(flat_off + tab->types[ftid].flat_size);
             fcount++;
             ext_match_char(L, ',');
         }
@@ -355,7 +355,7 @@ static bool ext_peek_ident_is_unit_annot(ExtLoader *L) {
     if (p >= L->len || !lex_is_ident_start((unsigned char)L->src[p])) return false;
     uint16_t id_start = p;
     while (p < L->len && lex_is_ident_cont((unsigned char)L->src[p])) p++;
-    uint16_t id_len = p - id_start;
+    uint16_t id_len = (uint16_t)(p - id_start);
     while (p < L->len && (L->src[p] == ' ' || L->src[p] == '\t' || L->src[p] == '\r' || L->src[p] == '\n')) p++;
     if (p < L->len && (L->src[p] == ':' || L->src[p] == '=')) return false;
     return sym_find_unit(L->tab, L->mem, L->src + id_start, id_len) != MEM_UNIT_NONE;
@@ -369,7 +369,7 @@ static bool ext_parse_return_spec(ExtLoader *L, uint16_t *out_rtype, uint8_t *ou
         return true;
     }
     if (L->pos + 1 < L->len && L->src[L->pos] == '-' && L->src[L->pos + 1] == '>') {
-        L->pos += 2;
+        L->pos = (uint16_t)(L->pos + 2);
     }
     StrSlice rtype_s = ext_read_ident(L);
     bool has_unit    = false;
@@ -470,7 +470,7 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
 
     /* 1. Syntax delimiter binding (`"(" => @lparen`, `"{" => @lbrace`, `"," => @comma`) */
     if (L->pos + 1 < L->len && L->src[L->pos] == '=' && L->src[L->pos + 1] == '>') {
-        L->pos += 2;
+        L->pos = (uint16_t)(L->pos + 2);
         if (!ext_match_char(L, '@')) {
             mem_err(mem, "Expected '@syntax_intrinsic' after '=>'");
             return;
@@ -537,7 +537,7 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
         L->pos = (P.lex.cur.kind == TOK_EOF) ? P.lex.pos : P.lex.cur.off;
         if (mem->has_error || c_ast == MEM_NO_IDX) return;
 
-        uint16_t c_pool_idx = 0;
+        uint16_t c_pool_idx = MEM_NO_IDX;
         uint8_t  final_unit = (ruid != SYM_UNIT_OMITTED && ruid != SYM_UNIT_GENERIC && ruid != SYM_UNIT_LOCK_NONE)
                               ? ruid : MEM_UNIT_NONE;
         if (mem_get_ast(mem, c_ast)->kind == AST_LIT) {
@@ -550,9 +550,10 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
                 final_unit = val_get_unit(mem, ev);
             }
             c_pool_idx = mem_alloc_pool(mem, 1);
-            if (mem->has_error) return;
+            if (c_pool_idx == MEM_NO_IDX || mem->has_error) return;
             mem_write_pool(mem, c_pool_idx, d);
         }
+        if (c_pool_idx == MEM_NO_IDX) return;
         Value cval = val_make_f64_at_pool(mem, rtid, final_unit, c_pool_idx);
         uint8_t cid = tab->const_count++;
         tab->consts[cid].sym_id   = sym_id;
@@ -714,7 +715,7 @@ bool ext_compile_slice(MemArena *mem, SymTable *tab,
         }
 
         if (c == '<' && L.pos + 1 < L.len && L.src[L.pos + 1] == '[') {
-            L.pos += 2;
+            L.pos = (uint16_t)(L.pos + 2);
             StrSlice dep = ext_read_ident(&L);
             if (!ext_match_char(&L, ']') || dep.len == 0) {
                 mem_err(mem, "Expected closing ']' in module dependency");
@@ -837,7 +838,7 @@ bool ext_compile_slice(MemArena *mem, SymTable *tab,
 }
 
 /* ============================================================================
- * MODULE UNIT STAGING (`ext_build_init`, `ext_compile_unit`)
+ * MODULE UNIT STAGING (`ext_build_init`, `ext_build_create`, `ext_compile_unit`)
  * ============================================================================ */
 
 void ext_build_init(ExtBuildCtx *ctx) {
@@ -846,6 +847,18 @@ void ext_build_init(ExtBuildCtx *ctx) {
     ctx->pool_used  = 0;
     ctx->has_error  = false;
     ctx->err_msg[0] = '\0';
+}
+
+ExtBuildCtx *ext_build_create(void) {
+    ExtBuildCtx *ctx = (ExtBuildCtx *)malloc(sizeof(ExtBuildCtx));
+    if (ctx) {
+        ext_build_init(ctx);
+    }
+    return ctx;
+}
+
+void ext_build_destroy(ExtBuildCtx *ctx) {
+    free(ctx);
 }
 
 static bool build_fail(MemArena *mem, ExtBuildCtx *ctx, const char *msg) {
@@ -919,7 +932,7 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
                 while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
                 uint16_t id_start = pos;
                 while (pos < len && lex_is_ident_cont((unsigned char)src[pos])) pos++;
-                uint16_t id_len = pos - id_start;
+                uint16_t id_len = (uint16_t)(pos - id_start);
                 while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
 
                 if (id_len == 0 || id_len >= 32u || pos >= len || src[pos] != ']') {
@@ -985,11 +998,11 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
                     u->src_off        = base_off + dep_stmt_start;
                     u->src_len        = 0;
                 }
-                pos += 2;
+                pos = (uint16_t)(pos + 2);
                 while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
                 uint16_t id_start = pos;
                 while (pos < len && lex_is_ident_cont((unsigned char)src[pos])) pos++;
-                uint16_t id_len = pos - id_start;
+                uint16_t id_len = (uint16_t)(pos - id_start);
                 while (pos < len && (src[pos] == ' ' || src[pos] == '\t')) pos++;
 
                 if (id_len == 0 || id_len >= 32u || pos >= len || src[pos] != ']') {
@@ -1038,7 +1051,7 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
         if (src[pos] == '"') {
             pos++;
             while (pos < len && src[pos] != '"') {
-                if (src[pos] == '\\' && pos + 1 < len) pos += 2;
+                if (src[pos] == '\\' && pos + 1 < len) pos = (uint16_t)(pos + 2);
                 else pos++;
             }
             if (pos >= len || src[pos] != '"') {
@@ -1048,14 +1061,14 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
             at_stmt_start = false;
         } else if (in_pattern) {
             if (src[pos] == '[' && pos + 1 < len && src[pos + 1] == '^') {
-                pos += 2;
+                pos = (uint16_t)(pos + 2);
                 while (pos < len && src[pos] != ']') {
-                    if (src[pos] == '\\' && pos + 1 < len) pos += 2;
+                    if (src[pos] == '\\' && pos + 1 < len) pos = (uint16_t)(pos + 2);
                     else pos++;
                 }
                 if (pos < len) pos++;
             } else if (src[pos] == '=' && pos + 1 < len && src[pos + 1] == '>') {
-                pos += 2;
+                pos = (uint16_t)(pos + 2);
                 in_pattern = false;
             } else {
                 pos++;
