@@ -91,7 +91,7 @@ static Value eval_seq_chain(MemArena *mem, SymTable *tab,
     uint32_t guard = 0;
 
     while (pc < count && !mem->has_error) {
-        last = eval_ast(mem, tab, stmts[pc], frame_base, cur_ret_type);
+        Value step_val = eval_ast(mem, tab, stmts[pc], frame_base, cur_ret_type);
         if (mem->has_error) return val_void();
 
         if (mem->jump_active == JUMP_GOTO) {
@@ -108,8 +108,12 @@ static Value eval_seq_chain(MemArena *mem, SymTable *tab,
             return val_void();
         }
         if (mem->jump_active != JUMP_NONE) {
+            if (val_get_type(mem, step_val) != MEM_TYPE_VOID) {
+                last = step_val;
+            }
             return last;
         }
+        last = step_val;
         pc++;
     }
     return last;
@@ -119,7 +123,7 @@ static Value eval_seq_chain(MemArena *mem, SymTable *tab,
  * 2. MULTIPLE DISPATCH (ENTITY TYPES + UNIT TYPES + GENERIC `T`)
  * ============================================================================ */
 
-static Value dispatch_overload(MemArena *mem, SymTable *tab,
+Value eval_dispatch_overload(MemArena *mem, SymTable *tab,
                                uint16_t sym_id, OpFixity fixity,
                                uint8_t argc, const Value *args) {
     uint8_t arg_types[8] = { 0 };
@@ -254,7 +258,7 @@ static Value dispatch_overload(MemArena *mem, SymTable *tab,
             uint16_t tid = val_get_type(mem, args[i]);
             if (tid != 0 && tid < tab->type_count &&
                 !tab->types[tid].is_consuming &&
-                tid != mem->vec_type_id && tid != mem->mat_type_id && tid != mem->fn_type_id) {
+                tid != mem->vec_type_id && tid != mem->mat_type_id && tid != mem->fn_type_id && tid != mem->map_type_id) {
                 mem_set_slot(mem, frame_base, i, val_clone_comp(mem, args[i], tab->types[tid].flat_size));
             } else {
                 mem_set_slot(mem, frame_base, i, args[i]);
@@ -313,57 +317,6 @@ static Value dispatch_overload(MemArena *mem, SymTable *tab,
  * 3. SUBSCRIPT INDEXING & SLICING (`v[i]`, `v[1..3]`, `m[r, c]`, `m[0..1, 1..2]`)
  * ============================================================================ */
 
-static bool extract_slice_indices(MemArena *mem, const SymTable *tab,
-                                  Value idx_val, int dim_len,
-                                  uint16_t *out_indices, uint16_t *out_count, uint16_t max_cap) {
-    uint16_t tid = val_get_type(mem, idx_val);
-    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
-        uint16_t hdr_idx = val_get_pool_idx(idx_val);
-        uint16_t len     = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
-        uint16_t dat_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
-        if (len > max_cap) {
-            mem_err(mem, "Slice length (%u) exceeds maximum capacity (%u)", (unsigned)len, (unsigned)max_cap);
-            return false;
-        }
-        for (uint16_t i = 0; i < len; ++i) {
-            Value ev = val_make_f64(mem, mem->fast_real_type, mem_read_pool(mem, dat_idx + i));
-            int k = 0;
-            if (!delegate_val_to_exact_int(mem, tab, ev, "slice index", &k)) return false;
-            if (k < 0) k += dim_len;
-            if (k < 0 || k >= dim_len) {
-                mem_err(mem, "Slice index %d out of bounds (size=%d)", k, dim_len);
-                return false;
-            }
-            out_indices[i] = (uint16_t)k;
-        }
-        *out_count = len;
-        return true;
-    }
-    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
-        uint8_t  rank = 0;
-        uint16_t tot_len = 0, dat_idx = 0, dims[4] = { 0 };
-        delegate_mat_get_info(mem, idx_val, &rank, &tot_len, &dat_idx, dims);
-        if (rank != 1 || tot_len > max_cap) {
-            mem_err(mem, "Matrix slice index must be a 1D index vector");
-            return false;
-        }
-        for (uint16_t i = 0; i < tot_len; ++i) {
-            Value ev = val_make_f64(mem, mem->fast_real_type, mem_read_pool(mem, dat_idx + i));
-            int k = 0;
-            if (!delegate_val_to_exact_int(mem, tab, ev, "slice index", &k)) return false;
-            if (k < 0) k += dim_len;
-            if (k < 0 || k >= dim_len) {
-                mem_err(mem, "Slice index %d out of bounds (size=%d)", k, dim_len);
-                return false;
-            }
-            out_indices[i] = (uint16_t)k;
-        }
-        *out_count = tot_len;
-        return true;
-    }
-    return false;
-}
-
 static Value eval_index_op(MemArena *mem, SymTable *tab,
                            const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type,
                            bool is_write, Value rhs) {
@@ -389,6 +342,33 @@ static Value eval_index_op(MemArena *mem, SymTable *tab,
     uint16_t base_tid  = val_get_type(mem, base);
     uint8_t  base_unit = val_get_unit(mem, base);
 
+    /* A0. String (`$str`) Indexing & Substring Slicing -> Delegate to `@vget` (`INTR_VGET`) */
+    if (base_tid == mem->str_type_id && mem->str_type_id != 0) {
+        if (is_write) {
+            mem_err(mem, "Strings are immutable and do not support index assignment");
+            return val_void();
+        }
+        if (argc != 1) {
+            mem_err(mem, "String subscript expects a single index or range slice");
+            return val_void();
+        }
+        return delegate_eval_vec_intrinsic(mem, tab, INTR_VGET, base, iv_args[0], val_void());
+    }
+
+    /* 0b. Dynamic Map (`$map`) Subscript (`m["key"]`, `m["key"] = val`, `m["key"] += val`) */
+    if (base_tid == mem->map_type_id && mem->map_type_id != 0) {
+        if (argc != 1) {
+            mem_err(mem, "Map subscript expects a single key");
+            return val_void();
+        }
+        if (!is_write) {
+            return delegate_eval_vec_intrinsic(mem, tab, INTR_MAP_GET, base, iv_args[0], val_void());
+        } else {
+            (void)delegate_eval_vec_intrinsic(mem, tab, INTR_MAP_SET, base, iv_args[0], rhs);
+            return rhs;
+        }
+    }
+
     /* A. Dynamic Vector (`$vec`) Slicing (`v[1..3]`, `v[1...3]`, `v[vec(0, 2)]`) */
     if (has_slice_arg && base_tid == mem->vec_type_id && mem->vec_type_id != 0 && argc == 1) {
         uint16_t hdr_idx  = val_get_pool_idx(base);
@@ -402,7 +382,7 @@ static Value eval_index_op(MemArena *mem, SymTable *tab,
 
         uint16_t slice_idx[128];
         uint16_t slice_cnt = 0;
-        if (!extract_slice_indices(mem, tab, iv_args[0], (int)len, slice_idx, &slice_cnt, 128)) {
+        if (!delegate_extract_slice_indices(mem, tab, iv_args[0], (int)len, slice_idx, &slice_cnt, 128)) {
             return val_void();
         }
 
@@ -435,12 +415,27 @@ static Value eval_index_op(MemArena *mem, SymTable *tab,
                             (unsigned)slice_cnt, (unsigned)rlen);
                     return val_void();
                 }
+                if (elem_tid != 0 && (elem_tid != rtid || elem_uid != ruid)) {
+                    char exp_t[32], got_t[32];
+                    sym_type_name(tab, mem, elem_tid, exp_t, sizeof(exp_t));
+                    sym_type_name(tab, mem, rtid, got_t, sizeof(got_t));
+                    mem_err(mem, "Vector type mismatch: cannot set %s in vec<%s>", got_t, exp_t);
+                    return val_void();
+                }
                 for (uint16_t i = 0; i < slice_cnt; ++i) {
                     Value item = delegate_vec_read_elem(mem, tab, rtid, ruid, (uint16_t)(rdat + i * stride));
                     delegate_vec_write_elem(mem, tab, elem_tid,
                                             (uint16_t)(data_idx + slice_idx[i] * stride), item);
                 }
             } else {
+                uint8_t rhs_uid = val_get_unit(mem, rhs);
+                if (elem_tid != 0 && (elem_tid != rhs_tid || elem_uid != rhs_uid)) {
+                    char exp_t[32], got_t[32];
+                    sym_type_name(tab, mem, elem_tid, exp_t, sizeof(exp_t));
+                    sym_type_name(tab, mem, rhs_tid, got_t, sizeof(got_t));
+                    mem_err(mem, "Vector type mismatch: cannot set %s in vec<%s>", got_t, exp_t);
+                    return val_void();
+                }
                 for (uint16_t i = 0; i < slice_cnt; ++i) {
                     delegate_vec_write_elem(mem, tab, elem_tid,
                                             (uint16_t)(data_idx + slice_idx[i] * stride), rhs);
@@ -475,7 +470,7 @@ static Value eval_index_op(MemArena *mem, SymTable *tab,
                 uint16_t itid = val_get_type(mem, iv_args[a]);
                 if ((itid == mem->vec_type_id && mem->vec_type_id != 0) ||
                     (itid == mem->mat_type_id && mem->mat_type_id != 0)) {
-                    if (!extract_slice_indices(mem, tab, iv_args[a], (int)dims[a],
+                    if (!delegate_extract_slice_indices(mem, tab, iv_args[a], (int)dims[a],
                                                ax_idx[a], &ax_cnt[a], 64)) {
                         return val_void();
                     }
@@ -923,7 +918,7 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
         case AST_UNARY: {
             Value arg = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
             if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-            return dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 1, &arg);
+            return eval_dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 1, &arg);
         }
 
         case AST_BINARY: {
@@ -1005,21 +1000,33 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                 return val_void();
             }
 
-            if (mtag == INTR_WHILE) {
+            if (mtag == INTR_WHILE || mtag == INTR_DO_WHILE) {
+                bool is_do_while = (mtag == INTR_DO_WHILE);
+                uint16_t cond_idx = is_do_while ? n->right : n->left;
+                uint16_t body_idx = is_do_while ? n->left  : n->right;
                 Value last = val_make_f64(mem, mem->fast_real_type, 0.0);
                 uint32_t guard = 0;
                 while (!mem->has_error) {
-                    Value cond = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
-                    if (mem->has_error || mem->jump_active != JUMP_NONE ||
-                        fabs(val_get_f64(mem, cond)) <= 1e-15) {
-                        break;
+                    if (!is_do_while) {
+                        Value cond = eval_ast(mem, tab, cond_idx, frame_base, cur_ret_type);
+                        if (mem->has_error || mem->jump_active != JUMP_NONE ||
+                            fabs(val_get_f64(mem, cond)) <= 1e-15) {
+                            break;
+                        }
                     }
-                    last = eval_ast(mem, tab, n->right, frame_base, cur_ret_type);
+                    last = eval_ast(mem, tab, body_idx, frame_base, cur_ret_type);
                     if (mem->jump_active == JUMP_CONTINUE_ANON) {
                         mem->jump_active = JUMP_NONE;
                         if (++guard > 1000000u) {
                             mem_err(mem, "Loop iteration limit exceeded");
                             break;
+                        }
+                        if (is_do_while) {
+                            Value cond = eval_ast(mem, tab, cond_idx, frame_base, cur_ret_type);
+                            if (mem->has_error || mem->jump_active != JUMP_NONE ||
+                                fabs(val_get_f64(mem, cond)) <= 1e-15) {
+                                break;
+                            }
                         }
                         continue;
                     }
@@ -1031,7 +1038,20 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                         break;
                     }
                     if (mem->jump_active != JUMP_NONE) {
+                        if (mem->jump_active == JUMP_CONTINUE_TAG) {
+                            mem->jump_val = last;
+                        }
                         break;
+                    }
+                    if (is_do_while) {
+                        Value cond = eval_ast(mem, tab, cond_idx, frame_base, cur_ret_type);
+                        if (mem->has_error || mem->jump_active != JUMP_NONE ||
+                            fabs(val_get_f64(mem, cond)) <= 1e-15) {
+                            break;
+                        }
+                    }
+                    if (mem->pool_top > (uint16_t)(MEM_MAX_F64_POOL - 1024u)) {
+                        (void)mem_compact_scratch(mem, &last, 1);
                     }
                     if (++guard > 1000000u) {
                         mem_err(mem, "Loop iteration limit exceeded");
@@ -1078,22 +1098,37 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
             uint16_t dual_unit_sym = MEM_NO_IDX;
             if (hardcode_should_use_unit_for_in_rhs(mem, tab, n, args[0], args[1], &dual_unit_sym)) {
                 Value one_val = val_make_f64(mem, mem->fast_real_type, 1.0);
-                args[1] = dispatch_overload(mem, tab, dual_unit_sym, FIX_POSTFIX, 1, &one_val);
+                args[1] = eval_dispatch_overload(mem, tab, dual_unit_sym, FIX_POSTFIX, 1, &one_val);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
             }
-            return dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 2, args);
+            Value bin_res = eval_dispatch_overload(mem, tab, n->ref, (OpFixity)n->sub, 2, args);
+            if (!mem->has_error && hardcode_is_in_op_sym(mem, tab, n->ref) &&
+                !hardcode_ast_is_bare_unit_rhs(mem, n->right) && dual_unit_sym == MEM_NO_IDX &&
+                val_get_unit(mem, args[0]) != MEM_UNIT_NONE &&
+                val_get_unit(mem, args[0]) == val_get_unit(mem, args[1])) {
+                bin_res = val_with_unit(mem, bin_res, MEM_UNIT_NONE);
+            }
+            return bin_res;
         }
 
         case AST_TERNARY: {
             Value c = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
             if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
             const AstNode *pair = mem_get_ast(mem, n->right);
+            Value branch_res = val_void();
             if (fabs(val_get_f64(mem, c)) > 1e-15) {
-                return eval_ast(mem, tab, pair->left, frame_base, cur_ret_type);
+                branch_res = eval_ast(mem, tab, pair->left, frame_base, cur_ret_type);
             } else if (pair->right != MEM_NO_IDX) {
-                return eval_ast(mem, tab, pair->right, frame_base, cur_ret_type);
+                branch_res = eval_ast(mem, tab, pair->right, frame_base, cur_ret_type);
             }
-            return val_void();
+            if (n->sub == 1 && mem->jump_active == JUMP_BREAK_ANON) {
+                if (val_get_type(mem, mem->jump_val) != MEM_TYPE_VOID) {
+                    branch_res = mem->jump_val;
+                    mem->jump_val = val_void();
+                }
+                mem->jump_active = JUMP_NONE;
+            }
+            return branch_res;
         }
 
         case AST_SWITCH_EQ:
@@ -1110,10 +1145,29 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                 res = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
                 if ((mem->jump_active == JUMP_GOTO || mem->jump_active == JUMP_CONTINUE_TAG) &&
                     mem->jump_target_id == label_id) {
+                    bool was_continue = (mem->jump_active == JUMP_CONTINUE_TAG);
                     mem->jump_active = JUMP_NONE;
+                    if (was_continue && val_get_type(mem, mem->jump_val) != MEM_TYPE_VOID) {
+                        res = mem->jump_val;
+                        mem->jump_val = val_void();
+                    }
                     if (++guard > 1000000u) {
                         mem_err(mem, "Loop iteration limit exceeded in tagged scope");
                         return val_void();
+                    }
+                    if (was_continue && n->left != MEM_NO_IDX) {
+                        const AstNode *ln = mem_get_ast(mem, n->left);
+                        if (ln->kind == AST_BINARY) {
+                            uint8_t lm = sym_active_meta_tag(tab, ln->ref, (OpFixity)ln->sub);
+                            bool l_do = (lm == INTR_DO_WHILE);
+                            if (l_do) {
+                                Value cval = eval_ast(mem, tab, ln->right, frame_base, cur_ret_type);
+                                if (mem->has_error || mem->jump_active != JUMP_NONE ||
+                                    fabs(val_get_f64(mem, cval)) <= 1e-15) {
+                                    break;
+                                }
+                            }
+                        }
                     }
                     continue;
                 }
@@ -1189,10 +1243,10 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
         case AST_FN_CALL: {
             Value fn_val = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
             if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-            Value args[8];
+            Value args[16];
             uint8_t argc = 0;
             uint16_t cur = n->right;
-            while (cur != MEM_NO_IDX && argc < 8) {
+            while (cur != MEM_NO_IDX && argc < 16) {
                 const AstNode *link = mem_get_ast(mem, cur);
                 args[argc++] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
@@ -1236,7 +1290,7 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
 
         case AST_CALL: {
             uint8_t mtag = sym_active_meta_tag(tab, n->ref, FIX_FUNC);
-            if (mtag >= INTR_CALC_DIFF && mtag <= INTR_CALC_FMAX) {
+            if (mtag >= INTR_CALC_DIFF && mtag <= INTR_SYM_TAYLOR && !(mtag == INTR_CALC_ODE_SYS && (n->sub == 4 || n->sub == 5))) {
                 return delegate_eval_calculus_meta(mem, tab, mtag, n, frame_base, cur_ret_type);
             }
             if (mtag == INTR_IF && n->sub == 3) {
@@ -1257,16 +1311,16 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                 return var_vec;
             }
 
-            Value args[8];
+            Value args[16];
             uint8_t argc = 0;
             uint16_t cur = n->left;
-            while (cur != MEM_NO_IDX && argc < 8) {
+            while (cur != MEM_NO_IDX && argc < 16) {
                 const AstNode *link = mem_get_ast(mem, cur);
                 args[argc++] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
                 cur = link->right;
             }
-            return dispatch_overload(mem, tab, n->ref, FIX_FUNC, argc, args);
+            return eval_dispatch_overload(mem, tab, n->ref, FIX_FUNC, argc, args);
         }
 
         case AST_INTRINSIC: {
@@ -1281,10 +1335,10 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
         }
 
         case AST_EXTERN: {
-            Value args[8];
+            Value args[16];
             uint8_t argc = 0;
             uint16_t cur = n->left;
-            while (cur != MEM_NO_IDX && argc < 8) {
+            while (cur != MEM_NO_IDX && argc < 16) {
                 const AstNode *link = mem_get_ast(mem, cur);
                 args[argc++] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
@@ -1312,24 +1366,42 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
         case AST_CONSTRUCT: {
             uint16_t st_tid = n->ref;
             const TypeDef *td = &tab->types[st_tid];
+            if (n->sub != td->field_count) {
+                char st_name[32];
+                sym_type_name(tab, mem, st_tid, st_name, sizeof(st_name));
+                mem_err(mem, "Struct %s expects %u argument(s), got %u",
+                        st_name, (unsigned)td->field_count, (unsigned)n->sub);
+                return val_void();
+            }
             uint16_t pidx = mem_alloc_pool(mem, td->flat_size);
             if (mem->has_error) return val_void();
 
             uint16_t cur_link = n->left;
             uint16_t slot_cur = 0;
-            uint16_t link_guard = 0;
+            uint8_t  f_idx    = 0;
             uint8_t  comp_unit = MEM_UNIT_NONE;
-            while (cur_link != MEM_NO_IDX && slot_cur < td->flat_size && ++link_guard <= 256u) {
-                const AstNode *link = mem_get_ast(mem, cur_link);
+            while (cur_link != MEM_NO_IDX && f_idx < td->field_count && slot_cur < td->flat_size) {
+                const AstNode  *link = mem_get_ast(mem, cur_link);
+                const FieldDef *fd   = &tab->fields[td->start_idx + f_idx];
                 Value fval = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+
+                uint16_t fval_tid = val_get_type(mem, fval);
+                if (fval_tid != fd->type_id) {
+                    char st_name[32], exp_t[32], got_t[32];
+                    sym_type_name(tab, mem, st_tid, st_name, sizeof(st_name));
+                    sym_type_name(tab, mem, fd->type_id, exp_t, sizeof(exp_t));
+                    sym_type_name(tab, mem, fval_tid, got_t, sizeof(got_t));
+                    mem_err(mem, "Struct %s field %.*s expects %s, got %s",
+                            st_name, (int)fd->name.len, mem_str_ptr(mem, fd->name), exp_t, got_t);
+                    return val_void();
+                }
 
                 uint8_t fu = val_get_unit(mem, fval);
                 if (fu != MEM_UNIT_NONE && comp_unit == MEM_UNIT_NONE) {
                     comp_unit = fu;
                 }
 
-                uint16_t fval_tid = val_get_type(mem, fval);
                 if (fval_tid != 0 && fval_tid < tab->type_count && !tab->types[fval_tid].is_consuming) {
                     uint16_t sub_sz  = tab->types[fval_tid].flat_size;
                     uint16_t sub_idx = val_get_pool_idx(fval);
@@ -1340,6 +1412,7 @@ static Value eval_ast_inner(MemArena *mem, SymTable *tab,
                     mem_write_pool(mem, pidx + slot_cur++, val_get_f64(mem, fval));
                 }
                 cur_link = link->right;
+                f_idx++;
             }
             return val_with_unit(mem, val_make_comp(mem, st_tid, pidx, td->flat_size), comp_unit);
         }

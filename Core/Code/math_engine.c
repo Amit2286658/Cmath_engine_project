@@ -161,6 +161,59 @@ const char *eng_last_error(const Engine *eng) {
     return eng->mem.err_msg;
 }
 
+uint8_t eng_module_count(const Engine *eng) {
+    return eng ? eng->sym.mod_count : 0;
+}
+
+const char *eng_module_name(const Engine *eng, uint8_t mod_id, char *buf, size_t cap) {
+    if (!buf || cap == 0) return "";
+    if (!eng || mod_id >= eng->sym.mod_count) {
+        buf[0] = '\0';
+        return buf;
+    }
+    StrSlice s = eng->sym.mod_names[mod_id];
+    snprintf(buf, cap, "%.*s", (int)s.len, mem_str_ptr(&eng->mem, s));
+    return buf;
+}
+
+uint16_t eng_overload_count(const Engine *eng) {
+    return eng ? eng->sym.overload_count : 0;
+}
+
+uint8_t eng_const_count(const Engine *eng) {
+    return eng ? eng->sym.const_count : 0;
+}
+
+uint16_t eng_compact_scratch(Engine *eng) {
+    if (!eng) return 0;
+    return mem_compact_scratch(&eng->mem, NULL, 0);
+}
+
+uint16_t eng_scratch_pool_used(const Engine *eng) {
+    if (!eng) return 0;
+    return mem_scratch_pool_used(&eng->mem);
+}
+
+bool eng_sym_simplify(Engine *eng, const char *expr, char *out_buf, size_t buf_cap) {
+    if (!eng || !expr || !out_buf || buf_cap == 0) return false;
+    out_buf[0] = '\0';
+    char qbuf[1024];
+    snprintf(qbuf, sizeof(qbuf), "sym_simplify(%s)", expr);
+    Value v = val_void();
+    if (!eng_eval(eng, qbuf, &v)) return false;
+    return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
+}
+
+bool eng_sym_diff(Engine *eng, const char *var_name, const char *expr, char *out_buf, size_t buf_cap) {
+    if (!eng || !var_name || !expr || !out_buf || buf_cap == 0) return false;
+    out_buf[0] = '\0';
+    char qbuf[1024];
+    snprintf(qbuf, sizeof(qbuf), "sym_diff(%s, %s)", var_name, expr);
+    Value v = val_void();
+    if (!eng_eval(eng, qbuf, &v)) return false;
+    return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
+}
+
 /* ============================================================================
  * HUMAN-READABLE VALUE FORMATTER (`eng_format_value`, `eng_format_mat_at`)
  * ============================================================================ */
@@ -265,8 +318,25 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         return;
     }
     if (type_id == eng->mem.fn_type_id && type_id != 0) {
-        unsigned pcnt = (unsigned)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
+        unsigned pcnt = (unsigned)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1)) & 0x3Fu;
         snprintf(buf, cap, "<fn/%u>", pcnt);
+        return;
+    }
+    if (type_id == eng->mem.map_type_id && type_id != 0) {
+        uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
+        uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 3));
+        size_t used = (size_t)snprintf(buf, cap, "{");
+        for (uint16_t i = 0; i < len && used < cap; ++i) {
+            StrSlice kslice = mem_map_entry_key(&eng->mem, data_idx, i);
+            Value    vval   = mem_map_entry_val(&eng->mem, data_idx, i);
+            char vstr[96];
+            eng_format_value(eng, vval, vstr, sizeof(vstr));
+            used += (size_t)snprintf(buf + used, cap - used, "%s\"%.*s\": %s",
+                                     (i > 0 ? ", " : ""),
+                                     (int)kslice.len, mem_str_ptr(&eng->mem, kslice),
+                                     vstr);
+        }
+        if (used < cap) snprintf(buf + used, cap - used, "}");
         return;
     }
 

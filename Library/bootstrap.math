@@ -1,10 +1,11 @@
 # =============================================================================
 # Library/bootstrap.math — Minimal Bootstrap Subset Hooked First by the C Core
 # =============================================================================
-# Defines syntax delimiters, consuming types, assignment/control operators,
-# calculus & solver constructs, parameterized container constructors
-# (`vec<T>()`, `list<T>()`, `stack<T>()`, `queue<T>()`), sublist methods,
-# higher-order collection pipelines, and the `_` / `into` operators.
+# Defines syntax delimiters, consuming types (including scientific notation &
+# digit separators in `$real`), assignment/control operators, calculus & solver
+# constructs, first-class function invocation, introspection, and `_` / `error`.
+# Entity-specific operations for `$vec`, `$mat`, and `$str` live in their own
+# modular files (`Library/vec.math`, `Library/mat.math`, `Library/string.math`).
 
 [boot_syntax]
 
@@ -23,12 +24,13 @@
 
 # 2. Consuming Lexical Types, Scalar Imaginary Type ($iota), Dynamic Vector ($vec),
 #    Multidimensional Matrix ($mat) & First-Class Lambda Closure ($fn)
-$real ~ \d+ ("." \d+)?       => @f64
+$real ~ ("0" [xX] [0123456789abcdefABCDEF]+ ("_" [0123456789abcdefABCDEF]+)* | "0" [bB] [01]+ ("_" [01]+)* | \d+ ("_" \d+)* ("." \d+ ("_" \d+)*)? ([eE] [+-]? \d+ ("_" \d+)*)?) => @f64
 $iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
 $mat  ~                      => @mat_type
 $fn   ~                      => @fn_type
+$map  ~                      => @map_type
 
 
 [boot_control]
@@ -54,11 +56,20 @@ $fn   ~                      => @fn_type
 (target) "%=" (val) :>5 = @store(target, @mod(target, val))
 (target) "^=" (val) :>5 = @store(target, @pow(target, val))
 
-# 6. First-Class Lambda Arrow `=>` (Right-associative infix, precedence 8)
-(params) "=>" (body) :>8 -> fn = @lambda(params, body)
+# 6. First-Class Lambda Arrow `=>` (Right-associative, prec 8), Pipe `|>` (Left-associative, prec 12) & `call`
+(params) "=>" (body) :>8  -> fn = @lambda(params, body)
+(x:T)    "|>" (f:T)  :<12 -> T  = @pipe(x, f)
+call(f:fn)                      = @fcall(f, 0, 0)
+call(f:fn, a:T)           -> T  = @fcall(f, a, 0)
+call(f:fn, a:T, b:T)      -> T  = @fcall(f, a, b)
+call(f:fn, a:T, b:T, c:T) -> T  = @fcall(f, a, b)
+call(f:fn, a:T, b:T, c:T, d:T) -> T = @fcall(f, a, b)
 
-# 7. Lazy While Loop Operator `??` (Left-associative infix, precedence 3)
-(cond) "??" (body) :<3 = @while(cond, body)
+# 7. Lazy While & Do-While Loop Operators `??` & `?!?` (Left-associative infix, precedence 3)
+#    - Pre-tested while   : `(cond) ?? { body }`
+#    - Post-tested do-while: `{ body } ?? (cond)` or `(body) ?!? (cond)`
+(cond) "??"  (body) :<3 = @while(cond, body)
+(body) "?!?" (cond) :<3 = @do_while(body, cond)
 
 # 8. Standard Right-Associative Ternary Operator `cond ? x : y` (precedence 10)
 (cond) "?" (branches) :>10 = @ternary(cond, branches)
@@ -69,8 +80,8 @@ $fn   ~                      => @fn_type
 (a) "&" (b)        :<35 = @cand(a, b)
 (a) "|" (b)        :<34 = @cor(a, b)
 
-# 10. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `loop`, `break`,
-#     `continue`, `return`, `jump` & `run`
+# 10. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `jump`, `run`,
+#     `break`, `continue` & `return`
 if(cond, then_val, else_val) = @if(cond, then_val, else_val)
 or(cond, body)               = @or_branch(cond, body)
 then(cond, body)             = @or_branch(cond, body)
@@ -88,90 +99,49 @@ continue(tag)                = @continue_loop(tag)
 return()                     = @return_fn(0)
 return(val:T)           -> T = @return_fn(val)
 
-# 11. Expression-Based High School Calculus, Equation Solver & Extrema Constructs
-diff(var_x, expr, x0)                = @calc_diff(var_x, expr, x0)
-diff2(var_x, expr, x0)               = @calc_diff2(var_x, expr, x0)
-diff_n(var_x, expr, x0, order)       = @calc_diffn(var_x, expr, x0)
-integrate(var_x, expr, a, b)         = @calc_integ(var_x, expr, a)
-integrate(var_x, expr, a, b, steps)  = @calc_integ(var_x, expr, a)
-ntg(var_x, expr, a, b)               = @calc_integ(var_x, expr, a)
-lim(var_x, expr, x0)                 = @calc_lim(var_x, expr, x0)
-lim_left(var_x, expr, x0)            = @calc_lim_l(var_x, expr, x0)
-lim_right(var_x, expr, x0)           = @calc_lim_r(var_x, expr, x0)
-sigma(var_k, expr, lo, hi)           = @calc_sigma(var_k, expr, lo)
-prod(var_k, expr, lo, hi)            = @calc_prod(var_k, expr, lo)
-solve(var_x, eq)                     = @calc_solve(var_x, eq)
-solve(var_x, eq, guess)              = @calc_solve(var_x, eq, guess)
-solve(var_x, eq, a, b)               = @calc_solve(var_x, eq, a)
-fmin(var_x, expr, a, b)              = @calc_fmin(var_x, expr, a)
-fmax(var_x, expr, a, b)              = @calc_fmax(var_x, expr, a)
+# 11. Expression-Based High School Calculus, Equation Solver, Extrema & RK4 ODE Constructs
+diff(var_x, expr, x0)                           = @calc_diff(var_x, expr, x0)
+diff2(var_x, expr, x0)                          = @calc_diff2(var_x, expr, x0)
+diff_n(var_x, expr, x0, order)                  = @calc_diffn(var_x, expr, x0)
+integrate(var_x, expr, a, b)                    = @calc_integ(var_x, expr, a)
+integrate(var_x, expr, a, b, steps)             = @calc_integ(var_x, expr, a)
+ntg(var_x, expr, a, b)                          = @calc_integ(var_x, expr, a)
+lim(var_x, expr, x0)                            = @calc_lim(var_x, expr, x0)
+lim_left(var_x, expr, x0)                       = @calc_lim_l(var_x, expr, x0)
+lim_right(var_x, expr, x0)                      = @calc_lim_r(var_x, expr, x0)
+sigma(var_k, expr, lo, hi)                      = @calc_sigma(var_k, expr, lo)
+prod(var_k, expr, lo, hi)                       = @calc_prod(var_k, expr, lo)
+solve(var_x, eq)                                = @calc_solve(var_x, eq)
+solve(var_x, eq, guess)                         = @calc_solve(var_x, eq, guess)
+solve(var_x, eq, a, b)                          = @calc_solve(var_x, eq, a)
+fmin(var_x, expr, a, b)                         = @calc_fmin(var_x, expr, a)
+fmax(var_x, expr, a, b)                         = @calc_fmax(var_x, expr, a)
+ode_rk4(var_t, var_y, expr, t0, y0, t1)                 = @calc_ode(var_t, var_y, expr)
+ode_rk4(var_t, var_y, expr, t0, y0, t1, steps)          = @calc_ode(var_t, var_y, expr)
+ode_rk4_vec(var_t, var_y, expr, t0, y0, t1)      -> vec = @calc_ode_vec(var_t, var_y, expr)
+ode_rk4_vec(var_t, var_y, expr, t0, y0, t1, steps)-> vec = @calc_ode_vec(var_t, var_y, expr)
+ode_rk4_sys(var_t, var_y, rhs_vec, t0, y0:vec, t1) -> vec = @calc_ode_sys(var_t, var_y, rhs_vec)
+ode_rk4_sys_traj(var_t, var_y, rhs_vec, t0, y0:vec, t1) -> mat = @calc_ode_sys(var_t, var_y, rhs_vec)
+ode_coupled2(var_t, var_x, var_y, dx, dy, t0, x0, y0) -> vec = @calc_ode_coupled(var_t, var_x, var_y)
+ode_coupled3(var_t, var_x, var_y, var_z, dx, dy, dz, t0) -> vec = @calc_ode_coupled(var_t, var_x, var_y)
 
-# 12. Dynamic Growable/Shrinkable Vector (`$vec`), Lists, Sublists (`stack`, `queue`),
-#     Range `..` / `...` / `..<` / `<..`, Membership `in` & Insert Operator `into`
-(a:real, T) "..." (b:real, T) :<45 -> vec = @vrange(a, b, 0)
-(a:real, T) "..<" (b:real, T) :<45 -> vec = @vrange(a, b, 1)
-(a:real, T) "<.." (b:real, T) :<45 -> vec = @vrange(a, b, 2)
-(a:real, T) ".."  (b:real, T) :<45 -> vec = @vrange(a, b, 3)
-(item:T)       in   (v:vec)    :<42       = @vin(item, v)
-(item:real, T) in   (m:mat, T) :<42       = @vin(item, m)
-(item:T)       into (v:vec)    :>55 -> vec = @vpush(v, item)
+# 11b. Symbolic Expression Differentiation, Simplification, Evaluation & Taylor Polynomials
+sym_diff(var_x, expr)                     -> str = @sym_diff(var_x, expr)
+sym_diff(var_x, expr, order)              -> str = @sym_diff(var_x, expr, order)
+sym_diff_n(var_x, expr, order)            -> str = @sym_diff(var_x, expr, order)
+sym_simplify(expr:T)                      -> str = @sym_simplify(expr)
+simplify(expr:T)                          -> str = @sym_simplify(expr)
+sym_eval(expr_str:str, var_x, val)               = @sym_eval(expr_str, var_x, val)
+sym_taylor(var_x, expr, x0, order)        -> str = @sym_taylor(var_x, expr, x0)
 
-vec()                   -> vec = @vnew(0)
-vec(cap)                -> vec = @vnew(cap)
-vec(count, init:T)      -> vec = @vfill(count, init)
-list()                  -> vec = @vnew(0)
-list(item:T)            -> vec = @vfill(1, item)
-stack()                 -> vec = @vnew(0)
-stack(item:T)           -> vec = @vfill(1, item)
-queue()                 -> vec = @vnew(0)
-queue(item:T)           -> vec = @vfill(1, item)
-push(v:vec, item:T)     -> vec = @vpush(v, item)
-pop(v:vec)              -> T   = @vpop(v)
-enqueue(q:vec, item:T)  -> vec = @vpush(q, item)
-dequeue(q:vec)          -> T   = @vshift(q)
-shift(q:vec)            -> T   = @vshift(q)
-pop_front(q:vec)        -> T   = @vshift(q)
-peek(s:vec)             -> T   = @vpeek(s, 0)
-top(s:vec)              -> T   = @vpeek(s, 0)
-back(s:vec)             -> T   = @vpeek(s, 0)
-front(q:vec)            -> T   = @vpeek(q, 1)
-is_empty(v:vec)                = @eq(@vlen(v), 0)
-at(v:vec, idx)          -> T   = @vget(v, idx)
-set(v:vec, idx, val:T)  -> vec = @vset(v, idx, val)
-len(v:vec)                     = @vlen(v)
-cap(v:vec)                     = @vcap(v)
-resize(v:vec, new_len)  -> vec = @vresize(v, new_len)
-shrink(v:vec)           -> vec = @vshrink(v)
-clear(v:vec)            -> vec = @vclear(v)
-
-# 13. First-Class Function Invocation & Higher-Order Vector / Matrix Operations
-call(f:fn, a:T)              -> T   = @fcall(f, a, 0)
-call(f:fn, a:T, b:T)         -> T   = @fcall(f, a, b)
-map(v:vec, f:fn)             -> vec = @vmap(v, f, 0)
-map(m:mat, f:fn)             -> mat = @vmap(m, f, 0)
-filter(v:vec, f:fn)          -> vec = @vfilter(v, f, 0)
-filter(m:mat, f:fn)          -> vec = @vfilter(m, f, 0)
-reduce(v:vec, f:fn)          -> T   = @vreduce(v, f, 0)
-reduce(v:vec, init:T, f:fn)  -> T   = @vreduce(v, init, f)
-reduce(m:mat, f:fn)                 = @vreduce(m, f, 0)
-reduce(m:mat, init, f:fn)           = @vreduce(m, init, f)
-fold(v:vec, init:T, f:fn)    -> T   = @vreduce(v, init, f)
-fold(m:mat, init, f:fn)             = @vreduce(m, init, f)
-any(v:vec, f:fn)                    = @vany(v, f, 0)
-any(m:mat, f:fn)                    = @vany(m, f, 0)
-all(v:vec, f:fn)                    = @vall(v, f, 0)
-all(m:mat, f:fn)                    = @vall(m, f, 0)
-find(v:vec, f:fn)            -> T   = @vfind(v, f, 0)
-find(m:mat, f:fn)                   = @vfind(m, f, 0)
-count_if(v:vec, f:fn)               = @vcount(v, f, 0)
-count_if(m:mat, f:fn)               = @vcount(m, f, 0)
-
-# 14. Runtime Entity/Unit Introspection & Plain String Conversion Operators `_`
+# 12. Runtime Entity/Unit Introspection, Scratch Arena Compaction & Plain String Conversion Operators `_`
 type_of(x:T) -> str = @type_name(x)
 unit_of(x:T) -> str = @unit_name(x)
+gc_compact()        = @gc_compact(0)
+pool_used()         = @pool_used(0)
 (x:T) "_"   :95 -> str = @tostr(x)
 "_" (s:str) :85 -> T   = @fromstr(s)
 
-# 15. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
-error(msg:str)       = @err(msg)
+# 13. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
+error(msg:str)        = @err(msg)
 assert(cond, msg:str) = if(cond, 1, error(msg))

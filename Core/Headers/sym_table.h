@@ -53,6 +53,7 @@ typedef enum {
     INTR_VEC_TYPE,  /* @vec_type (dynamic growable/shrinkable vector of any T) */
     INTR_MAT_TYPE,  /* @mat_type (multidimensional matrix/tensor `[...]`)      */
     INTR_FN_TYPE,   /* @fn_type  (first-class anonymous function `(x) => ...`) */
+    INTR_MAP_TYPE,  /* @map_type (dynamic key-value dictionary `map()`)        */
 
     /* Bootstrap Expression Syntax Delimiters (`"sym" => @lparen`) */
     INTR_LPAREN,    /* @lparen */
@@ -67,6 +68,7 @@ typedef enum {
     INTR_SEQ,           /* @seq(a, b)            */
     INTR_STORE,         /* @store(dst, v)        */
     INTR_WHILE,         /* @while(c, body)       */
+    INTR_DO_WHILE,      /* @do_while(body, c)    */
     INTR_IF,            /* @if(c, t, e)          */
     INTR_OR_BRANCH,     /* @or_branch(c, b) / @then_branch(c, b) */
     INTR_ELSE_BRANCH,   /* @else_branch(b)       */
@@ -80,6 +82,7 @@ typedef enum {
     INTR_CONTINUE_LOOP, /* @continue_loop(tag)   */
     INTR_RETURN_FN,     /* @return_fn(val)       */
     INTR_LAMBDA,        /* @lambda(params, body) */
+    INTR_PIPE,          /* @pipe(x, f) (`x |> f` and `x |> f(a, b)`)       */
     INTR_CAND,          /* @cand(a, b) (`&` distributed/short-circuit AND) */
     INTR_COR,           /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
     INTR_CNOT,          /* @cnot(a)    (`!` strict boolean condition NOT)  */
@@ -95,6 +98,14 @@ typedef enum {
     INTR_CALC_SOLVE,    /* @calc_solve(x, eq, guess)     */
     INTR_CALC_FMIN,     /* @calc_fmin(x, expr, a, b)     */
     INTR_CALC_FMAX,     /* @calc_fmax(x, expr, a, b)     */
+    INTR_CALC_ODE,      /* @calc_ode(t, y, expr, t0, y0, t1[, steps])      */
+    INTR_CALC_ODE_VEC,  /* @calc_ode_vec(t, y, expr, t0, y0, t1[, steps])  */
+    INTR_CALC_ODE_SYS,     /* @calc_ode_sys(t, y, rhs_vec, t0, y0_vec, t1) */
+    INTR_CALC_ODE_COUPLED, /* @calc_ode_coupled(t, x, y, dx, dy, ...)      */
+    INTR_SYM_DIFF,         /* @sym_diff(x, expr[, order])                  */
+    INTR_SYM_SIMPLIFY,     /* @sym_simplify(expr)                          */
+    INTR_SYM_EVAL,         /* @sym_eval(expr_str, x, val)                  */
+    INTR_SYM_TAYLOR,       /* @sym_taylor(x, expr, x0, order)              */
     INTR_FIELD,         /* @field(s, f)          */
 
     /* Dynamic Vector, Stack, Queue & Higher-Order Functional Intrinsics (`$vec`, `$fn`) */
@@ -103,7 +114,6 @@ typedef enum {
     INTR_VPUSH,     /* @vpush(v, item)       */
     INTR_VPOP,      /* @vpop(v)              */
     INTR_VSHIFT,    /* @vshift(v) (FIFO queue dequeue / pop_front)       */
-    INTR_VPEEK,     /* @vpeek(v, mode) (0 = top/back, 1 = front)         */
     INTR_VGET,      /* @vget(v, idx)         */
     INTR_VSET,      /* @vset(v, idx, item)   */
     INTR_VLEN,      /* @vlen(v)              */
@@ -111,35 +121,40 @@ typedef enum {
     INTR_VRESIZE,   /* @vresize(v, n)        */
     INTR_VSHRINK,   /* @vshrink(v)           */
     INTR_VCLEAR,    /* @vclear(v)            */
-    INTR_VRANGE,    /* @vrange(a, b, mode) (`a...b`, `a..<b`, `a<..b`, `a..b`) */
-    INTR_VIN,       /* @vin(item, v) (`x in v` vector membership check)  */
-    INTR_FCALL,     /* @fcall(f, a, b)       */
-    INTR_VMAP,      /* @vmap(v, f)           */
-    INTR_VFILTER,   /* @vfilter(v, f)        */
-    INTR_VREDUCE,   /* @vreduce(v, init, f)  */
-    INTR_VANY,      /* @vany(v, f)           */
-    INTR_VALL,      /* @vall(v, f)           */
-    INTR_VFIND,     /* @vfind(v, f)          */
-    INTR_VCOUNT,    /* @vcount(v, f)         */
+    INTR_VRANGE,      /* @vrange(a, b, mode) (`a...b`, `a..<b`, `a<..b`, `a..b`) */
+    INTR_VRANGE_STEP, /* @vrange_step(v, step, 0) (`a...b by step`)              */
+    INTR_VIN,         /* @vin(item, v) (`x in v` vector membership check)        */
+    INTR_FCALL,       /* @fcall(f, a, b)       */
+    INTR_VSORT,       /* @vsort(v, desc)       */
+    INTR_MAP_NEW,     /* @map_new(cap)         */
+    INTR_MAP_SET,     /* @map_set(m, k, v)     */
+    INTR_MAP_GET,     /* @map_get(m, k, def)   */
+    INTR_MAP_HAS,     /* @map_has(m, k)        */
+    INTR_MAP_DEL,     /* @map_del(m, k)        */
+    INTR_MAP_KEYS,    /* @map_keys(m) -> $vec  */
+    INTR_MAP_VALS,    /* @map_vals(m) -> $vec  */
+    INTR_MAP_ENTRIES, /* @map_entries(m)->$vec */
 
     /* Multidimensional Matrix Intrinsics (`$mat`) */
-    INTR_MZERO,     /* @mzero(r, c)        */
-    INTR_MONES,     /* @mones(r, c)        */
-    INTR_MEYE,      /* @meye(n)            */
-    INTR_MFILL,     /* @mfill(r, c, val)   */
-    INTR_MROWS,     /* @mrows(m)           */
-    INTR_MCOLS,     /* @mcols(m)           */
-    INTR_MRANK,     /* @mrank(m)           */
-    INTR_MLEN,      /* @mlen(m)            */
-    INTR_MSHAPE,    /* @mshape(m) -> $vec  */
-    INTR_MADD,      /* @madd(a, b)         */
-    INTR_MSUB,      /* @msub(a, b)         */
-    INTR_MSCAL,     /* @mscal(m, s)        */
-    INTR_MMUL,      /* @mmul(a, b)         */
-    INTR_MTRANS,    /* @mtrans(m)          */
-    INTR_MTRACE,    /* @mtrace(m)          */
-    INTR_MDET,      /* @mdet(m)            */
-    INTR_MINV,      /* @minv(m)            */
+    INTR_MZERO,       /* @mzero(r, c)        */
+    INTR_MROWS,       /* @mrows(m)           */
+    INTR_MCOLS,       /* @mcols(m)           */
+    INTR_MRANK,       /* @mrank(m)           */
+    INTR_MLEN,        /* @mlen(m)            */
+    INTR_MSHAPE,      /* @mshape(m) -> $vec  */
+    INTR_MADD,        /* @madd(a, b)         */
+    INTR_MSUB,        /* @msub(a, b)         */
+    INTR_MSCAL,       /* @mscal(m, s)        */
+    INTR_MMUL,        /* @mmul(a, b)         */
+    INTR_MTRANS,      /* @mtrans(m)          */
+    INTR_MDET,        /* @mdet(m)            */
+    INTR_MINV,        /* @minv(m)            */
+    INTR_MLINSOLVE,   /* @mlinsolve(A, b)    */
+    INTR_MHADAMARD,   /* @mhadamard(a, b, m) */
+    INTR_MRESHAPE,    /* @mreshape(m, r, c)  */
+    INTR_MEIGVALS,    /* @meigvals(m)        */
+    INTR_MEIGVECS,    /* @meigvecs(m)        */
+    INTR_MSVD,        /* @msvd(m, part)      */
 
     /* Core Arithmetic Intrinsics */
     INTR_ADD,
@@ -171,6 +186,10 @@ typedef enum {
     INTR_SINH,
     INTR_COSH,
     INTR_TANH,
+    INTR_ERF,
+    INTR_ERFC,
+    INTR_GAMMA,
+    INTR_LGAMMA,
 
     /* Comparison & Boolean Logic Intrinsics */
     INTR_EQ,
@@ -179,13 +198,13 @@ typedef enum {
     INTR_LE,
     INTR_GT,
     INTR_GE,
-    INTR_APPROX,    /* @approx(a, b) (`~` approximate equality <= 1e-3) */
-    INTR_LAND,
-    INTR_LOR,
     INTR_LNOT,
-    INTR_LXOR,
-    INTR_LNOR,
-    INTR_LNAND,
+    INTR_BAND,
+    INTR_BOR,
+    INTR_BXOR,
+    INTR_BNOT,
+    INTR_BSHL,
+    INTR_BSHR,
 
     /* Type & Unit Introspection / String Conversion Intrinsics */
     INTR_RAW,
@@ -193,6 +212,14 @@ typedef enum {
     INTR_UNIT_NAME, /* @unit_name(x) -> $str */
     INTR_TOSTR,     /* @tostr(x)   -> $str (postfix `_` operator) */
     INTR_FROMSTR,   /* @fromstr(s) -> T    (prefix `_` operator)  */
+    INTR_STR_FMT,       /* @str_fmt(tmpl, a, b)                   */
+    INTR_REGEX_MATCH,   /* @regex_match(s, pat)                   */
+    INTR_REGEX_FIND,    /* @regex_find(s, pat, mode)              */
+    INTR_REGEX_FINDALL, /* @regex_find_all(s, pat)                */
+    INTR_REGEX_REPLACE, /* @regex_replace(s, pat, repl)           */
+    INTR_REGEX_SPLIT,   /* @regex_split(s, pat)                   */
+    INTR_GC_COMPACT,    /* @gc_compact()                          */
+    INTR_POOL_USED,     /* @pool_used()                           */
     INTR_ERR,       /* @err(msg:str) -> raises custom error       */
     INTR_COUNT
 } IntrinsicId;
@@ -235,8 +262,16 @@ typedef enum {
     PAT_LIT,
     PAT_NOT_CHARS,
     PAT_GROUP_START,
-    PAT_GROUP_END
+    PAT_GROUP_END,
+    PAT_CHARS,
+    PAT_ALT
 } PatKind;
+
+/* 8-byte 7D SI base dimensional exponent vector for a unit group (`@dim` in .math) */
+typedef struct {
+    int8_t  exp[7];   /* (m, kg, s, A, K, mol, cd) */
+    uint8_t has_dim;  /* 1 if dimensional exponents are defined, else 0 */
+} UnitDimDef;
 
 typedef enum {
     QUANT_ONE = 0,
@@ -332,6 +367,7 @@ typedef struct SymTable {
     uint8_t     type_count;
 
     StrSlice    units[SYM_MAX_UNITS];
+    UnitDimDef  unit_dims[SYM_MAX_UNITS];
     uint8_t     unit_count;
 
     PatElem     pat_elems[SYM_MAX_PAT_ELEMS];

@@ -89,6 +89,7 @@ file(GLOB_RECURSE CORE_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_SOURCE_DIR}/Core/Code/*.c"
     "${CMAKE_SOURCE_DIR}/Core/compile/*.c"
     "${CMAKE_SOURCE_DIR}/Core/session/*.c"
+    "${CMAKE_SOURCE_DIR}/Core/jni/*.c"
     "${CMAKE_SOURCE_DIR}/Core/lib/delegate/*.c"
     "${CMAKE_SOURCE_DIR}/Core/lib/hardcode/*.c"
 )
@@ -111,6 +112,7 @@ target_include_directories(mathengine PUBLIC
     "${CMAKE_SOURCE_DIR}/Core/Headers"
     "${CMAKE_SOURCE_DIR}/Core/compile"
     "${CMAKE_SOURCE_DIR}/Core/session"
+    "${CMAKE_SOURCE_DIR}/Core/jni"
     "${CMAKE_SOURCE_DIR}/Core/lib/delegate"
     "${CMAKE_SOURCE_DIR}/Core/lib/hardcode"
 )
@@ -151,9 +153,12 @@ if(NOT ANDROID AND EXISTS "${CMAKE_SOURCE_DIR}/Library/mathc.c")
             "${CMAKE_SOURCE_DIR}/Library/complex.math"
             "${CMAKE_SOURCE_DIR}/Library/conversions.math"
             "${CMAKE_SOURCE_DIR}/Library/geom.math"
+            "${CMAKE_SOURCE_DIR}/Library/mat.math"
             "${CMAKE_SOURCE_DIR}/Library/physics.math"
+            "${CMAKE_SOURCE_DIR}/Library/string.math"
             "${CMAKE_SOURCE_DIR}/Library/trig.math"
             "${CMAKE_SOURCE_DIR}/Library/units.math"
+            "${CMAKE_SOURCE_DIR}/Library/vec.math"
         DEPENDS mathc
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         COMMENT "Compiling & linking Library/*.math -> Library/stdlib.mathc & Core/Headers/stdlib_precompiled.h"

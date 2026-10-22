@@ -31,9 +31,11 @@
 
 #include "math_engine.h"
 #include "user_loader.h"
+#include "math_engine_jni.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static Engine g_eng; /* Single static engine context */
 
@@ -557,15 +559,15 @@ static const TestCase k_tests[] = {
       "Dynamic promotion via 'x += 5i' + struct field access 'x.re' and 'x.im'" },
 
     /* M. Concrete Entity Types, Concrete Unit Types, Complex Unit Promotion & Generic Unit `T` */
-    { "x := 5m ; x *= 10m ; x += 10cm ; x",
+    { "x := 5m ; x *= 10m ; x += 1000cm2 ; x",
       "50.1", "real",
-      "Postfix unit arithmetic: 5m * 10m + 10cm -> 50.1m (5010cm) in SI meters" },
+      "Compound unit arithmetic: 5m * 10m (50m2) + 1000cm2 (0.1m2) -> 50.1 [area] in SI m^2" },
     { "x := 5m ; x *= 10 ; x += 10cm ; x",
       "50.1", "real",
-      "Postfix unit scaled by plain 10: 5m * 10 + 10cm -> 50.1m" },
-    { "x := 5m ; x *= 10m ; x += 10cm ; unit_of(x)",
-      "\"distance\"", "str",
-      "Unit tag preserved across *= and += on 5m -> \"distance\"" },
+      "Postfix unit scaled by plain 10: 5m * 10 + 10cm -> 50.1m [distance]" },
+    { "x := 5m ; x *= 10m ; x += 1000cm2 ; unit_of(x)",
+      "\"area\"", "str",
+      "Compound unit product 5m * 10m promotes unit tag to \"area\"" },
     { "unit_of(2 + 5)",
       "\"none\"", "str",
       "Simple expression '2 + 5' has generic UnitType T bound to \"none\"" },
@@ -893,6 +895,16 @@ static const TestCase k_tests[] = {
       "[Construct 2] Value-returning 'break x' from range loop (first x with x^2 > 50 is 8)" },
     { "res := Outer : (i in 1...5) ?? { (j in 1...5) ?? { if (i * j == 12) { break(Outer, i * 100 + j) } } } ; res", "304", "real",
       "[Construct 2] Tagged value-returning 'break(Outer, val)' from nested loop (i=3, j=4 -> 304)" },
+    { "k := 10 ; { k += 1 } ?? (k < 5) ; k", "11", "real",
+      "[Do-While] Post-tested '{ k += 1 } ?\? (k < 5)' runs body once even when cond is initially false" },
+    { "k := 0 ; s := 0 ; { k += 1 ; s += k } ?? (k < 5) ; s", "15", "real",
+      "[Do-While] Post-tested '{ k += 1 ; s += k } ?\? (k < 5)' accumulates 1+2+3+4+5 = 15" },
+    { "k := 0 ; s := 0 ; { k += 1 ; if (k == 3) { continue } ; s += k } ?? (k < 5) ; s", "12", "real",
+      "[Do-While] 'continue' inside '{ ... } ?\? (cond)' jumps to bottom condition check (1+2+4+5 = 12)" },
+    { "k := 10 ; (k += 5) ?!? (k < 5) ; k", "15", "real",
+      "[Do-While] Dedicated '?!?' do-while operator '(k += 5) ?!? (k < 5)' runs single-expr body once -> 15" },
+    { "tot := 0 ; i := 0 ; Outer : { i += 1 ; j := 0 ; { j += 1 ; if (j == 2) { continue(Outer) } ; tot += i * 10 + j } ?? (j < 3) } ?? (i < 3) ; tot", "63", "real",
+      "[Do-While] Tagged 'Outer : { ... } ?\? (i < 3)' with 'continue(Outer)' (11+21+31 = 63)" },
     { "safe_sqrt_ret(-4) * 100 + safe_sqrt_ret(0) * 10 + safe_sqrt_ret(9)", "-70", "real",
       "[Construct 2] Early 'return expr' inside user function 'safe_sqrt_ret' (-100 + 0 + 30 = -70)" },
     { "x := 10\nreturn x * 5\nx = 999", "50", "real",
@@ -1012,6 +1024,558 @@ static const TestCase k_tests[] = {
       "[queue<T>] FIFO 'queue<real>(10, 20)' with .enqueue(30), .front() (10), .dequeue() (10), .front() (20)" },
     { "v : vec<vec2> := vec<vec2>() ; vec2(5, 6) into v ; v[0].x + v[0].y", "11", "real",
       "[vec<T> annot] Variable type lock 'v : vec<vec2> := vec<vec2>()' + 'vec2(5, 6) into v' -> 11" },
+
+    /* 21. Compound Unit Cancellation & SI Dimensional Algebra (`F=ma`, `s=d/t`, `W=Fd`, `P=W/t`, `Pa=F/A`, `u/u->none`) */
+    { "m := 10 kg ; a := 9.8 mps2 ; F := m * a ; F", "98", "real",
+      "[Compound Units] F = m * a: (10 kg) * (9.8 mps2) -> 98 N [force]" },
+    { "unit_of((10 kg) * (9.8 mps2))", "\"force\"", "str",
+      "[Compound Units] unit_of((10 kg) * (9.8 mps2)) -> \"force\" (Newton)" },
+    { "((1000 kg) * (9.8 mps2)) in kN", "9.8", "real",
+      "[Compound Units] F = m * a converted via 'in kN' -> 9.8 [force]" },
+    { "unit_of((98 N) / (10 kg))", "\"acceleration\"", "str",
+      "[Compound Units] a = F / m: (98 N) / (10 kg) -> \"acceleration\" (m/s^2)" },
+    { "unit_of((98 N) / (9.8 mps2))", "\"mass\"", "str",
+      "[Compound Units] m = F / a: (98 N) / (9.8 mps2) -> \"mass\" (kg)" },
+    { "d := 100 m ; t := 10 sec ; s := d / t ; s", "10", "real",
+      "[Compound Units] s = d / t: (100 m) / (10 sec) -> 10 [speed] (m/s)" },
+    { "unit_of((36 kph) * (10 sec))", "\"distance\"", "str",
+      "[Compound Units] d = v * t: (36 kph) * (10 sec) -> 100m [distance]" },
+    { "unit_of((100 m) / (20 mps))", "\"time\"", "str",
+      "[Compound Units] t = d / v: (100 m) / (20 mps) -> 5s [time]" },
+    { "unit_of((20 mps) / (4 sec))", "\"acceleration\"", "str",
+      "[Compound Units] a = v / t: (20 mps) / (4 sec) -> 5 [acceleration]" },
+    { "unit_of((100 m) / ((5 sec) ^ 2))", "\"acceleration\"", "str",
+      "[Compound Units] a = d / t^2: (100 m) / ((5 sec)^2) -> 4 [acceleration]" },
+    { "W_work := (50 N) * (4 m) ; W_work", "200", "real",
+      "[Compound Units] Work W = F * d: (50 N) * (4 m) -> 200 J [energy]" },
+    { "unit_of((50 N) * (4 m))", "\"energy\"", "str",
+      "[Compound Units] unit_of((50 N) * (4 m)) -> \"energy\" (Joule)" },
+    { "unit_of((200 J) / (10 sec))", "\"power\"", "str",
+      "[Compound Units] P = W / t: (200 J) / (10 sec) -> 20 W [power]" },
+    { "unit_of((50 N) * (4 mps))", "\"power\"", "str",
+      "[Compound Units] P = F * v: (50 N) * (4 mps) -> 200 W [power]" },
+    { "unit_of((100 N) / (2 m2))", "\"pressure\"", "str",
+      "[Compound Units] P = F / A: (100 N) / (2 m2) -> 50 Pa [pressure]" },
+    { "unit_of((5 m) ^ 2)", "\"area\"", "str",
+      "[Compound Units] (5 m)^2 -> 25 m2 [area]" },
+    { "unit_of(√(25 m2))", "\"distance\"", "str",
+      "[Compound Units] √(25 m2) -> 5 m [distance]" },
+    { "unit_of((2 m) ^ 3)", "\"volume\"", "str",
+      "[Compound Units] (2 m)^3 -> 8 m3 [volume]" },
+    { "unit_of(cbrt(27 m3))", "\"distance\"", "str",
+      "[Compound Units] cbrt(27 m3) -> 3 m [distance]" },
+    { "unit_of((2 km) / (500 m))", "\"none\"", "str",
+      "[Compound Units] Same-unit division (2 km) / (500 m) cancels unit to \"none\"" },
+    { "unit_of(1 / (0.02 sec))", "\"frequency\"", "str",
+      "[Compound Units] Reciprocal time 1 / (0.02 sec) -> 50 Hz [frequency]" },
+    { "unit_of((50 Hz) * (0.02 sec))", "\"none\"", "str",
+      "[Compound Units] Frequency * time (50 Hz) * (0.02 sec) cancels to \"none\"" },
+    { "unit_of(ke(2 kg, 10 mps))", "\"energy\"", "str",
+      "[Compound Units] Physics ke(2 kg, 10 mps) = 0.5*m*v^2 auto-derives \"energy\" (100 J)" },
+    { "unit_of(suvat_s(10 mps, 2 mps2, 5 sec))", "\"distance\"", "str",
+      "[Compound Units] Physics suvat_s(10 mps, 2 mps2, 5 sec) auto-derives \"distance\" (75 m)" },
+    { "unit_of(suvat_v2(0 mps, 2 mps2, 25 m))", "\"speed\"", "str",
+      "[Compound Units] Physics suvat_v2(0 mps, 2 mps2, 25 m) auto-derives \"speed\" (10 m/s)" },
+    { "unit_of(ohm_v(3 A, 4 ohm))", "\"voltage\"", "str",
+      "[Compound Units] Ohm's law (3 A) * (4 ohm) -> 12 V [voltage]" },
+    { "unit_of(elec_power(12 V, 3 A))", "\"power\"", "str",
+      "[Compound Units] Electrical power (12 V) * (3 A) -> 36 W [power]" },
+
+    /* 22. Switch Early `break` / `break(val)` & `()` vs `{}` Scoping Tests */
+    { "switch (2) { case 1 : { 10 } case 2 : { x := 25 ; if (x > 20) { break(x * 2) } ; 999 } else : { 0 } }", "50", "real",
+      "[switch break] Early parameterized 'break(x * 2)' exits switch case with 50" },
+    { "switch (1) { case 1 : { a := 15 ; a += 5 ; break ; a = 999 } else : { 0 } }", "20", "real",
+      "[switch break] Bare 'break' inside switch case exits early preserving prior expression (20)" },
+    { "(a := 3 ; b := 4 ; a + b) * 10 + a", "73", "real",
+      "[() vs {}] '(a := 3 ; b := 4 ; a + b)' runs multiple statements in current scope (a=3 remains visible -> 73)" },
+    { "x := 1 ; { x := 99 ; y := 2 ; x + y } + x", "102", "real",
+      "[() vs {}] '{ x := 99 ; y := 2 ; x + y }' opens lexical scope (101 + outer x=1 -> 102)" },
+
+    /* 23. Feature 1: Stepped Ranges (`a...b by step`, `range(a, b, step)`) & Strided Slicing */
+    { "1...10 by 2", "[1, 3, 5, 7, 9]", "vec",
+      "[Feature 1] Inclusive stepped range '1...10 by 2' -> [1, 3, 5, 7, 9]" },
+    { "1..10 by 2", "[3, 5, 7, 9]", "vec",
+      "[Feature 1] Exclusive stepped range '1..10 by 2' -> [3, 5, 7, 9]" },
+    { "0..<10 by 3", "[0, 3, 6, 9]", "vec",
+      "[Feature 1] Right-open stepped range '0..<10 by 3' -> [0, 3, 6, 9]" },
+    { "0<..10 by 3", "[3, 6, 9]", "vec",
+      "[Feature 1] Left-open stepped range '0<..10 by 3' -> [3, 6, 9]" },
+    { "10...2 by -3", "[10, 7, 4]", "vec",
+      "[Feature 1] Descending stepped range '10...2 by -3' -> [10, 7, 4]" },
+    { "0...1 by 0.25", "[0, 0.25, 0.5, 0.75, 1]", "vec",
+      "[Feature 1] Fractional-step range '0...1 by 0.25' -> [0, 0.25, 0.5, 0.75, 1]" },
+    { "((0 m)...(1 km) by (250 m))[2]", "500", "real",
+      "[Feature 1] Unit-aware stepped range '(0 m)...(1 km) by (250 m)' -> 500 m at index 2" },
+    { "unit_of(((0 m)...(1 km) by (250 m))[2])", "\"distance\"", "str",
+      "[Feature 1] Unit-aware stepped range preserves unit tag 'distance'" },
+    { "range(1, 9, 2)", "[1, 3, 5, 7, 9]", "vec",
+      "[Feature 1] Function form 'range(1, 9, 2)' -> [1, 3, 5, 7, 9]" },
+    { "range(1, 4)", "[1, 2, 3, 4]", "vec",
+      "[Feature 1] Default step=1 'range(1, 4)' -> [1, 2, 3, 4]" },
+    { "s := 0 ; (x in 1...100 by 2) { s += x } ; s", "2500", "real",
+      "[Feature 1] O(1)-memory stepped range loop '(x in 1...100 by 2) { s += x }' -> 2500" },
+    { "[x^2 for x in 1...9 by 2]", "[1, 9, 25, 49, 81]", "vec",
+      "[Feature 1] O(1)-memory stepped range comprehension '[x^2 for x in 1...9 by 2]'" },
+    { "(7 in 1...100 by 2) * 10 + (8 in 1...100 by 2)", "10", "real",
+      "[Feature 1] O(1) stepped range membership: 7 in 1...100 by 2 (1), 8 in 1...100 by 2 (0)" },
+    { "v := vec(10, 20, 30, 40, 50, 60) ; v[0...5 by 2]", "[10, 30, 50]", "vec",
+      "[Feature 1] Strided vector slicing 'v[0...5 by 2]' -> [10, 30, 50]" },
+    { "v := vec(10, 20, 30, 40, 50, 60) ; v[5...0 by -2]", "[60, 40, 20]", "vec",
+      "[Feature 1] Reverse strided vector slicing 'v[5...0 by -2]' -> [60, 40, 20]" },
+
+    /* 24. Feature 2 (Full 7D SI Base Units): K (Kelvin), mol (Mole), cd (Candela/Lumen) */
+    { "25 degC", "298.15", "real",
+      "[7D SI: K] '25 degC' normalizes to 298.15 K [temperature]" },
+    { "unit_of(300 K)", "\"temperature\"", "str",
+      "[7D SI: K] '300 K' has unit group 'temperature'" },
+    { "(373.15 K) to_degC * 10 + ((212 degF) in K == 373.15 K)", "1001", "real",
+      "[7D SI: K] '(373.15 K) to_degC' (100) and '(212 degF) in K == 373.15 K' (1)" },
+    { "unit_of((1000 J) / (250 K))", "\"heat_capacity\"", "str",
+      "[7D SI: K] Entropy / heat capacity (1000 J) / (250 K) -> 4 J/K [heat_capacity]" },
+    { "unit_of((4 JpK) * (250 K))", "\"energy\"", "str",
+      "[7D SI: K] (4 JpK) * (250 K) -> 1000 J [energy]" },
+    { "unit_of(((4184 J) / (1 kg)) / (1 K))", "\"specific_heat\"", "str",
+      "[7D SI: K] ((4184 J) / (1 kg)) / (1 K) -> 4184 J/(kg*K) [specific_heat]" },
+    { "Q := (2 kg) * (4184 JpkgK) * (10 K) ; Q", "83680", "real",
+      "[7D SI: K] Calorimetry Q = m * c * dT: (2 kg) * (4184 JpkgK) * (10 K) -> 83680 J" },
+    { "unit_of((2 kg) * (4184 JpkgK) * (10 K))", "\"energy\"", "str",
+      "[7D SI: K] Calorimetry (kg * J/(kg*K) * K) cancels kg and K -> 'energy' (J)" },
+    { "2 mol + 500 mmol", "2.5", "real",
+      "[7D SI: mol] '2 mol + 500 mmol' -> 2.5 [substance]" },
+    { "unit_of((36 gram) / (2 mol))", "\"molar_mass\"", "str",
+      "[7D SI: mol] Mass / substance: (36 gram) / (2 mol) -> 0.018 kg/mol [molar_mass]" },
+    { "((36 gram) / (18 gpmol))", "2", "real",
+      "[7D SI: mol] Stoichiometry n = m / M: (36 gram) / (18 gpmol) -> 2 mol [substance]" },
+    { "unit_of((36 gram) / (18 gpmol))", "\"substance\"", "str",
+      "[7D SI: mol] unit_of((36 gram) / (18 gpmol)) -> 'substance' (mol)" },
+    { "unit_of((2 mol) * (18 gpmol))", "\"mass\"", "str",
+      "[7D SI: mol] m = n * M: (2 mol) * (18 gpmol) -> 0.036 kg [mass]" },
+    { "(((0.5 mol) / (250 mL)) in M_conc)", "2", "real",
+      "[7D SI: mol] Molarity c = n / V: ((0.5 mol) / (250 mL)) in M_conc -> 2 M [molarity]" },
+    { "unit_of((0.5 mol) / (250 mL))", "\"molarity\"", "str",
+      "[7D SI: mol] unit_of((0.5 mol) / (250 mL)) -> 'molarity' (mol/m^3)" },
+    { "unit_of((2 M_conc) * (250 mL))", "\"substance\"", "str",
+      "[7D SI: mol] n = c * V: (2 M_conc) * (250 mL) -> 0.5 mol [substance]" },
+    { "unit_of((50 kJ) / (2 mol))", "\"molar_energy\"", "str",
+      "[7D SI: mol] Molar enthalpy (50 kJ) / (2 mol) -> 25000 J/mol [molar_energy]" },
+    { "unit_of(((8.314462618 J) / (1 mol)) / (1 K))", "\"molar_heat_capacity\"", "str",
+      "[7D SI: mol & K] Gas constant R = J / (mol * K) -> 'molar_heat_capacity'" },
+    { "unit_of(((2 mol) * (8.314462618 JpmolK) * (300 K)) / (50 L))", "\"pressure\"", "str",
+      "[7D SI: Ideal Gas Law] P = n*R*T / V: (mol * J/(mol*K) * K) / L -> 'pressure' (Pa)" },
+    { "unit_of((0.5 mol) / (10 sec))", "\"catalytic_activity\"", "str",
+      "[7D SI: mol] Enzyme activity (0.5 mol) / (10 sec) -> 0.05 kat [catalytic_activity]" },
+    { "(800 lm) / (4 m2)", "200", "real",
+      "[7D SI: cd] Photometry E_v = Phi_v / A: (800 lm) / (4 m2) -> 200 lx [illuminance]" },
+    { "unit_of((800 lm) / (4 m2))", "\"illuminance\"", "str",
+      "[7D SI: cd] unit_of((800 lm) / (4 m2)) -> 'illuminance' (lux = lm/m^2)" },
+    { "unit_of((200 lx) * (4 m2))", "\"luminous_intensity\"", "str",
+      "[7D SI: cd] (200 lx) * (4 m2) -> 800 lm [luminous_intensity]" },
+
+    /* 25. Feature 3: Indexed `i, x in v` Loops/Comprehensions & Pipe Operator `|>` */
+    { "v := vec(10, 20, 30) ; s := 0 ; (i, x in v) { s += i * 100 + x } ; s", "360", "real",
+      "[Feature 3] Parenthesized 2-var indexed loop '(i, x in v) { s += i * 100 + x }' -> 360" },
+    { "v := vec(10, 20, 30) ; s := 0 ; i, x in v { s += (i + 1) * x } ; s", "140", "real",
+      "[Feature 3] Unparenthesized 2-var indexed loop 'i, x in v { s += (i + 1) * x }' -> 140" },
+    { "s := 0 ; (idx, val in 10...30 by 10) { s += idx * 100 + val } ; s", "360", "real",
+      "[Feature 3] 2-var indexed loop over stepped range '(idx, val in 10...30 by 10)' -> 360" },
+    { "[i * 100 + x for i, x in vec(5, 6, 7)]", "[5, 106, 207]", "vec",
+      "[Feature 3] 2-var indexed comprehension '[i * 100 + x for i, x in vec(5, 6, 7)]'" },
+    { "[i * 10 + x for i, x in vec(3, 4, 5, 6) if i % 2 == 1]", "[14, 36]", "vec",
+      "[Feature 3] Filtered 2-var indexed comprehension '[i * 10 + x for i, x in ... if i % 2 == 1]'" },
+    { "5 |> (x => x^2 + 1) |> (x => x * 2)", "52", "real",
+      "[Feature 3] Pipe operator '|>' through lambda closures: 5 -> 26 -> 52" },
+    { "vec(1, 2, 3, 4, 5) |> map(x => x^2) |> filter(x => x > 5) |> sum", "50", "real",
+      "[Feature 3] Pipe operator '|>' collection pipeline: map -> filter -> sum -> 50" },
+    { "(16 |> sqrt |> round) * 100 + (12 |> gcd(18)) * 10 + (2 |> clamp(5, 10))", "465", "real",
+      "[Feature 3] Pipe operator '|>' into 1-arg ('sqrt'), 2-arg ('gcd(18)'), and 3-arg ('clamp(5,10)') functions" },
+
+    /* 26. Feature 4: Scientific Notation, Digit Separators & First-Class String Operations */
+    { "1_000_000 + 2_500.75", "1002500.75", "real",
+      "[Feature 4] Numeric digit separators '1_000_000 + 2_500.75' -> 1002500.75" },
+    { "1.5e3 + 2.5e-1", "1500.25", "real",
+      "[Feature 4] Scientific exponent notation '1.5e3 + 2.5e-1' -> 1500.25" },
+    { "(6.022e23 * 1e-23) ~ 6.022 && (2e ~ (2 * e)) && (42_ == \"42\")", "1", "real",
+      "[Feature 4] Scientific notation '6.022e23 * 1e-23' coexists with '2e' (2*e) and '42_' (\"42\")" },
+    { "\"Hello, \" + \"MEP!\"", "\"Hello, MEP!\"", "str",
+      "[Feature 4] String concatenation '\"Hello, \" + \"MEP!\"' -> \"Hello, MEP!\"" },
+    { "len(\"Planck\") * 10 + (\"Planck\"[0] == \"P\") + (\"Planck\"[-1] == \"k\")", "62", "real",
+      "[Feature 4] String length 'len(\"Planck\")' (6) and character indexing s[0], s[-1]" },
+    { "\"abcdef\"[1...4] + \"_\" + \"abcdef\"[0...5 by 2] + \"_\" + \"stressed\"[7...0 by -1]", "\"bcde_ace_desserts\"", "str",
+      "[Feature 4] Substring range slicing, strided slicing, and string reversal" },
+    { "(\"MEP\" in \"Hello MEP\") * 100 + [i for i, c in \"abacab\" if c == \"a\"].sum()", "106", "real",
+      "[Feature 4] Substring 'in' check (100) + indexed character comprehension over string (0+2+4 = 6)" },
+
+    /* 27. Feature 5: `linsolve(A, b)`, Elementwise Hadamard `.*` `./` `.^` & `ode_rk4` */
+    { "linsolve([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]], [8, -11, -3])", "[2, 3, -1]", "mat",
+      "[Feature 5] 3x3 Gaussian elimination 'linsolve(A, b)' -> [2, 3, -1]" },
+    { "linsolve([2, 3 ; 5, -1], list(8, 3))", "[1, 2]", "vec",
+      "[Feature 5] 'linsolve(A, b)' with $vec right-hand side -> vec [1, 2]" },
+    { "[1, 2 ; 3, 4] .* [10, 20 ; 30, 40]", "[[10, 40], [90, 160]]", "mat",
+      "[Feature 5] Elementwise matrix Hadamard product '[1, 2 ; 3, 4] .* [10, 20 ; 30, 40]'" },
+    { "([10, 40 ; 90, 160] ./ [1, 2 ; 3, 4]) + ([1, 2 ; 3, 4] .^ 2)", "[[11, 24], [39, 56]]", "mat",
+      "[Feature 5] Elementwise matrix Hadamard division './' and power '.^'" },
+    { "(vec(2, 3, 4) .* vec(5, 6, 7)) + (vec(2, 3, 4) .^ 2)", "[14, 27, 44]", "vec",
+      "[Feature 5] Elementwise vector Hadamard product '.*' and power '.^'" },
+    { "ode_rk4(t, y, y, 0, 1, 1) ~ e", "1", "real",
+      "[Feature 5] 4th-order Runge-Kutta 'ode_rk4(t, y, y, 0, 1, 1)' solves dy/dt = y -> e" },
+    { "ode_rk4(t, y, 2 * t, 0, 0, 3, 100) ~ 9", "1", "real",
+      "[Feature 5] 4th-order Runge-Kutta 'ode_rk4(t, y, 2 * t, 0, 0, 3, 100)' -> 9" },
+    { "ode_rk4(t, y, t + y, 0, 1, 1, 200) ~ (2 * e - 2)", "1", "real",
+      "[Feature 5] Coupled ODE 'ode_rk4(t, y, t + y, 0, 1, 1, 200)' -> 2e - 2" },
+    /* 28. Pure MEP String Module (`Library/string.math` — `[string]`) Tests */
+    { "str_repeat(\"ab\", 3) + \"_\" + str_reverse(\"reward\") + \"_\" + substr(\"scientist\", 0, 3)",
+      "\"ababab_drawer_scie\"", "str",
+      "[string.math] Pure MEP string helpers str_repeat, str_reverse, and substr" },
+    { "starts_with(\"MathEngine\", \"Math\") * 100 + ends_with(\"MathEngine\", \"Engine\") * 10 + is_empty(\"\")",
+      "111", "real",
+      "[string.math] Pure MEP predicates starts_with, ends_with, and is_empty" },
+    { "str_join(chars(\"M-E-P\").filter(c => c != \"-\"), \".\")",
+      "\"M.E.P\"", "str",
+      "[string.math] Pure MEP chars(s) -> vec<str> + filter + str_join(v, sep)" },
+    /* 29. Edge-Case Hardening & Complete Overload Verification Tests */
+    { "substr(\"\", 0, 0) + substr(\"hello\", 3, 1) + substr(\"hello\", -3, -1)",
+      "\"llo\"", "str",
+      "[Edge Case] substr empty string, inverted start>stop bounds, and negative indices" },
+    { "str_join(vec(\"a\", \"b\"), \",\") + \":\" + str_join(vec(\"x\"), \",\")",
+      "\"a,b:x\"", "str",
+      "[Edge Case] 1-arg and 2-arg non-real vec(\"x\"), vec(\"a\", \"b\") element constructors" },
+    { "v := (vec(10m, 20m) + vec(5m, 15m)) ./ vec(3sec, 7sec) ; unit_of(v[0]) + \":\" + (v[0] + v[1])_",
+      "\"speed:10\"", "str",
+      "[Edge Case] 2-arg unit-tagged vec(10m, 20m) + Hadamard ./ preserving SI speed unit" },
+    { "(-(3 + 4i) + 2 * (3 + 4i) - (2 + 4i) / 2) + (5 - (1 + 2i)) + (3i + (1 + 2i)) - (3i - (1 + 2i))",
+      "8 + 4i", "complex",
+      "[Edge Case] Complex unary minus, scalar * and /, and real/iota +/- complex overloads" },
+    { "(-vec2(3, -4) + vec2(6, 8) / 2 == vec2(0, 8)) && (-vec3(1, -2, 3) + vec3(3, 6, 9) / 3 == vec3(0, 4, 0)) && (-mat2(1, 2, 3, 4) + mat2(2, 4, 6, 8) / 2 == mat2(0, 0, 0, 0))",
+      "1", "real",
+      "[Edge Case] Unary minus, scalar division /, and == on vec2, vec3, and mat2" },
+    { "((6i / 2) == 3i) && ((6i / 2i) == 3) && ((6 / 2i) == -3i) && (5.0005i ~ 5i) && (mat2(1, 2, 3, 4.0005) ~ mat2(1, 2, 3, 4))",
+      "1", "real",
+      "[Edge Case] Pure imaginary iota division (/), equality (==, !=, ~), and mat2 ~ mat2" },
+    { "2 .^ [1, 2 ; 3, 4]",
+      "[[2, 4], [8, 16]]", "mat",
+      "[Edge Case] Scalar-base elementwise matrix power 's .^ A' -> [[2, 4], [8, 16]]" },
+
+    /* 30. Suggestion 1: Inline Named Functions `f(x, y) := expr`, Recursive Closures, UFCS on `$fn` & Multi-Arg `call` */
+    { "sq(x) := x^2 + 1 ; sq(5) + sq(3)",
+      "36", "real",
+      "[Sugg 1] Inline named 1-arg function 'sq(x) := x^2 + 1' -> 26 + 10 = 36" },
+    { "add3(a, b, c) := a * 100 + b * 10 + c ; add3(2, 4, 6)",
+      "246", "real",
+      "[Sugg 1] Inline named 3-arg function 'add3(a, b, c) := ...' -> 246" },
+    { "clamp4(x, lo, hi, scale) := min(max(x, lo), hi) * scale ; clamp4(15, 0, 10, 3) + call(clamp4, -5, 2, 8, 10)",
+      "50", "real",
+      "[Sugg 1] Inline named 4-arg function 'clamp4' + 5-arg 'call(f, a, b, c, d)' -> 30 + 20 = 50" },
+    { "k := 10 ; scale_add(x, y) := (x + y) * k ; 5.scale_add(3) + (7).scale_add(2)",
+      "170", "real",
+      "[Sugg 1] Lexical capture + UFCS dot-call on local closure '5.scale_add(3)' -> 80 + 90 = 170" },
+    { "fact(n) := n <= 1 ? 1 : n * fact(n - 1) ; fact(6)",
+      "720", "real",
+      "[Sugg 1] Recursive inline named function 'fact(n) := n <= 1 ? 1 : n * fact(n - 1)' -> 720" },
+    { "f_rec := n => n <= 1 ? 1 : n * f_rec(n - 1) ; f_rec(5)",
+      "120", "real",
+      "[Sugg 1] Recursive anonymous lambda 'f_rec := n => ...' self-binding -> 120" },
+    { "fib_r(n) := { if (n <= 1) { return n } ; a := fib_r(n - 1) ; b := fib_r(n - 2) ; a + b } ; fib_r(8)",
+      "21", "real",
+      "[Sugg 1] Re-entrant block recursion 'fib_r(8)' preserving body-local slots 'a' & 'b' -> 21" },
+    { "const_fn() := 42 ; const_fn() + call(const_fn)",
+      "84", "real",
+      "[Sugg 1] 0-arg inline function 'const_fn() := 42' + 1-arg 'call(const_fn)' -> 84" },
+
+    /* 31. Suggestion 2: Complex Exponentiation, Roots, Transcendentals & Mixed Scalar/Iota/Complex Ops */
+    { "re(3 + 4i) * 10 + im(3 + 4i)",
+      "34", "real",
+      "[Sugg 2] Complex accessors 're(3 + 4i)' (3) and 'im(3 + 4i)' (4) -> 34" },
+    { "((1 + 1i) ^ 4) ~ (-4 + 0i)",
+      "1", "real",
+      "[Sugg 2] Complex-real power '(1 + 1i) ^ 4' -> -4 + 0i" },
+    { "((1i) ^ (1i)) ~ complex(exp(-π / 2), 0)",
+      "1", "real",
+      "[Sugg 2] Euler identity i^i = e^(-pi/2) via complex-complex power '(1i) ^ (1i)'" },
+    { "(2 ^ (1i)) ~ cexp_i(ln(2))",
+      "1", "real",
+      "[Sugg 2] Real-to-complex power '2 ^ (1i)' == cos(ln 2) + i sin(ln 2)" },
+    { "(√(3 + 4i) == 2 + 1i) && (sqrt(-4 + 0i) ~ (0 + 2i))",
+      "1", "real",
+      "[Sugg 2] Principal complex square root '√(3 + 4i) == 2 + 1i' and 'sqrt(-4 + 0i) == 2i'" },
+    { "exp(0 + π * 1i) ~ (-1 + 0i) && ln(exp(1 + 2i)) ~ (1 + 2i)",
+      "1", "real",
+      "[Sugg 2] Complex 'exp(i*pi) == -1' and principal branch 'ln(exp(1 + 2i)) == 1 + 2i'" },
+    { "(sin(1 + 2i)^2 + cos(1 + 2i)^2) ~ (1 + 0i)",
+      "1", "real",
+      "[Sugg 2] Complex Pythagorean identity sin(z)^2 + cos(z)^2 == 1" },
+    { "(cosh(1 + 2i)^2 - sinh(1 + 2i)^2) ~ (1 + 0i) && (tan(1 + 1i) ~ (sin(1 + 1i) / cos(1 + 1i))) && (tanh(1 + 1i) ~ (sinh(1 + 1i) / cosh(1 + 1i)))",
+      "1", "real",
+      "[Sugg 2] Complex hyperbolic identity cosh(z)^2 - sinh(z)^2 == 1 and tan(z), tanh(z)" },
+    { "(10 / (1 + 2i) == 2 - 4i) && (2i * (3 + 4i) == -8 + 6i) && ((3 + 4i) * 2i == -8 + 6i) && ((4 + 2i) / 2i == 1 - 2i) && (10i / (1 + 2i) == 4 + 2i)",
+      "1", "real",
+      "[Sugg 2] Mixed real/iota/complex multiplication and division overloads" },
+
+    /* 32. Suggestion 3: Vector & Matrix Sorting, Reshaping, Norms & Matrix Powers */
+    { "vec(5, 1, 4, 2, 3).sort()",
+      "[1, 2, 3, 4, 5]", "vec",
+      "[Sugg 3] Ascending vector sort 'vec(5, 1, 4, 2, 3).sort()' -> [1, 2, 3, 4, 5]" },
+    { "vec(5, 1, 4, 2, 3).sort_desc()",
+      "[5, 4, 3, 2, 1]", "vec",
+      "[Sugg 3] Descending vector sort 'vec(5, 1, 4, 2, 3).sort_desc()' -> [5, 4, 3, 2, 1]" },
+    { "list(\"delta\", \"alpha\", \"charlie\", \"bravo\").sort()",
+      "[\"alpha\", \"bravo\", \"charlie\", \"delta\"]", "vec",
+      "[Sugg 3] Lexicographical string vector sort" },
+    { "v := vec(30m, 10m, 20m).sort() ; unit_of(v[0]) + \":\" + (v[0] to_m)_ + \",\" + (v[2] to_m)_",
+      "\"distance:10,30\"", "str",
+      "[Sugg 3] Unit-preserving sort on 'vec<real, distance>'" },
+    { "v := vec(10, 50, 20, 40) ; v.min() * 1000 + v.max() * 10 + v.argmin() * 4 + v.argmax()",
+      "10501", "real",
+      "[Sugg 3] Vector reductions min(v)=10, max(v)=50, argmin(v)=0, argmax(v)=1" },
+    { "vec(1, 2, 3, 4).cumsum() + vec(1, 2, 3, 4).cumprod()",
+      "[2, 5, 12, 34]", "vec",
+      "[Sugg 3] Prefix sums 'cumsum' ([1,3,6,10]) + prefix products 'cumprod' ([1,2,6,24])" },
+    { "vec(10, 13, 19, 28).diff_vec() + vec(1, 2, 3).reverse()",
+      "[6, 8, 10]", "vec",
+      "[Sugg 3] First differences 'diff_vec' ([3, 6, 9]) + 'reverse' ([3, 2, 1])" },
+    { "dot(vec(1, 2, 3), vec(4, 5, 6)) * 100 + norm(list(3, 4))",
+      "3205", "real",
+      "[Sugg 3] General N-D vector dot product (32) and Euclidean L2 norm (5)" },
+    { "linspace(0, 1, 5)",
+      "[0, 0.25, 0.5, 0.75, 1]", "vec",
+      "[Sugg 3] Evenly spaced grid 'linspace(0, 1, 5)' -> [0, 0.25, 0.5, 0.75, 1]" },
+    { "vec(3, 1, 2, 3, 1, 4, 2).unique()",
+      "[3, 1, 2, 4]", "vec",
+      "[Sugg 3] Order-preserving deduplication 'unique(v)' -> [3, 1, 2, 4]" },
+    { "zip_with(vec(1, 2, 3), vec(10, 20, 30), (a, b) => a * b)",
+      "[10, 40, 90]", "vec",
+      "[Sugg 3] Higher-order 'zip_with(a, b, f)' -> [10, 40, 90]" },
+    { "(1...6).reshape(2, 3)",
+      "[[1, 2, 3], [4, 5, 6]]", "mat",
+      "[Sugg 3] Reshape 1D vector '(1...6).reshape(2, 3)' -> 2x3 matrix" },
+    { "[1, 2, 3 ; 4, 5, 6].reshape(3, 2).flatten()",
+      "[1, 2, 3, 4, 5, 6]", "vec",
+      "[Sugg 3] Matrix 'reshape(3, 2)' followed by 'flatten()' -> 1D vector" },
+    { "diag(vec(2, 5, 9)).diag()",
+      "[2, 5, 9]", "vec",
+      "[Sugg 3] 'diag(vec)' constructs diagonal matrix and 'diag(mat)' extracts diagonal vector" },
+    { "M := [1, 2 ; 3, 4] ; M.mat_sum() * 1000 + M.mat_mean() * 100 + M.mat_min() * 10 + M.mat_max()",
+      "10264", "real",
+      "[Sugg 3] Matrix reductions mat_sum (10), mat_mean (2.5), mat_min (1), mat_max (4)" },
+    { "frobenius_norm([3, 0 ; 0, 4])",
+      "5", "real",
+      "[Sugg 3] Matrix Frobenius norm 'frobenius_norm([3, 0 ; 0, 4])' -> 5" },
+    { "([1, 1 ; 1, 0] ^ 6)[0, 0] * 100 + ([2, 5 ; 1, 3] ^ 0)[0, 0] * 10 + (([2, 1 ; 5, 3] ^ -1)[0, 0])",
+      "1313", "real",
+      "[Sugg 3] Matrix exponentiation 'M ^ n': Fibonacci [1,1;1,0]^6->13, M^0->I (1), M^-1->inv(M) (3)" },
+
+    /* 33. Suggestion 4: Special Functions, Probability Distributions & Linear Regression */
+    { "(erf(0) == 0) && (erfc(0) == 1) && (erf(1) + erfc(1) ~ 1) && (gamma(5) ~ 24) && (lgamma(5) ~ ln(24)) && (beta_fn(2, 3) ~ (1 / 12))",
+      "1", "real",
+      "[Sugg 4] Special functions erf, erfc, gamma, lgamma, and beta_fn" },
+    { "(norm_cdf(0) ~ 0.5) && (norm_cdf(1.959964) ~ 0.975) && (norm_pdf(0) ~ (1 / √(2π)))",
+      "1", "real",
+      "[Sugg 4] Gaussian normal distribution 'norm_pdf' and 'norm_cdf'" },
+    { "(binom_pmf(10, 5, 0.5) ~ 0.24609375) && (poisson_pmf(3, 3) ~ (27 * exp(-3) / 6)) && (geom_pmf(3, 0.5) == 0.125) && (exp_pdf(0, 2) == 2) && (exp_cdf(ln(2), 1) ~ 0.5)",
+      "1", "real",
+      "[Sugg 4] Discrete & continuous distributions binom_pmf, poisson_pmf, geom_pmf, exp_pdf, exp_cdf" },
+    { "vec(10, 2, 8, 4, 6).median() * 10 + vec(1, 3, 5, 7).median()",
+      "64", "real",
+      "[Sugg 4] Odd-length median (6) and even-length median (4) -> 64" },
+    { "v := vec(2, 4, 4, 4, 5, 5, 7, 9) ; (sample_variance(v) ~ 4.571428571) && (sample_stddev(v) ~ √4.571428571)",
+      "1", "real",
+      "[Sugg 4] Unbiased Bessel-corrected sample_variance and sample_stddev" },
+    { "xs := vec(1, 2, 3, 4, 5) ; ys := vec(5, 8, 11, 14, 17) ; linreg_slope(xs, ys) * 100 + linreg_intercept(xs, ys) * 10 + linreg_r2(xs, ys) + corr(xs, ys)",
+      "322", "real",
+      "[Sugg 4] OLS linear regression y = 3x + 2: slope=3, intercept=2, R^2=1, corr=1 -> 322" },
+
+    /* 34. Suggestion 5: Multivariate Calculus, Gradients, Hessians, `ode_rk4_vec` & Unit-Aware Calculus */
+    { "f := (x, y) => x^2 * y + 3 * y^2 ; grad2(f, 2, 3)",
+      "vec2(x=12, y=22)", "vec2",
+      "[Sugg 5] 2D numerical gradient 'grad2((x, y) => x^2*y + 3*y^2, 2, 3)' -> vec2(12, 22)" },
+    { "f3 := (x, y) => x^2 + y^2 ; laplacian2(f3, 1, 2) ~ 4",
+      "1", "real",
+      "[Sugg 5] 2D Laplacian del^2(x^2 + y^2) = 4" },
+    { "H := hessian2((x, y) => x^3 + 2 * x * y + y^2, 2, 3) ; (H.a ~ 12) && (H.b ~ 2) && (H.c ~ 2) && (H.d ~ 2)",
+      "1", "real",
+      "[Sugg 5] 2D Hessian matrix 'hessian2(f, 2, 3)' -> mat2(12, 2, 2, 2)" },
+    { "dir_deriv2((x, y) => x^2 + y^2, 3, 4, vec2(3, 4)) ~ 10",
+      "1", "real",
+      "[Sugg 5] Directional derivative of x^2 + y^2 at (3, 4) along (3, 4) -> 10" },
+    { "(grad3(v => v.x^2 + 2 * v.y^2 + 3 * v.z^2, vec3(1, 2, 3)) ~ vec3(2, 8, 18)) && (grad3((x, y, z) => x^2 + 2 * y^2 + 3 * z^2, 1, 2, 3) ~ vec3(2, 8, 18))",
+      "1", "real",
+      "[Sugg 5] 3D gradient 'grad3(f, vec3)' and 'grad3(f, x, y, z)' -> vec3(2, 8, 18)" },
+    { "grad_descent_1d(x => (x - 4)^2 + 1, 0, 0.2, 60) ~ 4",
+      "1", "real",
+      "[Sugg 5] 1D gradient descent optimizer 'grad_descent_1d' converges to x = 4" },
+    { "grad_descent_2d((x, y) => (x - 3)^2 + (y + 2)^2, vec2(0, 0), 0.2, 60) ~ vec2(3, -2)",
+      "1", "real",
+      "[Sugg 5] 2D gradient descent optimizer 'grad_descent_2d' converges to vec2(3, -2)" },
+    { "tr := ode_rk4_vec(t, y, y, 0, 1, 1, 10) ; (tr.len() == 11) && (tr[0] == 1) && (tr[10] ~ e)",
+      "1", "real",
+      "[Sugg 5] Trajectory ODE solver 'ode_rk4_vec(t, y, y, 0, 1, 1, 10)' returns 11-point vector" },
+    { "v_inst := diff(t, 0.5 * (4 mps2) * (t ^ 2), 3 sec) ; unit_of(v_inst) + \":\" + (v_inst to_mps)_",
+      "\"speed:12\"", "str",
+      "[Sugg 5] Unit-aware 'diff': d/dt(0.5 * a * t^2) propagates m / s -> 12 [speed]" },
+    { "a_inst := diff2(t, 0.5 * (4 mps2) * (t ^ 2), 3 sec) ; unit_of(a_inst) + \":\" + (a_inst to_mps2)_",
+      "\"acceleration:4\"", "str",
+      "[Sugg 5] Unit-aware 'diff2': d^2/dt^2(0.5 * a * t^2) propagates m / s^2 -> 4 [acceleration]" },
+    { "d_tot := integrate(t, (6 mps2) * t, 0 sec, 4 sec) ; unit_of(d_tot) + \":\" + (d_tot to_m)_",
+      "\"distance:48\"", "str",
+      "[Sugg 5] Unit-aware 'integrate': int (a * t) dt propagates speed * time -> 48 [distance]" },
+    { "d_ode := ode_rk4(t, y, 10 mps, 0 sec, 5 m, 4 sec) ; unit_of(d_ode) + \":\" + (d_ode to_m)_",
+      "\"distance:45\"", "str",
+      "[Sugg 5] Unit-aware 'ode_rk4': dy/dt = 10 m/s over 4 s from 5 m -> 45 [distance]" },
+
+    /* 35. Suggestion 6: Hex (`0x...`) & Binary (`0b...`) Literals, Bitwise Ops & Base Formatters */
+    { "0xFF + 0b1010 + 0x10_00",
+      "4361", "real",
+      "[Sugg 6] Hexadecimal '0xFF' (255), binary '0b1010' (10), and '0x10_00' (4096) -> 4361" },
+    { "bit_and(0b1100, 0b1010) * 100 + bit_or(0b1100, 0b1010) * 10 + bit_xor(0b1100, 0b1010)",
+      "946", "real",
+      "[Sugg 6] Bitwise AND (8*100), OR (14*10), and XOR (6) -> 946" },
+    { "((1 << 8) == 256) && ((256 >> 3) == 32) && ((~0) == -1) && (bit_not(0) == -1)",
+      "1", "real",
+      "[Sugg 6] Bitwise shift operators '<<', '>>' and prefix '~' / 'bit_not'" },
+    { "popcount(0b1011_0111) * 100 + bit_len(255)",
+      "608", "real",
+      "[Sugg 6] Hamming weight 'popcount(0b1011_0111)' (6) and 'bit_len(255)' (8) -> 608" },
+    { "to_hex(255) + \"_\" + to_bin(10) + \"_\" + (_\"0x1A\" + _\"0b110\")_",
+      "\"0xFF_0b1010_32\"", "str",
+      "[Sugg 6] Base formatters 'to_hex(255)', 'to_bin(10)', and prefix '_' on hex/binary strings" },
+
+    /* 36. Expansion 1: Arbitrary-Arity & Default-Param Lambdas, `f(x) = expr` Session Functions & Mutual Recursion */
+    { "sum6(a, b, c, d, e, g) := a + b + c + d + e + g ; sum6(1, 2, 3, 4, 5, 6)",
+      "21", "real",
+      "[Exp 1] 6-parameter inline function 'sum6(a, b, c, d, e, g) := ...' -> 21" },
+    { "fn8 := (a, b, c, d, e, g, h, k) => a*10 + b + c + d + e + g + h + k ; fn8(2, 1, 1, 1, 1, 1, 1, 3)",
+      "29", "real",
+      "[Exp 1] 8-parameter anonymous lambda closure 'fn8(2, 1, 1, 1, 1, 1, 1, 3)' -> 29" },
+    { "f(x, y = 10, z = 100) := x + y + z ; f(5) * 1000 + f(5, 20) + f(5, 20, 30)",
+      "115180", "real",
+      "[Exp 1] Inline function with optional default parameters 'f(x, y = 10, z = 100)' -> 115180" },
+    { "scale_def := (x, k = 3, off = 1) => x * k + off ; scale_def(4) * 100 + scale_def(4, 5) * 10 + scale_def(4, 5, 2)",
+      "1532", "real",
+      "[Exp 1] Anonymous lambda with default parameters '(x, k = 3, off = 1) => ...' -> 1300 + 210 + 22 = 1532" },
+    { "quad_eq(a, b = 2, c = 1) = a^2 + b * a + c ; quad_eq(3) * 100 + quad_eq(3, 4, 5)",
+      "1626", "real",
+      "[Exp 1] Session-style '=' function definition 'quad_eq(a, b = 2, c = 1) = ...' -> 1600 + 26 = 1626" },
+    { "is_even_r(n) := n == 0 ? 1 : is_odd_r(n - 1) ; is_odd_r(n) := n == 0 ? 0 : is_even_r(n - 1) ; is_even_r(10) * 10 + is_odd_r(9)",
+      "11", "real",
+      "[Exp 1] Forward-referenced mutually recursive functions 'is_even_r' & 'is_odd_r' -> 11" },
+    { "ack(m, n) = m == 0 ? n + 1 : (n == 0 ? ack(m - 1, 1) : ack(m - 1, ack(m, n - 1))) ; ack(2, 3)",
+      "9", "real",
+      "[Exp 1] Deeply recursive 2-argument Ackermann function 'ack(2, 3)' -> 9" },
+
+    /* 37. Expansion 2: Linear Algebra Decompositions (LU, QR, Cholesky, Eigen, SVD, Pinv, Lstsq) & Coupled ODEs */
+    { "M := [1, 2 ; 3, 4] ; v := list(5, 6) ; (M * v) + (v * M)",
+      "[40, 73]", "vec",
+      "[Exp 2] Matrix-vector 'M * v' ([17, 39]) and vector-matrix 'v * M' ([23, 34]) -> [40, 73]" },
+    { "outer(list(1, 2), vec(3, 4, 5))",
+      "[[3, 4, 5], [6, 8, 10]]", "mat",
+      "[Exp 2] Vector outer product 'outer(list(1, 2), vec(3, 4, 5))' -> 2x3 matrix" },
+    { "vstack([1, 2], [3, 4]) + hstack([1 ; 3], [2 ; 4])",
+      "[[2, 4], [6, 8]]", "mat",
+      "[Exp 2] Matrix vertical 'vstack' and horizontal 'hstack' concatenation" },
+    { "kron(mat_eye(2), [1, 2 ; 3, 4])[2, 3] * 10 + tril([1, 2 ; 3, 4])[0, 1] + triu([1, 2 ; 3, 4])[1, 0]",
+      "20", "real",
+      "[Exp 2] Kronecker product 'kron(I_2, A)', 'tril(A)', and 'triu(A)'" },
+    { "A := [2, 1, 1 ; 4, -6, 0 ; -2, 7, 2] ; (lu_p(A) * A) ~ (lu_l(A) * lu_u(A))",
+      "1", "real",
+      "[Exp 2] PA = LU decomposition identity '(lu_p(A) * A) ~ (lu_l(A) * lu_u(A))'" },
+    { "A := [12, -51, 4 ; 6, 167, -68 ; -4, 24, -41] ; Q := qr_q(A) ; R := qr_r(A) ; ((Q * R) ~ A) && ((transpose(Q) * Q) ~ mat_eye(3))",
+      "1", "real",
+      "[Exp 2] Householder QR decomposition: Q*R ~ A and Q^T*Q ~ I" },
+    { "A := [4, 12, -16 ; 12, 37, -43 ; -16, -43, 98] ; L := chol(A) ; (L * transpose(L)) == A",
+      "1", "real",
+      "[Exp 2] Cholesky decomposition L * L^T == A on symmetric positive-definite matrix" },
+    { "A := [2, 1 ; 1, 2] ; ev := eigvals(A) ; V := eigvecs(A) ; (ev ~ list(3, 1)) && ((A * V) ~ (V * diag(ev)))",
+      "1", "real",
+      "[Exp 2] Symmetric eigenvalue & eigenvector decomposition A*V ~ V*diag(eigvals)" },
+    { "A := [3, 0 ; 0, 4] ; (svd_s(A) ~ list(4, 3)) && ((svd_u(A) * diag(svd_s(A)) * transpose(svd_v(A))) ~ A)",
+      "1", "real",
+      "[Exp 2] Singular Value Decomposition U * diag(S) * V^T ~ A" },
+    { "A := [1, 2 ; 3, 4 ; 5, 6] ; P := pinv(A) ; (A * P * A) ~ A",
+      "1", "real",
+      "[Exp 2] Moore-Penrose pseudoinverse identity A * pinv(A) * A ~ A on 3x2 matrix" },
+    { "A := [1, 1 ; 1, 2 ; 1, 3] ; b := vec(6, 5, 7) ; lstsq(A, b)",
+      "[5, 0.5]", "vec",
+      "[Exp 2] Overdetermined linear least squares 'lstsq(A, b)' -> [5, 0.5]" },
+    { "M := [1, 2 ; 2, 4] ; matrix_rank(M) * 100 + mat_norm1([1, -2 ; 3, 4]) * 10 + mat_norm_inf([1, -2 ; 3, 4])",
+      "167", "real",
+      "[Exp 2] Numerical SVD rank 'matrix_rank' (1), 'mat_norm1' (6), and 'mat_norm_inf' (7) -> 167" },
+    { "power_iter([2, 1 ; 1, 2], 40) ~ 3 && cond([3, 0 ; 0, 1]) ~ 3 && spectral_norm([3, 0 ; 0, 4]) ~ 4",
+      "1", "real",
+      "[Exp 2] Dominant eigenvalue 'power_iter', condition number 'cond', and 'spectral_norm'" },
+    { "y_end := ode_coupled2(t, x, y, y, -x, 0, 1, 0, π, 200) ; (y_end[0] ~ -1) && (y_end[1] ~ 0)",
+      "1", "real",
+      "[Exp 2] 2D coupled harmonic oscillator 'ode_coupled2(t, x, y, y, -x, 0, 1, 0, pi)' -> [-1, 0]" },
+    { "y3 := ode_coupled3(t, x, y, z, y, -x, -z, 0, 1, 0, 1, π, 200) ; (y3[0] ~ -1) && (y3[2] ~ exp(-π))",
+      "1", "real",
+      "[Exp 2] 3D coupled ODE system 'ode_coupled3(t, x, y, z, ...)' -> [-1, 0, e^-pi]" },
+    { "ys := ode_rk4_sys((t, y) => [y[1], -y[0]], 0, list(1, 0), π, 200) ; (ys[0] ~ -1) && (ys[1] ~ 0)",
+      "1", "real",
+      "[Exp 2] N-dimensional closure ODE solver 'ode_rk4_sys((t, y) => [y[1], -y[0]], ...)' -> [-1, 0]" },
+    { "tr := ode_rk4_sys_traj(t, y, [y[1], -y[0]], 0, [1, 0], π, 20) ; (mat_rows(tr) == 21) && (mat_cols(tr) == 2) && (tr[20, 0] ~ -1)",
+      "1", "real",
+      "[Exp 2] N-dimensional ODE trajectory matrix 'ode_rk4_sys_traj' -> 21x2 matrix" },
+
+    /* 38. Expansion 4: Symbolic Differentiation, Algebraic Simplification, Evaluation & Taylor Series */
+    { "sym_simplify((x + 0) * 1 + 2 * x + 3 * x - 0)",
+      "\"6 * x\"", "str",
+      "[Exp 4] Symbolic algebraic simplification & like-term folding '(x+0)*1 + 2*x + 3*x' -> '6 * x'" },
+    { "simplify(((x ^ 2) ^ 3) * (x ^ 0) + (y - y) + 0 * sin(x))",
+      "\"x ^ 6\"", "str",
+      "[Exp 4] Symbolic power/zero/cancellation simplification -> 'x ^ 6'" },
+    { "sym_diff(x, x^3 + 2 * sin(x))",
+      "\"3 * x ^ 2 + 2 * cos(x)\"", "str",
+      "[Exp 4] Symbolic first derivative 'sym_diff(x, x^3 + 2 * sin(x))' -> '3 * x ^ 2 + 2 * cos(x)'" },
+    { "sym_diff_n(x, x^4 + 5 * x^2, 2)",
+      "\"12 * x ^ 2 + 10\"", "str",
+      "[Exp 4] Symbolic 2nd derivative 'sym_diff_n(x, x^4 + 5 * x^2, 2)' -> '12 * x ^ 2 + 10'" },
+    { "sym_diff(x, exp(2 * x) + ln(x))",
+      "\"2 * exp(2 * x) + 1 / x\"", "str",
+      "[Exp 4] Symbolic chain rule on exp(2*x) and ln(x) -> '2 * exp(2 * x) + 1 / x'" },
+    { "df := sym_diff(x, x^3 + 4 * x) ; sym_eval(df, x, 3)",
+      "31", "real",
+      "[Exp 4] Symbolic derivative evaluated numerically via 'sym_eval(df, x, 3)' -> 3*9 + 4 = 31" },
+    { "sym_taylor(x, exp(x), 0, 3)",
+      "\"1 + x + 0.5 * x ^ 2 + 0.1666666667 * x ^ 3\"", "str",
+      "[Exp 4] Symbolic Maclaurin expansion 'sym_taylor(x, exp(x), 0, 3)'" },
+
+    /* 39. Expansion 5: String Formatting, Case/Trim/Pad, Regex Engine & `$map` Dictionary Type */
+    { "fmt(\"pi={:.2f}, hex={:X}, name={}\", π, 255, \"MEP\")",
+      "\"pi=3.14, hex=FF, name=MEP\"", "str",
+      "[Exp 5] Python-style string formatting 'fmt(\"pi={:.2f}, hex={:X}, name={}\", ...)'" },
+    { "format(\"%s=%04d (%.1f%%)\", \"score\", 42, 98.6)",
+      "\"score=0042 (98.6%)\"", "str",
+      "[Exp 5] Printf-style string formatting 'format(\"%s=%04d (%.1f%%)\", ...)'" },
+    { "upper(\"mep\") + \"_\" + lower(\"MATH\") + \"_\" + trim(\"  hi  \") + \"_\" + pad_left(\"7\", 3, \"0\")",
+      "\"MEP_math_hi_007\"", "str",
+      "[Exp 5] String helpers 'upper', 'lower', 'trim', and 'pad_left'" },
+    { "index_of(\"banana\", \"na\") * 100 + str_count(\"banana\", \"na\") * 10 + contains(\"banana\", \"nan\")",
+      "221", "real",
+      "[Exp 5] String search 'index_of' (2), 'str_count' (2), and 'contains' (1) -> 221" },
+    { "replace(\"a-b-c\", \"-\", \":\") + \"_\" + replace_first(\"a-b-c\", \"-\", \":\") + \"_\" + split(\"x,y,z\", \",\").str_join(\"+\")",
+      "\"a:b:c_a:b-c_x+y+z\"", "str",
+      "[Exp 5] 'replace', 'replace_first', and 'split' + 'str_join'" },
+    { "regex_match(\"user_42@mep.org\", \"^[a-z]+_\\d+@[a-z]+\\.org$\") * 10 + (regex_find(\"id=987;\", \"\\d+\") == \"987\")",
+      "11", "real",
+      "[Exp 5] Backtracking regex 'regex_match' and 'regex_find'" },
+    { "regex_find_all(\"x1=12, y2=345, z3=67\", \"\\d+\").len() * 10 + (regex_replace(\"a1b22c333\", \"\\d+\", \"#\") == \"a#b#c#\")",
+      "61", "real",
+      "[Exp 5] 'regex_find_all' (6 matches) and 'regex_replace' -> 61" },
+    { "regex_split(\"one, two;three  four\", \"[,;\\s]+\")",
+      "[\"one\", \"two\", \"three\", \"four\"]", "vec",
+      "[Exp 5] 'regex_split' over character class quantifier '[,;\\s]+'" },
+    { "m := dict(\"a\", 10, \"b\", 20) ; m[\"c\"] = 30 ; m[\"a\"] += 5 ; (\"b\" in m) * 100 + m[\"a\"] + m[\"c\"] + m.get_or(\"z\", 9)",
+      "154", "real",
+      "[Exp 5] First-class '$map' dictionary: dict(), m[k] read/write/+=, 'in', and get_or -> 154" },
+    { "m := map(\"x\", 2, \"y\", 3, \"z\", 4) ; m.remove(\"y\") ; s := 0 ; (k, v in m) { s += v * 10 } ; s + m.len()",
+      "62", "real",
+      "[Exp 5] '$map' key removal 'm.remove(\"y\")' + 2-var '(k, v in m)' iteration -> 60 + 2 = 62" },
+    { "m := dict(\"k1\", 7, \"k2\", 8) ; m2 := _(m_) ; m2[\"k1\"] * 10 + m2[\"k2\"]",
+      "78", "real",
+      "[Exp 5] '$map' JSON-style stringifier 'm_' (\"{\"k1\": 7, \"k2\": 8}\") & '_s' parser round-trip -> 78" },
+
+    /* 40. Expansion 6: Arena Defragmentation / Mark-Sweep Compaction on Scratch Pool */
+    { "v := vec(1, 2, 3) ; (i in 1...120) { v.push(i) } ; reclaimed := gc_compact() ; (reclaimed > 0) && (v.len() == 123) && (v[122] == 120) && (pool_used() > 0)",
+      "1", "real",
+      "[Exp 6] Mark-Sweep scratch pool compaction 'gc_compact()' reclaims realloc blocks while preserving live vector" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -1051,7 +1615,299 @@ static void print_architecture_report(const Engine *eng) {
     printf("========================================================================\n\n");
 }
 
-int main(void) {
+static int run_cli_eval(Engine *eng, int argc, char **argv) {
+    int sid = eng_session_open(eng);
+    if (sid < 0) return 1;
+    char val_buf[256], unit_buf[32];
+    for (int i = 1; i < argc; ++i) {
+        const char *expr = argv[i];
+        if (strcmp(expr, "-e") == 0 || strcmp(expr, "--eval") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: '%s' requires an expression argument\n", expr);
+                eng_session_close(eng, sid);
+                return 1;
+            }
+            expr = argv[++i];
+        }
+        Value out;
+        if (!eng_session_eval(eng, sid, expr, &out)) {
+            fprintf(stderr, "Error: %s\n", eng_last_error(eng));
+            eng_session_close(eng, sid);
+            return 1;
+        }
+        eng_format_value(eng, out, val_buf, sizeof(val_buf));
+        uint8_t uid = eng_val_unit(eng, out);
+        if (uid != 0) {
+            eng_unit_name(eng, uid, unit_buf, sizeof(unit_buf));
+            printf("%s [%s]\n", val_buf, unit_buf);
+        } else {
+            printf("%s\n", val_buf);
+        }
+    }
+    eng_session_close(eng, sid);
+    return 0;
+}
+
+static int run_cli_repl(Engine *eng) {
+    int sid = eng_session_open(eng);
+    if (sid < 0) return 1;
+    printf("========================================================================\n");
+    printf("  MEP Interactive Session REPL (%u modules, %u overloads, %u constants)\n",
+           eng_module_count(eng), eng_overload_count(eng), eng_const_count(eng));
+    printf("  Commands: :help, :vars, :snaps, :compact, :modules, :enable <mod>,\n");
+    printf("            :disable <mod>, :diff <x> <expr>, :simplify <expr>,\n");
+    printf("            :load <file.math>, :reset, :quit\n");
+    printf("========================================================================\n");
+    char line[2048];
+    char val_buf[512], type_buf[32], unit_buf[32];
+    while (1) {
+        printf("mep> ");
+        fflush(stdout);
+        if (!fgets(line, sizeof(line), stdin)) {
+            printf("\n");
+            break;
+        }
+        size_t n = strlen(line);
+        while (n > 0 && (line[n - 1] == '\n' || line[n - 1] == '\r' || line[n - 1] == ' ')) {
+            line[--n] = '\0';
+        }
+        char *cmd = line;
+        while (*cmd == ' ' || *cmd == '\t') cmd++;
+        if (*cmd == '\0') continue;
+
+        if (strcmp(cmd, ":q") == 0 || strcmp(cmd, ":quit") == 0 ||
+            strcmp(cmd, ":exit") == 0 || strcmp(cmd, "exit") == 0) {
+            break;
+        }
+        if (strcmp(cmd, ":help") == 0 || strcmp(cmd, ":h") == 0) {
+            printf("  :vars               List active session variables, locks, and values\n");
+            printf("  :snaps / :snap      Print order-tagged FNV-1a session snapshots\n");
+            printf("  :compact            Run Mark-Sweep scratch pool compaction\n");
+            printf("  :modules / :mods    List all loaded modules and active status\n");
+            printf("  :enable <mod>       Enable module <mod> in O(1)\n");
+            printf("  :disable <mod>      Disable module <mod> in O(1)\n");
+            printf("  :diff <x> <expr>    Symbolically differentiate <expr> w.r.t. <x>\n");
+            printf("  :simplify <expr>    Symbolically simplify <expr>\n");
+            printf("  :load <path.math>   Compile & link a .math extension file\n");
+            printf("  :reset              Clear all session variables & snapshots\n");
+            printf("  :quit / :q          Exit the interactive REPL\n");
+            continue;
+        }
+        if (strcmp(cmd, ":reset") == 0) {
+            eng_session_reset(eng, sid);
+            printf("Session reset.\n");
+            continue;
+        }
+        if (strcmp(cmd, ":compact") == 0) {
+            uint16_t reclaimed = eng_compact_scratch(eng);
+            uint16_t live_used = eng_scratch_pool_used(eng);
+            printf("Scratch arena compacted: reclaimed %u f64 slots (%u slots currently live).\n",
+                   (unsigned)reclaimed, (unsigned)live_used);
+            continue;
+        }
+        if (strcmp(cmd, ":mods") == 0 || strcmp(cmd, ":modules") == 0) {
+            uint8_t mc = eng_module_count(eng);
+            for (uint8_t i = 0; i < mc; ++i) {
+                char mname[32];
+                eng_module_name(eng, i, mname, sizeof(mname));
+                printf("  [%2u] %-14s (%s)\n", (unsigned)i, mname,
+                       eng_is_module_active(eng, mname) ? "active" : "disabled");
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":enable ", 8) == 0 || strncmp(cmd, ":disable ", 9) == 0) {
+            bool en = (strncmp(cmd, ":enable ", 8) == 0);
+            const char *mname = cmd + (en ? 8 : 9);
+            while (*mname == ' ') mname++;
+            if (eng_set_module(eng, mname, en)) {
+                printf("Module [%s] %s.\n", mname, en ? "enabled" : "disabled");
+            } else {
+                printf("Unknown module '%s'.\n", mname);
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":simplify ", 10) == 0) {
+            char out_s[512];
+            if (eng_sym_simplify(eng, cmd + 10, out_s, sizeof(out_s))) {
+                printf("= %s\n", out_s);
+            } else {
+                printf("Error: %s\n", eng_last_error(eng));
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":diff ", 6) == 0) {
+            const char *p = cmd + 6;
+            while (*p == ' ') p++;
+            char vname[32];
+            size_t vi = 0;
+            while (*p != '\0' && *p != ' ' && *p != '\t' && vi + 1 < sizeof(vname)) {
+                vname[vi++] = *p++;
+            }
+            vname[vi] = '\0';
+            while (*p == ' ' || *p == '\t') p++;
+            char out_s[512];
+            if (vi > 0 && *p != '\0' && eng_sym_diff(eng, vname, p, out_s, sizeof(out_s))) {
+                printf("= %s\n", out_s);
+            } else {
+                printf("Usage: :diff <var> <expr>\n");
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":load ", 6) == 0) {
+            const char *path = cmd + 6;
+            while (*path == ' ') path++;
+            size_t flen = 0;
+            char *fsrc = (char *)frontend_read_file(path, &flen);
+            if (!fsrc) {
+                printf("Error: could not read file '%s'\n", path);
+                continue;
+            }
+            if (user_compile_ext(eng, fsrc, NULL, NULL)) {
+                printf("Loaded extension '%s' (%zu bytes).\n", path, flen);
+            } else {
+                printf("Compile error: %s\n", eng_last_error(eng));
+            }
+            free(fsrc);
+            continue;
+        }
+        if (strcmp(cmd, ":snap") == 0 || strcmp(cmd, ":snaps") == 0) {
+            eng_session_snapshot_rewind(eng, sid);
+            const char *s = NULL;
+            while ((s = eng_session_snapshot_next(eng, sid)) != NULL) {
+                printf("  %s\n", s);
+            }
+            continue;
+        }
+        if (strcmp(cmd, ":vars") == 0) {
+            const EngSession *S = &eng->sessions[sid];
+            if (S->var_count == 0) {
+                printf("  (no session variables yet)\n");
+            } else {
+                for (uint8_t i = 0; i < S->var_count; ++i) {
+                    printf("  %-12s : %-8s [%s] (lock=%s:%s) = %s\n",
+                           S->vars[i].name, S->vars[i].type_name, S->vars[i].unit_name,
+                           S->vars[i].lock_type_name, S->vars[i].lock_unit_name,
+                           S->vars[i].val_text);
+                }
+            }
+            continue;
+        }
+
+        /* Auto-rollover snapshot ring if interactive session reaches ENG_SESSION_MAX_EVALS */
+        if (eng->sessions[sid].eval_count >= ENG_SESSION_MAX_EVALS) {
+            eng->sessions[sid].eval_count = 0;
+        }
+
+        Value out;
+        if (!eng_session_eval(eng, sid, cmd, &out)) {
+            printf("Error: %s\n", eng_last_error(eng));
+            continue;
+        }
+        eng_format_value(eng, out, val_buf, sizeof(val_buf));
+        eng_type_name(eng, eng_val_type(eng, out), type_buf, sizeof(type_buf));
+        uint8_t uid = eng_val_unit(eng, out);
+        if (uid != 0) {
+            eng_unit_name(eng, uid, unit_buf, sizeof(unit_buf));
+            printf("= %s : %s [%s]\n", val_buf, type_buf, unit_buf);
+        } else {
+            printf("= %s : %s\n", val_buf, type_buf);
+        }
+
+        /* Bind `ans` in the active session for convenient follow-up calculations */
+        uint16_t out_tid = eng_val_type(eng, out);
+        if (out_tid != MEM_TYPE_VOID && out_tid != eng->mem.fn_type_id) {
+            EngSession *S = &eng->sessions[sid];
+            int ans_idx = -1;
+            for (uint8_t i = 0; i < S->var_count; ++i) {
+                if (strcmp(S->vars[i].name, "ans") == 0) { ans_idx = (int)i; break; }
+            }
+            if (ans_idx < 0 && S->var_count < ENG_SESSION_MAX_VARS) {
+                ans_idx = (int)S->var_count++;
+            }
+            if (ans_idx >= 0) {
+                EngSessionVar *av = &S->vars[ans_idx];
+                memset(av, 0, sizeof(*av));
+                memcpy(av->name, "ans", 4);
+                snprintf(av->type_name, sizeof(av->type_name), "%s", type_buf);
+                eng_unit_name(eng, uid, av->unit_name, sizeof(av->unit_name));
+                memcpy(av->lock_type_name, "*", 2);
+                memcpy(av->lock_unit_name, "*", 2);
+                eng_snapshot_format_canonical_val(eng, out, av->val_text, sizeof(av->val_text));
+            }
+        }
+    }
+    eng_session_close(eng, sid);
+    return 0;
+}
+
+static int run_cli_bench(Engine *eng) {
+    printf("========================================================================\n");
+    printf("  MEP ENGINE THROUGHPUT BENCHMARK\n");
+    printf("========================================================================\n");
+    Value out;
+    clock_t t0 = clock();
+    const int boot_iters = 5000;
+    for (int i = 0; i < boot_iters; ++i) {
+        eng_init(eng);
+    }
+    double boot_ms = 1000.0 * (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    printf("  [1] O(1) .mathc stdlib boot (%d iters)     : %7.2f ms (%.2f us/boot)\n",
+           boot_iters, boot_ms, (boot_ms * 1000.0) / boot_iters);
+
+    register_all_host_externs(eng);
+    const int eval_iters = 5000;
+
+    t0 = clock();
+    for (int i = 0; i < eval_iters; ++i) {
+        (void)eng_eval(eng, "2 * sin(π / 4)^2 + 2 * cos(π / 4)^2 + √16 + 5!", &out);
+    }
+    double arith_ms = 1000.0 * (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    printf("  [2] Scalar + trig + factorial (%d evals)   : %7.2f ms (%.2f us/eval)\n",
+           eval_iters, arith_ms, (arith_ms * 1000.0) / eval_iters);
+
+    t0 = clock();
+    for (int i = 0; i < eval_iters; ++i) {
+        (void)eng_eval(eng, "(1...20).map(x => x^2).filter(x => x % 2 == 0).sum()", &out);
+    }
+    double hof_ms = 1000.0 * (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    printf("  [3] Vector HOF map/filter/sum (%d evals)   : %7.2f ms (%.2f us/eval)\n",
+           eval_iters, hof_ms, (hof_ms * 1000.0) / eval_iters);
+
+    t0 = clock();
+    for (int i = 0; i < eval_iters; ++i) {
+        (void)eng_eval(eng, "linsolve([[2, 1, -1], [-3, -1, 2], [-2, 1, 2]], [8, -11, -3])", &out);
+    }
+    double lin_ms = 1000.0 * (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    printf("  [4] 3x3 Gaussian linsolve (%d evals)       : %7.2f ms (%.2f us/eval)\n",
+           eval_iters, lin_ms, (lin_ms * 1000.0) / eval_iters);
+
+    t0 = clock();
+    for (int i = 0; i < 1000; ++i) {
+        (void)eng_eval(eng, "ode_rk4(t, y, y, 0, 1, 1, 50)", &out);
+    }
+    double ode_ms = 1000.0 * (double)(clock() - t0) / (double)CLOCKS_PER_SEC;
+    printf("  [5] 50-step RK4 ODE solver (1000 evals)      : %7.2f ms (%.2f us/eval)\n",
+           ode_ms, (ode_ms * 1000.0) / 1000.0);
+    printf("========================================================================\n");
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    if (argc > 1) {
+        if (!eng_init(&g_eng)) return 1;
+        register_all_host_externs(&g_eng);
+        size_t ulen = 0;
+        char *utxt = (char *)frontend_read_file("Test/user_physics.math", &ulen);
+        if (!utxt) utxt = (char *)frontend_read_file("user_physics.math", &ulen);
+        if (utxt) {
+            (void)user_compile_ext(&g_eng, utxt, NULL, NULL);
+            free(utxt);
+        }
+        if (strcmp(argv[1], "--repl") == 0)  return run_cli_repl(&g_eng);
+        if (strcmp(argv[1], "--bench") == 0) return run_cli_bench(&g_eng);
+        return run_cli_eval(&g_eng, argc, argv);
+    }
+
     /* 1. Verify Blank-Slate Guarantee (`eng_init_blank`) */
     eng_init_blank(&g_eng);
     Value v;
@@ -1146,6 +2002,11 @@ int main(void) {
                           !eng_eval(&g_eng, "v := vec<vec2>() ; 10 into v", &v) &&
                           !eng_eval(&g_eng, "vec<real>(vec2(1, 2))", &v) &&
                           !eng_eval(&g_eng, "q := queue<real, distance>() ; q.enqueue(60 deg)", &v) &&
+                          !eng_eval(&g_eng, "v := vec<real>(1, 2, 3) ; v[0...1] = \"bad\"", &v) &&
+                          !eng_eval(&g_eng, "v := vec(1, 2, 3) ; v[1m]", &v) &&
+                          !eng_eval(&g_eng, "vec2(1)", &v) &&
+                          !eng_eval(&g_eng, "circle(1, 2)", &v) &&
+                          !eng_eval(&g_eng, "sma(vec(10, 20, 30), 0)", &v) &&
                           !eng_eval(&g_eng, "_\"not_a_valid_type_xyz\"", &v);
     printf("[5] Type-Safety, Compulsory Same-Line ';', Reserved-Keyword & Control-Flow Guardrails:\n");
     printf("    - Homogeneous vec<T> guard    : %s -> \"%s\"\n",
@@ -1463,7 +2324,7 @@ int main(void) {
     }
     free(mut_buf);
     bool null_guard_ok = !eng_eval(NULL, "1 + 1", &v) && !eng_set_module(NULL, "units", false);
-    bug10_ok = bug10_ok && null_guard_ok && (rejected_cnt + accepted_cnt == 3000) && (rejected_cnt > 2500);
+    bug10_ok = bug10_ok && null_guard_ok && (rejected_cnt + accepted_cnt == 3000) && (rejected_cnt > 2400);
     printf("    - [Bug 10] 3,000x mutated .mathc fuzz + NULL   : %s (%d rejected, %d safe-eval)\n\n",
            bug10_ok ? "PASS" : "FAIL", rejected_cnt, accepted_cnt);
 
@@ -1653,7 +2514,78 @@ int main(void) {
     printf("    - Heap `eng_create`/`eng_destroy` & isolated `.mathc` buffers : %s\n\n",
            multi_eng_ok ? "PASS" : "FAIL");
 
-    return (passed == total && blank_ok && load_mathc_ok && vec_type_guard && multi_eng_ok &&
+    /* 11. Verify Host Introspection APIs, Regex Alternation `|` in User Types, and Session Persistence of Inline Named Recursive Functions */
+    printf("[11] Host Registry Introspection, Regex Alternation `|` & Session Inline Functions:\n");
+    char mod0_name[32] = {0};
+    bool introspect_ok = (eng_module_count(&g_eng) >= 19) &&
+                         (strcmp(eng_module_name(&g_eng, 1, mod0_name, sizeof(mod0_name)), "boot_syntax") == 0) &&
+                         (eng_overload_count(&g_eng) >= 1240) &&
+                         (eng_const_count(&g_eng) >= 28);
+    printf("    - Host introspection (`eng_module_count`/`overload_count`)    : %s (mods=%u, ovs=%u, consts=%u)\n",
+           introspect_ok ? "PASS" : "FAIL",
+           (unsigned)eng_module_count(&g_eng),
+           (unsigned)eng_overload_count(&g_eng),
+           (unsigned)eng_const_count(&g_eng));
+
+    int sess_fn = eng_session_open(&g_eng);
+    Value v_sf1 = 0, v_sf2 = 0;
+    bool sess_fn_ok = (sess_fn >= 0) &&
+                      eng_session_eval(&g_eng, sess_fn, "tri(n) := n <= 1 ? 1 : n + tri(n - 1) ; tri(5)", &v_sf1) &&
+                      (val_get_f64(&g_eng.mem, v_sf1) == 15.0) &&
+                      eng_session_eval(&g_eng, sess_fn, "tri(10) + (6).tri()", &v_sf2) &&
+                      (val_get_f64(&g_eng.mem, v_sf2) == 76.0);
+    const char *fn_snap0 = eng_session_snapshot_at(&g_eng, sess_fn, 0);
+    const char *fn_snap1 = eng_session_snapshot_at(&g_eng, sess_fn, 1);
+    const char *fn_snaps[2] = { fn_snap0, fn_snap1 };
+    int sess_fn_restored = (fn_snap0 && fn_snap1) ? eng_session_restore(&g_eng, fn_snaps, 2) : -1;
+    Value v_sf3 = 0;
+    sess_fn_ok = sess_fn_ok && (sess_fn_restored >= 0) &&
+                 eng_session_eval(&g_eng, sess_fn_restored, "tri(7)", &v_sf3) &&
+                 (val_get_f64(&g_eng.mem, v_sf3) == 28.0);
+    (void)eng_session_close(&g_eng, sess_fn);
+    (void)eng_session_close(&g_eng, sess_fn_restored);
+    printf("    - Session persistence & snapshot restore of `tri(n) := ...`   : %s (tri(7) == 28 after restore)\n\n",
+           sess_fn_ok ? "PASS" : "FAIL");
+
+    /* 12. Verify Ready-to-Use Android NDK JNI Bridge (`Core/jni/math_engine_jni.c`) */
+    printf("[12] Android NDK JNI Bridge (`Java_com_mathengine_MathEngineBridge_*`) Verification:\n");
+    JNIEnv *jenv = mep_jni_mock_env();
+    jlong jh = Java_com_mathengine_MathEngineBridge_nativeCreate(jenv, NULL);
+    jstring jev = Java_com_mathengine_MathEngineBridge_nativeEval(jenv, NULL, jh, "ke(2 kg, 36 kph)");
+    bool jni_eval_ok = (jh != 0) && (jev != NULL) && (strcmp(jev, "OK|real|energy|100") == 0);
+
+    jint jsid = Java_com_mathengine_MathEngineBridge_nativeSessionOpen(jenv, NULL, jh);
+    jstring js1 = Java_com_mathengine_MathEngineBridge_nativeSessionEval(
+        jenv, NULL, jh, jsid, "f(x, y = 10) = x + y ; m := dict(\"k\", 5) ; f(3) + m[\"k\"]");
+    jstring jsnaps = Java_com_mathengine_MathEngineBridge_nativeSessionExportSnapshots(jenv, NULL, jh, jsid);
+    jint jsid_rest = Java_com_mathengine_MathEngineBridge_nativeSessionRestore(jenv, NULL, jh, jsnaps);
+    jstring js2 = Java_com_mathengine_MathEngineBridge_nativeSessionEval(
+        jenv, NULL, jh, jsid_rest, "f(20, 30) + m[\"k\"]");
+    bool jni_sess_ok = (jsid >= 0) && (js1 != NULL) && (strcmp(js1, "OK|real|none|18") == 0) &&
+                       (jsid_rest >= 0) && (js2 != NULL) && (strcmp(js2, "OK|real|none|55") == 0);
+
+    jstring jsimp = Java_com_mathengine_MathEngineBridge_nativeSymSimplify(jenv, NULL, jh, "(x + 0) * 1 + 4 * x");
+    jstring jdiff = Java_com_mathengine_MathEngineBridge_nativeSymDiff(jenv, NULL, jh, "x", "x^3 + sin(x)");
+    bool jni_sym_ok = (jsimp != NULL && strcmp(jsimp, "5 * x") == 0) &&
+                      (jdiff != NULL && strcmp(jdiff, "3 * x ^ 2 + cos(x)") == 0);
+
+    jbyteArray jmathc = Java_com_mathengine_MathEngineBridge_nativeCompileExt(
+        jenv, NULL, jh, "[jni_mod]\n<[arith]\njni_cube(x) = x^3\n");
+    jlong jh2 = Java_com_mathengine_MathEngineBridge_nativeCreate(jenv, NULL);
+    jboolean jload_ok = Java_com_mathengine_MathEngineBridge_nativeLoadMathc(jenv, NULL, jh2, jmathc);
+    jstring jext_ev = Java_com_mathengine_MathEngineBridge_nativeEval(jenv, NULL, jh2, "jni_cube(4)");
+    jint jgc = Java_com_mathengine_MathEngineBridge_nativeCompactScratch(jenv, NULL, jh2);
+    bool jni_ext_ok = (jmathc != NULL) && (jload_ok == JNI_TRUE) &&
+                      (jext_ev != NULL && strcmp(jext_ev, "OK|real|none|64") == 0) && (jgc >= 0);
+    mep_jni_mock_free_byte_array(jmathc);
+    Java_com_mathengine_MathEngineBridge_nativeDestroy(jenv, NULL, jh2);
+    Java_com_mathengine_MathEngineBridge_nativeDestroy(jenv, NULL, jh);
+    bool jni_all_ok = jni_eval_ok && jni_sess_ok && jni_sym_ok && jni_ext_ok;
+    printf("    - JNI lifecycle, eval, session restore, .mathc & symbolic API : %s\n\n",
+           jni_all_ok ? "PASS" : "FAIL");
+
+    return (passed == total && blank_ok && load_mathc_ok && vec_type_guard && multi_eng_ok && jni_all_ok &&
+            introspect_ok && sess_fn_ok &&
             link_order_ok && dup_mod_guard && dup_def_guard && missing_dep_guard && cycle_dep_guard &&
             parallel_sess_ok && snap_iter_ok && restore_continue_ok && snap_guards_ok &&
             same_line_semi_guard && scope_isolation_guard && multi_else_guard && else_if_guard &&

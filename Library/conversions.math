@@ -192,3 +192,94 @@ hp_to_W(x)    = x * 745.699872
 W_to_hp(x)    = x / 745.699872
 hp_to_kW(x)   = x * 0.745699872
 kW_to_hp(x)   = x / 0.745699872
+
+# 9. Derived Compound Unit Conversions (`area`, `volume`, `acceleration`, `force`, `frequency`, `momentum`, `density`)
+(a_v:real, area) to_m2   :90 -> real, none = a_v
+(a_v:real, area) to_km2  :90 -> real, none = a_v / 1000000
+(a_v:real, area) to_cm2  :90 -> real, none = a_v * 10000
+(a_v:real, area) to_mm2  :90 -> real, none = a_v * 1000000
+(a_v:real, area) to_ha   :90 -> real, none = a_v / 10000
+(a_v:real, area) to_acre :90 -> real, none = a_v / 4046.8564224
+(a_v:real, area) to_ft2  :90 -> real, none = a_v / 0.09290304
+(a_v:real, area) to_in2  :90 -> real, none = a_v / 0.00064516
+
+(v_v:real, volume) to_m3  :90 -> real, none = v_v
+(v_v:real, volume) to_cm3 :90 -> real, none = v_v * 1000000
+(v_v:real, volume) to_L   :90 -> real, none = v_v * 1000
+(v_v:real, volume) to_mL  :90 -> real, none = v_v * 1000000
+(v_v:real, volume) to_gal :90 -> real, none = v_v / 0.003785411784
+(v_v:real, volume) to_ft3 :90 -> real, none = v_v / 0.028316846592
+
+(acc_v:real, acceleration) to_mps2  :90 -> real, none = acc_v
+(acc_v:real, acceleration) to_g_acc :90 -> real, none = acc_v / 9.80665
+(acc_v:real, acceleration) to_fps2  :90 -> real, none = acc_v / 0.3048
+
+(f_v:real, force) to_N   :90 -> real, none = f_v
+(f_v:real, force) to_kN  :90 -> real, none = f_v / 1000
+(f_v:real, force) to_MN  :90 -> real, none = f_v / 1000000
+(f_v:real, force) to_mN  :90 -> real, none = f_v * 1000
+(f_v:real, force) to_dyn :90 -> real, none = f_v * 100000
+(f_v:real, force) to_lbf :90 -> real, none = f_v / 4.4482216152605
+(f_v:real, force) to_kgf :90 -> real, none = f_v / 9.80665
+
+(fr_v:real, frequency) to_Hz  :90 -> real, none = fr_v
+(fr_v:real, frequency) to_kHz :90 -> real, none = fr_v / 1000
+(fr_v:real, frequency) to_MHz :90 -> real, none = fr_v / 1000000
+(fr_v:real, frequency) to_GHz :90 -> real, none = fr_v / (10 ^ 9)
+(fr_v:real, frequency) to_rpm :90 -> real, none = fr_v * 60
+
+(p_m:real, momentum) to_Ns    :90 -> real, none = p_m
+(p_m:real, momentum) to_kgmps :90 -> real, none = p_m
+
+(d_v:real, density) to_kgm3 :90 -> real, none = d_v
+(d_v:real, density) to_gcm3 :90 -> real, none = d_v / 1000
+
+(i_v:real, current)     to_A    :90 -> real, none = i_v
+(i_v:real, current)     to_mA   :90 -> real, none = i_v * 1000
+(q_v:real, charge)      to_C    :90 -> real, none = q_v
+(q_v:real, charge)      to_mAh  :90 -> real, none = q_v / 3.6
+(u_v:real, voltage)     to_V    :90 -> real, none = u_v
+(u_v:real, voltage)     to_mV   :90 -> real, none = u_v * 1000
+(u_v:real, voltage)     to_kV   :90 -> real, none = u_v / 1000
+(r_v:real, resistance)  to_ohm  :90 -> real, none = r_v
+(r_v:real, resistance)  to_kohm :90 -> real, none = r_v / 1000
+
+N_to_kN(x)   = x / 1000
+kN_to_N(x)   = x * 1000
+N_to_lbf(x)  = x / 4.4482216152605
+lbf_to_N(x)  = x * 4.4482216152605
+N_to_dyn(x)  = x * 100000
+dyn_to_N(x)  = x / 100000
+L_to_m3(x)   = x * 0.001
+m3_to_L(x)   = x * 1000
+L_to_mL(x)   = x * 1000
+mL_to_L(x)   = x * 0.001
+gal_to_L(x)  = x * 3.785411784
+L_to_gal(x)  = x / 3.785411784
+
+# 10. Temperature, Molar / Chemical & Photometric Same-Unit Conversions (`K`, `mol`, `cd`)
+(t_k:real, temperature)         to_K      :90 -> real, none = t_k
+(t_k:real, temperature)         to_mK     :90 -> real, none = t_k * 1000
+(t_k:real, temperature)         to_degC   :90 -> real, none = t_k - 273.15 K
+(t_k:real, temperature)         to_degF   :90 -> real, none = (t_k - 273.15 K) * 1.8 + 32 K
+(hc_v:real, heat_capacity)      to_JpK    :90 -> real, none = hc_v
+(sh_v:real, specific_heat)      to_JpkgK  :90 -> real, none = sh_v
+
+(n_v:real, substance)           to_mol    :90 -> real, none = n_v
+(n_v:real, substance)           to_mmol   :90 -> real, none = n_v * 1000
+(n_v:real, substance)           to_umol   :90 -> real, none = n_v * 1e6
+(n_v:real, substance)           to_kmol   :90 -> real, none = n_v / 1000
+(mm_v:real, molar_mass)         to_kgpmol :90 -> real, none = mm_v
+(mm_v:real, molar_mass)         to_gpmol  :90 -> real, none = mm_v * 1000
+(c_v:real, molarity)            to_molm3  :90 -> real, none = c_v
+(c_v:real, molarity)            to_M_conc :90 -> real, none = c_v / 1000
+(c_v:real, molarity)            to_mM_conc:90 -> real, none = c_v
+(me_v:real, molar_energy)       to_Jpmol  :90 -> real, none = me_v
+(me_v:real, molar_energy)       to_kJpmol :90 -> real, none = me_v / 1000
+(mhc_v:real, molar_heat_capacity) to_JpmolK :90 -> real, none = mhc_v
+(kat_v:real, catalytic_activity)  to_kat  :90 -> real, none = kat_v
+
+(li_v:real, luminous_intensity) to_cd     :90 -> real, none = li_v
+(li_v:real, luminous_intensity) to_lm     :90 -> real, none = li_v
+(il_v:real, illuminance)        to_lx     :90 -> real, none = il_v
+(il_v:real, illuminance)        to_klx    :90 -> real, none = il_v / 1000

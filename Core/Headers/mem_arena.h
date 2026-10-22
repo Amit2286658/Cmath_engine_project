@@ -27,8 +27,8 @@ extern "C" {
  * 1. COMPILE-TIME VALUE ENCODING & ARENA CAPACITY TUNABLES
  * ============================================================================ */
 
-#define MEM_SRC_BUF_CAP     32768   /* UTF-8 source buffer for interned strings   */
-#define MEM_MAX_AST_NODES    8192   /* 8-byte AST nodes (64 KB)                   */
+#define MEM_SRC_BUF_CAP     49152   /* UTF-8 source buffer for interned strings   */
+#define MEM_MAX_AST_NODES   16384   /* 8-byte AST nodes (128 KB)                  */
 #define MEM_MAX_F64_POOL     8192   /* Flat double pool for literals/structs/vecs */
 #define MEM_MAX_CALL_STACK    256   /* Evaluation & local variable stack slots    */
 #define MEM_MAX_LABELS         16   /* Max tagged scopes (`Tag : { ... }`)        */
@@ -41,6 +41,9 @@ extern "C" {
 #define MEM_VEC_HDR_SLOTS      4u  /* [elem_type_id, len, cap, data_pool_idx]    */
 #define MEM_MAT_HDR_SLOTS      8u  /* [rank, total_len, data_idx, flags, d0..d3] */
 #define MEM_FN_HDR_SLOTS       4u  /* [body_ast, param_cnt, slots, frame_base]   */
+#define MEM_MAP_HDR_SLOTS      4u  /* [val_type_unit, len, cap, data_pool_idx]   */
+#define MEM_FN_MAX_PARAMS     16u  /* Max parameters for lambdas & session fns   */
+#define MEM_MAX_TEMP_ROOTS    64u  /* C stack temporary Value* roots for GC      */
 
 typedef enum {
     JUMP_NONE          = 0,
@@ -111,6 +114,8 @@ typedef struct {
     uint8_t     vec_type_id;
     uint8_t     mat_type_id;
     uint8_t     fn_type_id;
+    uint8_t     map_type_id;
+    uint8_t     type_stride[64];
 
     /* Control-Flow Jump, Break, Continue, Return & Tagged Scope Runtime State */
     uint8_t     jump_active;       /* JumpKind (JUMP_NONE..JUMP_RETURN)          */
@@ -119,9 +124,26 @@ typedef struct {
     uint16_t    label_ast[MEM_MAX_LABELS];
 
     /* Lambda source slices for session variable persistence (reset per eval) */
-    uint16_t    fn_body_ast[16];
-    StrSlice    fn_src_slice[16];
+    uint16_t    fn_body_ast[32];
+    StrSlice    fn_src_slice[32];
     uint8_t     fn_src_count;
+
+    /* Local variable slot names for symbolic math & session introspection */
+    StrSlice    local_slot_names[64];
+
+    /* Scratch Pool Mark-Sweep / Sliding Compaction State & C Temporary Roots */
+    Value      *temp_roots[MEM_MAX_TEMP_ROOTS];
+    uint16_t    temp_root_count;
+    uint8_t     gc_mark[MEM_MAX_F64_POOL];
+    uint16_t    gc_fwd[MEM_MAX_F64_POOL];
+
+    /* Scratch range metadata cache for `@vrange` -> `@vrange_step` (`a...b by step`) */
+    uint16_t    vrange_hdr[4];
+    uint8_t     vrange_mode[4];
+    uint8_t     vrange_unit[4];
+    double      vrange_a[4];
+    double      vrange_b[4];
+    uint8_t     vrange_cnt;
 
     /* Recursion & Global Step Budget State */
     uint16_t    eval_depth;
@@ -163,6 +185,20 @@ void     mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride)
 /* Multidimensional Matrix (`$mat`) Header & Contiguous Payload Allocation */
 uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
                            uint16_t *out_total_len, uint16_t *out_data_idx);
+
+/* Dynamic Map / Dictionary (`$map`) Header & Key-Value Entry Management */
+uint16_t mem_map_alloc_hdr(MemArena *mem, uint16_t packed_val_type, uint16_t init_cap);
+bool     mem_map_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t min_cap);
+StrSlice mem_map_entry_key(const MemArena *mem, uint16_t data_idx, uint16_t entry_i);
+Value    mem_map_entry_val(const MemArena *mem, uint16_t data_idx, uint16_t entry_i);
+void     mem_map_set_entry(MemArena *mem, uint16_t data_idx, uint16_t entry_i,
+                           StrSlice key, Value val);
+
+/* Arena Scratch-Pool Mark-Sweep / Sliding Defragmentation Compaction */
+uint16_t mem_compact_scratch(MemArena *mem, Value *extra_roots, uint16_t extra_root_count);
+uint16_t mem_scratch_pool_used(const MemArena *mem);
+uint16_t mem_push_temp_root(MemArena *mem, Value *vptr);
+void     mem_pop_temp_roots(MemArena *mem, uint16_t saved_count);
 
 /* AST Node Pool Allocation & Access */
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,

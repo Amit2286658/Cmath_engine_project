@@ -98,6 +98,23 @@ static void format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint
         snprintf(buf, cap, "() => 0");
         return;
     }
+    if (type_id == eng->mem.map_type_id && type_id != 0) {
+        uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
+        uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 3));
+        size_t used = (size_t)snprintf(buf, cap, "dict(");
+        for (uint16_t i = 0; i < len && used < cap; ++i) {
+            StrSlice kslice = mem_map_entry_key(&eng->mem, data_idx, i);
+            Value    vval   = mem_map_entry_val(&eng->mem, data_idx, i);
+            char vstr[128];
+            eng_snapshot_format_canonical_val(eng, vval, vstr, sizeof(vstr));
+            used += (size_t)snprintf(buf + used, cap - used, "%s\"%.*s\", %s",
+                                     (i > 0 ? ", " : ""),
+                                     (int)kslice.len, mem_str_ptr(&eng->mem, kslice),
+                                     vstr);
+        }
+        if (used < cap) snprintf(buf + used, cap - used, ")");
+        return;
+    }
 
     const TypeDef *td = &eng->sym.types[type_id];
     char tname[32];

@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define PARSER_MAX_LOCALS      32
+#define PARSER_MAX_LOCALS      64
 #define PARSER_MAX_EXPR_DEPTH 128
 
 /* Bit flags stored in `AstNode.ref` on `AST_SLOT_LOAD` */
@@ -51,6 +51,7 @@ typedef struct {
     uint8_t    in_ternary_then;
     uint8_t    in_cond_expr;
     uint8_t    in_paren_expr;
+    uint8_t    in_symbolic_expr;
     uint16_t   expr_depth;
     bool       last_was_block;
     LabelDef   labels[MEM_MAX_LABELS];

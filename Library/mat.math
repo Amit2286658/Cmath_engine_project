@@ -1,0 +1,378 @@
+# =============================================================================
+# Library/mat.math — Multidimensional Matrices & Tensors (`$mat`)
+# =============================================================================
+# Dedicated module for 1D-4D dense matrices/tensors (`[a, b ; c, d]`),
+# matrix arithmetic, Hadamard elementwise operators (`.*`, `./`, `.^`),
+# linear system solver (`linsolve`), inverse (`inv`), determinant (`det`),
+# trace, transpose, constructors, and higher-order tensor pipelines.
+
+[mat]
+<[boot_types]
+<[boot_control]
+<[arith]
+<[vec]
+
+# 1. Matrix Arithmetic, Scaling & Membership Operators
+"-" (m:mat, T)                 :80  -> mat, T = @mscal(m, -1)
+(a:mat, T)     "+"  (b:mat, T) :<50 -> mat, T = @madd(a, b)
+(a:mat, T)     "-"  (b:mat, T) :<50 -> mat, T = @msub(a, b)
+(a:mat, T)     into (b:mat, T) :>55 -> mat, T = @madd(a, b)
+(a:mat)        "*"  (b:mat)    :<60 -> mat    = @mmul(a, b)
+(m:mat, T)     "*"  (s)        :<60 -> mat, T = @mscal(m, s)
+(s)            "*"  (m:mat, T) :<60 -> mat, T = @mscal(m, s)
+(m:mat, T)     "/"  (s)        :<60 -> mat, T = @mscal(m, 1 / s)
+(item:real, T) in   (m:mat, T) :<42           = @vin(item, m)
+
+# 2. Elementwise (Hadamard) Matrix Operators (`.*`, `./`, `.^`)
+(a:mat)    ".*" (b:mat)  :<60 -> mat    = @mhadamard(a, b, 0)
+(a:mat)    "./" (b:mat)  :<60 -> mat    = @mhadamard(a, b, 1)
+(a:mat, T) ".^" (b:real) :>85 -> mat, T = @mhadamard(a, b, 2)
+(a:real)   ".^" (b:mat)  :>85 -> mat    = b.map(x => a ^ x)
+(a:mat)    ".^" (b:mat)  :>85 -> mat    = @mhadamard(a, b, 2)
+
+# 3. Matrix Constructors, Shape Queries, Reshaping & Linear Algebra (`det`, `trace`, `transpose`, `inv`, `linsolve`)
+mat_rows(m:mat)                      = @mrows(m)
+mat_cols(m:mat)                      = @mcols(m)
+mat_rank(m:mat)                      = @mrank(m)
+mat_len(m:mat)                       = @mlen(m)
+mat_shape(m:mat)          -> vec     = @mshape(m)
+reshape(m:mat, r, c)      -> mat     = @mreshape(m, r, c)
+reshape(v:vec, r, c)      -> mat     = @mreshape(v, r, c)
+flatten(m:mat)            -> vec     = [x for x in m]
+mat_zeros(r, c)           -> mat     = @mzero(r, c)
+mat_fill(r, c, v:real, T) -> mat, T  = vec(r * c, v).reshape(r, c)
+mat_ones(r, c)            -> mat     = mat_fill(r, c, 1)
+mat_eye(n)                -> mat     = {
+    if (n <= 0) { error("Identity matrix dimension must be positive") }
+    out := mat_zeros(n, n)
+    (i in 0..<n) { out[i, i] = 1 }
+    out
+}
+transpose(m:mat, T)       -> mat, T  = @mtrans(m)
+trace(m:mat, T)           -> real, T = {
+    r := mat_rows(m)
+    if (mat_rank(m) != 2 || r != mat_cols(m) || r == 0) { error("trace() requires a non-empty square 2D matrix") }
+    s := 0 * m[0, 0]
+    (i in 0..<r) { s += m[i, i] }
+    s
+}
+det(m:mat)                           = @mdet(m)
+inv(m:mat)                -> mat     = @minv(m)
+linsolve(a:mat, b:mat)    -> mat     = @mlinsolve(a, b)
+linsolve(a:mat, b:vec)    -> vec     = @mlinsolve(a, b)
+
+# 4. Higher-Order Functional Pipelines on `$mat`
+map(m:mat, f:fn)          -> mat = {
+    if (mat_rank(m) == 2) {
+        return [f(x) for x in m].reshape(mat_rows(m), mat_cols(m))
+    }
+    [f(x) for x in m].reshape(1, mat_len(m))
+}
+filter(m:mat, f:fn)       -> vec = [x for x in m if f(x)]
+reduce(m:mat, f:fn)              = reduce(flatten(m), f)
+reduce(m:mat, init, f:fn)        = reduce(flatten(m), init, f)
+fold(m:mat, init, f:fn)          = reduce(flatten(m), init, f)
+any(m:mat, f:fn)                 = any(flatten(m), f)
+all(m:mat, f:fn)                 = all(flatten(m), f)
+find(m:mat, f:fn)                = find(flatten(m), f)
+count_if(m:mat, f:fn)            = count_if(flatten(m), f)
+
+# 5. Diagonals, Reductions & Matrix Powers (`A ^ n`)
+
+diag(v:vec) -> mat = {
+    n   := v.len()
+    out := mat_zeros(n, n)
+    (i, x in v) { out[i, i] = x }
+    out
+}
+
+diag(m:mat, T) -> vec = {
+    n := min(mat_rows(m), mat_cols(m))
+    [m[i, i] for i in 0..<n]
+}
+
+mat_sum(m:mat, T)        -> real, T = m.reduce((a, b) => a + b)
+mat_mean(m:mat, T)       -> real, T = mat_sum(m) / mat_len(m)
+mat_min(m:mat, T)        -> real, T = m.reduce((a, b) => a < b ? a : b)
+mat_max(m:mat, T)        -> real, T = m.reduce((a, b) => a > b ? a : b)
+frobenius_norm(m:mat, T) -> real, T = √(m.map(x => x^2).reduce((a, b) => a + b))
+
+mat_pow(m:mat, n:real, none) -> mat = {
+    r := mat_rows(m)
+    if (r != mat_cols(m)) { error("Matrix power requires a square matrix") }
+    if (n != @floor(n)) { error("Matrix power exponent must be an integer") }
+    acc  := mat_eye(r)
+    base := (n < 0) ? inv(m) : m
+    k    := @abs(n)
+    (k > 0) ?? {
+        if (k % 2 == 1) { acc = acc * base }
+        base = base * base
+        k    = @floor(k / 2)
+    }
+    acc
+}
+
+(m:mat) "^" (n:real, none) :>85 -> mat = mat_pow(m, n)
+
+
+# 6. Matrix-Vector Products (`M * v`, `v * M`), Outer/Kronecker Products, Concatenation & Triangular Parts
+(m:mat) "*" (v:vec) :<60 -> vec = @mmul(m, v)
+(v:vec) "*" (m:mat) :<60 -> vec = @mmul(v, m)
+
+outer(a:vec, b:vec) -> mat = {
+    na  := a.len()
+    nb  := b.len()
+    out := mat_zeros(na, nb)
+    (i, x in a) {
+        (j, y in b) { out[i, j] = x * y }
+    }
+    out
+}
+
+vstack(a:mat, b:mat) -> mat = {
+    ra := (mat_rank(a) == 1) ? 1 : mat_rows(a)
+    ca := (mat_rank(a) == 1) ? mat_len(a) : mat_cols(a)
+    rb := (mat_rank(b) == 1) ? 1 : mat_rows(b)
+    cb := (mat_rank(b) == 1) ? mat_len(b) : mat_cols(b)
+    if (ca != cb) { error("vstack() requires matching column counts") }
+    fa  := flatten(a)
+    fb  := flatten(b)
+    out := mat_zeros(ra + rb, ca)
+    (i in 0..<ra) { (j in 0..<ca) { out[i, j] = fa[i * ca + j] } }
+    (i in 0..<rb) { (j in 0..<cb) { out[ra + i, j] = fb[i * cb + j] } }
+    out
+}
+
+hstack(a:mat, b:mat) -> mat = {
+    ra := (mat_rank(a) == 1) ? 1 : mat_rows(a)
+    ca := (mat_rank(a) == 1) ? mat_len(a) : mat_cols(a)
+    rb := (mat_rank(b) == 1) ? 1 : mat_rows(b)
+    cb := (mat_rank(b) == 1) ? mat_len(b) : mat_cols(b)
+    if (ra != rb) { error("hstack() requires matching row counts") }
+    fa  := flatten(a)
+    fb  := flatten(b)
+    out := mat_zeros(ra, ca + cb)
+    (i in 0..<ra) {
+        (j in 0..<ca) { out[i, j] = fa[i * ca + j] }
+        (j in 0..<cb) { out[i, ca + j] = fb[i * cb + j] }
+    }
+    out
+}
+
+kron(a:mat, b:mat)   -> mat = {
+    ra  := mat_rows(a)
+    ca  := mat_cols(a)
+    rb  := mat_rows(b)
+    cb  := mat_cols(b)
+    out := mat_zeros(ra * rb, ca * cb)
+    (ia in 0..<ra) {
+        (ja in 0..<ca) {
+            va := a[ia, ja]
+            (ib in 0..<rb) {
+                (jb in 0..<cb) {
+                    out[ia * rb + ib, ja * cb + jb] = va * b[ib, jb]
+                }
+            }
+        }
+    }
+    out
+}
+
+tril(m:mat, k = 0) -> mat = {
+    r   := mat_rows(m)
+    c   := mat_cols(m)
+    out := mat_zeros(r, c)
+    (i in 0..<r) {
+        (j in 0..<c) {
+            if (j - i <= k) { out[i, j] = m[i, j] }
+        }
+    }
+    out
+}
+
+triu(m:mat, k = 0) -> mat = {
+    r   := mat_rows(m)
+    c   := mat_cols(m)
+    out := mat_zeros(r, c)
+    (i in 0..<r) {
+        (j in 0..<c) {
+            if (j - i >= k) { out[i, j] = m[i, j] }
+        }
+    }
+    out
+}
+
+# 7. Matrix Decompositions (LU, QR, Cholesky, Eigenvalues/Vectors, SVD), Pseudoinverse, Least Squares & Norms
+lu_helper(m:mat, mode) -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("LU decomposition requires a non-empty square 2D matrix") }
+    L := mat_eye(n)
+    U := m.map(x => x)
+    P := mat_eye(n)
+    (k in 0..<n) {
+        piv := k
+        mx  := @abs(U[k, k])
+        (i in (k + 1)..<n) {
+            v := @abs(U[i, k])
+            if (v > mx) { mx = v ; piv = i }
+        }
+        if (piv != k) {
+            (j in 0..<n) {
+                tu := U[k, j] ; U[k, j] = U[piv, j] ; U[piv, j] = tu
+                tp := P[k, j] ; P[k, j] = P[piv, j] ; P[piv, j] = tp
+            }
+            (j in 0..<k) {
+                tl := L[k, j] ; L[k, j] = L[piv, j] ; L[piv, j] = tl
+            }
+        }
+        ukk := U[k, k]
+        if (@abs(ukk) > 1e-15) {
+            (i in (k + 1)..<n) {
+                f := U[i, k] / ukk
+                L[i, k] = f
+                U[i, k] = 0
+                (j in (k + 1)..<n) {
+                    U[i, j] = U[i, j] - f * U[k, j]
+                }
+            }
+        }
+    }
+    (mode == 0) ? L : ((mode == 1) ? U : P)
+}
+
+lu_l(m:mat)             -> mat = lu_helper(m, 0)
+lu_u(m:mat)             -> mat = lu_helper(m, 1)
+lu_p(m:mat)             -> mat = lu_helper(m, 2)
+
+qr_q(m:mat)             -> mat = {
+    r := mat_rows(m)
+    c := mat_cols(m)
+    if (mat_rank(m) != 2 || r < c || c == 0) { error("QR decomposition requires a 2D matrix with rows >= cols") }
+    Q := m.map(x => x)
+    (j in 0..<c) {
+        (i in 0..<j) {
+            rij := 0
+            (k in 0..<r) { rij += Q[k, i] * Q[k, j] }
+            (k in 0..<r) { Q[k, j] = Q[k, j] - rij * Q[k, i] }
+        }
+        nrm := 0
+        (k in 0..<r) { nrm += Q[k, j]^2 }
+        nrm = √nrm
+        if (nrm > 1e-14) {
+            (k in 0..<r) { Q[k, j] = Q[k, j] / nrm }
+        } else {
+            (k in 0..<r) { Q[k, j] = 0 }
+        }
+    }
+    Q
+}
+
+qr_r(m:mat)             -> mat = transpose(qr_q(m)) * m
+
+chol(m:mat)             -> mat = {
+    n := mat_rows(m)
+    if (mat_rank(m) != 2 || n != mat_cols(m) || n == 0) { error("chol() requires a non-empty square symmetric positive-definite matrix") }
+    L := mat_zeros(n, n)
+    (i in 0..<n) {
+        (j in 0...i) {
+            s := m[i, j]
+            (k in 0..<j) { s -= L[i, k] * L[j, k] }
+            if (i == j) {
+                if (s <= 0) { error("chol() matrix is not positive-definite") }
+                L[i, j] = √s
+            } else {
+                L[i, j] = s / L[j, j]
+            }
+        }
+    }
+    L
+}
+
+eigvals(m:mat)          -> vec = @meigvals(m)
+eigvecs(m:mat)          -> mat = @meigvecs(m)
+svd_s(m:mat)            -> vec = @msvd(m, 0)
+svd_u(m:mat)            -> mat = @msvd(m, 1)
+svd_v(m:mat)            -> mat = @msvd(m, 2)
+
+pinv(m:mat)             -> mat = {
+    s    := svd_s(m)
+    u    := svd_u(m)
+    v    := svd_v(m)
+    tol  := 1e-10 * max(1, s[0])
+    sinv := [x > tol ? (1 / x) : 0 for x in s]
+    v * diag(sinv) * transpose(u)
+}
+
+lstsq(a:mat, b:vec)     -> vec = pinv(a) * b
+lstsq(a:mat, b:mat)     -> mat = pinv(a) * b
+
+power_vec(m:mat, steps = 40) -> vec = {
+    n := mat_rows(m)
+    if (n != mat_cols(m) || n == 0) { error("power_vec() requires a non-empty square matrix") }
+    v := vec(n, 1)
+    k := 0
+    (k < steps) ?? {
+        w  := m * v
+        nv := norm(w)
+        if (nv <= 1e-15) { break }
+        v  = [x / nv for x in w]
+        k += 1
+    }
+    v
+}
+
+power_iter(m:mat, steps = 40) = {
+    v := power_vec(m, steps)
+    dot(v, m * v) / dot(v, v)
+}
+
+matrix_rank(m:mat, tol = 1e-9) = {
+    sv := svd_s(m)
+    sv.count_if(s => s > tol)
+}
+
+spectral_norm(m:mat) = {
+    sv := svd_s(m)
+    sv[0]
+}
+
+cond(m:mat) = {
+    sv   := svd_s(m)
+    smin := sv[sv.len() - 1]
+    if (smin <= 1e-15) { error("Matrix is singular or rank-deficient (condition number is infinite)") }
+    sv[0] / smin
+}
+
+mat_norm1(m:mat) = {
+    r    := mat_rows(m)
+    c    := mat_cols(m)
+    best := 0
+    (j in 0..<c) {
+        s := 0
+        (i in 0..<r) { s += @abs(m[i, j]) }
+        if (s > best) { best = s }
+    }
+    best
+}
+
+mat_norm_inf(m:mat) = {
+    r    := mat_rows(m)
+    c    := mat_cols(m)
+    best := 0
+    (i in 0..<r) {
+        s := 0
+        (j in 0..<c) { s += @abs(m[i, j]) }
+        if (s > best) { best = s }
+    }
+    best
+}
+
+(a:mat) "==" (b:mat) :<30 = {
+    if (mat_rows(a) != mat_rows(b) || mat_cols(a) != mat_cols(b)) { return 0 }
+    flatten(a) == flatten(b)
+}
+(a:mat) "!=" (b:mat) :<30 = !(a == b)
+(a:mat) "~"  (b:mat) :<30 = {
+    if (mat_rows(a) != mat_rows(b) || mat_cols(a) != mat_cols(b)) { return 0 }
+    flatten(a) ~ flatten(b)
+}

@@ -24,29 +24,30 @@
 # 4. Relational Comparisons, Approximate Equality `~` (:<30) & Chained Boolean Logic
 (a)         "==" (b)         :<30 = @eq(a, b)
 (a)         "!=" (b)         :<30 = @ne(a, b)
-(a:str)     "==" (b:str)     :<30 = @eq(a, b)
-(a:str)     "!=" (b:str)     :<30 = @ne(a, b)
 (a)         "<"  (b)         :<30 = @lt(a, b)
 (a)         "<=" (b)         :<30 = @le(a, b)
 (a)         ">"  (b)         :<30 = @gt(a, b)
 (a)         ">=" (b)         :<30 = @ge(a, b)
-(a:real, T) "~"  (b:real, T) :<30 = @approx(a, b)
+(a:real, T) "~"  (b:real, T) :<30 = (@abs(a - b) <= 0.001 + 1e-12)
 
 not(x) :25 = @lnot(x)
 
-(a) "&&" (b) :<20 = @land(a, b)
-(a) and  (b) :<20 = @land(a, b)
-(a) nand (b) :<20 = @lnand(a, b)
-(a) xor  (b) :<18 = @lxor(a, b)
-(a) "^^" (b) :<18 = @lxor(a, b)
-(a) "||" (b) :<15 = @lor(a, b)
-(a) or   (b) :<15 = @lor(a, b)
-(a) nor  (b) :<15 = @lnor(a, b)
+(a) "&&" (b) :<20 = (a != 0) ? ((b != 0) ? 1 : 0) : 0
+(a) and  (b) :<20 = (a != 0) ? ((b != 0) ? 1 : 0) : 0
+(a) nand (b) :<20 = (a != 0) ? ((b != 0) ? 0 : 1) : 1
+(a) xor  (b) :<18 = ((a != 0) != (b != 0))
+(a) "^^" (b) :<18 = ((a != 0) != (b != 0))
+(a) "||" (b) :<15 = (a != 0) ? 1 : ((b != 0) ? 1 : 0)
+(a) or   (b) :<15 = (a != 0) ? 1 : ((b != 0) ? 1 : 0)
+(a) nor  (b) :<15 = (a == 0) ? ((b == 0) ? 1 : 0) : 0
 
 # 5. Prefix Unary Operators
 "-" (x) :80 = @neg(x)
 "+" (x) :80 = x
 "√" (x) :80 = @sqrt(x)
+"~" (x:real, none) :80 = @bnot(x)
+(a:real, none) "<<" (b:real, none) :<40 = @bshl(a, b)
+(a:real, none) ">>" (b:real, none) :<40 = @bshr(a, b)
 
 # 6. Multi-Character Overlapping Prefix & Postfix Operators (`++`, `+++`, `--`, `---`)
 "++"  (x) :85 = x + 1
@@ -212,42 +213,43 @@ sum_n(n)      = n * (n + 1) / 2
 sum_sq_n(n)   = n * (n + 1) * (2n + 1) / 6
 sum_cube_n(n) = (n * (n + 1) / 2) ^ 2
 
-# 14. Vector Statistics & Time-Series Functions (`vec_sum`, `sum`, `mean`, `variance`, `stddev`, `sma`)
-vec_sum(v:vec) = {
-    s := 0
-    (x in v) { s += x }
-    s
-}
+# 13b. Bitwise Integer Operations & Discrete/Exponential Probability Functions
+bit_and(a:real, none, b:real, none) = @band(a, b)
+bit_or(a:real, none, b:real, none)  = @bor(a, b)
+bit_xor(a:real, none, b:real, none) = @bxor(a, b)
+bit_not(a:real, none)               = @bnot(a)
+bit_shl(a:real, none, b:real, none) = @bshl(a, b)
+bit_shr(a:real, none, b:real, none) = @bshr(a, b)
 
-sum(v:vec)  = vec_sum(v)
-mean(v:vec) = vec_sum(v) / v.len()
-
-variance(v:vec) = {
-    mu  := mean(v)
-    acc := 0
-    (x in v) {
-        d := x - mu
-        acc += d^2
+popcount(n:real, none) = {
+    if (n < 0 || n != @floor(n)) { error("popcount() requires a non-negative integer") }
+    c := 0
+    x := n
+    (x > 0) ?? {
+        c += (x % 2)
+        x = @floor(x / 2)
     }
-    acc / v.len()
+    c
 }
 
-stddev(v:vec) = √variance(v)
-
-sma(v:vec, window) = {
-    n     := v.len()
-    w     := min(window, n)
-    start := n - w
-    acc   := 0
-    idx   := start
-    (idx < n) ?? {
-        acc += v[idx]
-        idx += 1
+bit_len(n:real, none) = {
+    if (n < 0 || n != @floor(n)) { error("bit_len() requires a non-negative integer") }
+    b := 0
+    x := n
+    (x > 0) ?? {
+        b += 1
+        x = @floor(x / 2)
     }
-    acc / w
+    b
 }
 
-# 15. Fundamental Mathematical Constants
+binom_pmf(n, k, p)   = ncr(n, k) * (p ^ k) * ((1 - p) ^ (n - k))
+poisson_pmf(k, lam)  = ((lam ^ k) * @exp(-lam)) / (k!)
+geom_pmf(k, p)       = ((1 - p) ^ (k - 1)) * p
+exp_pdf(x, lam)      = (x < 0) ? 0 : lam * @exp(-lam * x)
+exp_cdf(x, lam)      = (x < 0) ? 0 : 1 - @exp(-lam * x)
+
+# 14. Fundamental Mathematical Constants
 π   = 3.141592653589793
 pi  = 3.141592653589793
 e   = 2.718281828459045

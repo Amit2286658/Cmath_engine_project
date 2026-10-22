@@ -3,6 +3,7 @@
  */
 
 #include "lexer.h"
+#include "../lib/delegate/delegate.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -55,6 +56,13 @@ static int match_single_atom(const MemArena *mem, const PatElem *pe,
             }
             return -1;
         }
+        case PAT_CHARS: {
+            const char *cset = mem_str_ptr(mem, pe->chars);
+            for (uint16_t i = 0; i < pe->chars.len; ++i) {
+                if (src[pos] == cset[i]) return 1;
+            }
+            return -1;
+        }
         case PAT_NOT_CHARS: {
             const char *excl = mem_str_ptr(mem, pe->chars);
             for (uint16_t i = 0; i < pe->chars.len; ++i) {
@@ -69,6 +77,47 @@ static int match_single_atom(const MemArena *mem, const PatElem *pe,
         default:
             return -1;
     }
+}
+
+static bool group_has_top_alt(const SymTable *tab, uint16_t start, uint16_t end) {
+    uint16_t depth = 0;
+    for (uint16_t i = start; i < end; ++i) {
+        uint8_t k = tab->pat_elems[i].kind;
+        if (k == PAT_GROUP_START) depth++;
+        else if (k == PAT_GROUP_END && depth > 0) depth--;
+        else if (k == PAT_ALT && depth == 0) return true;
+    }
+    return false;
+}
+
+static int match_pat_seq(const MemArena *mem, const SymTable *tab,
+                         uint16_t p_idx, uint16_t p_end,
+                         const char *src, uint16_t pos, uint16_t len);
+
+static int match_group_body(const MemArena *mem, const SymTable *tab,
+                            uint16_t g_start, uint16_t g_end,
+                            const char *src, uint16_t pos, uint16_t len) {
+    if (!group_has_top_alt(tab, g_start, g_end)) {
+        return match_pat_seq(mem, tab, g_start, g_end, src, pos, len);
+    }
+    int best_end = -1;
+    uint16_t b_start = g_start;
+    uint16_t depth   = 0;
+    for (uint16_t i = g_start; i <= g_end; ++i) {
+        bool is_split = (i == g_end);
+        if (!is_split) {
+            uint8_t k = tab->pat_elems[i].kind;
+            if (k == PAT_GROUP_START) depth++;
+            else if (k == PAT_GROUP_END && depth > 0) depth--;
+            else if (k == PAT_ALT && depth == 0) is_split = true;
+        }
+        if (is_split) {
+            int sub_end = match_pat_seq(mem, tab, b_start, i, src, pos, len);
+            if (sub_end > best_end) best_end = sub_end;
+            b_start = (uint16_t)(i + 1);
+        }
+    }
+    return best_end;
 }
 
 static int match_pat_seq(const MemArena *mem, const SymTable *tab,
@@ -89,14 +138,14 @@ static int match_pat_seq(const MemArena *mem, const SymTable *tab,
         uint16_t next_p = (g_end < p_end) ? (g_end + 1) : p_end;
 
         if (quant == QUANT_OPT) {
-            int sub_end = match_pat_seq(mem, tab, p_idx + 1, g_end, src, pos, len);
+            int sub_end = match_group_body(mem, tab, p_idx + 1, g_end, src, pos, len);
             if (sub_end >= 0) {
                 int rem = match_pat_seq(mem, tab, next_p, p_end, src, (uint16_t)sub_end, len);
                 if (rem >= 0) return rem;
             }
             return match_pat_seq(mem, tab, next_p, p_end, src, pos, len);
         } else if (quant == QUANT_ONE) {
-            int sub_end = match_pat_seq(mem, tab, p_idx + 1, g_end, src, pos, len);
+            int sub_end = match_group_body(mem, tab, p_idx + 1, g_end, src, pos, len);
             if (sub_end < 0) return -1;
             return match_pat_seq(mem, tab, next_p, p_end, src, (uint16_t)sub_end, len);
         } else {
@@ -105,7 +154,7 @@ static int match_pat_seq(const MemArena *mem, const SymTable *tab,
             if (quant == QUANT_STAR) ends[count++] = pos;
             uint16_t cur = pos;
             while (count < 32) {
-                int sub_end = match_pat_seq(mem, tab, p_idx + 1, g_end, src, cur, len);
+                int sub_end = match_group_body(mem, tab, p_idx + 1, g_end, src, cur, len);
                 if (sub_end <= (int)cur) break;
                 cur = (uint16_t)sub_end;
                 ends[count++] = cur;
@@ -148,43 +197,6 @@ static int match_pat_seq(const MemArena *mem, const SymTable *tab,
             if (rem >= 0) return rem;
         }
         return -1;
-    }
-}
-
-static Value construct_consumed_token(MemArena *mem, const SymTable *tab,
-                                      uint16_t type_id, const char *src, uint16_t off, uint16_t len) {
-    const TypeDef *td = &tab->types[type_id];
-    char tmp[64];
-    uint16_t copy_len = len < 63 ? len : 63;
-    memcpy(tmp, src + off, copy_len);
-    tmp[copy_len] = '\0';
-
-    switch (td->parser_intr) {
-        case INTR_PARSE_F64: {
-            double d = strtod(tmp, NULL);
-            return val_make_f64(mem, type_id, d);
-        }
-        case INTR_PARSE_F64_TRIM1: {
-            if (copy_len > 0) tmp[copy_len - 1] = '\0';
-            double d = strtod(tmp, NULL);
-            return val_make_f64(mem, type_id, d);
-        }
-        case INTR_PARSE_I64: {
-            double d = (double)strtoll(tmp, NULL, 10);
-            return val_make_f64(mem, type_id, d);
-        }
-        case INTR_PARSE_STR_SLICE: {
-            uint16_t s_off = off;
-            uint16_t s_len = len;
-            if (s_len >= 2 && src[s_off] == '"' && src[s_off + s_len - 1] == '"') {
-                s_off += 1;
-                s_len -= 2;
-            }
-            StrSlice slice = mem_intern_str(mem, src + s_off, s_len);
-            return val_make_str(mem, type_id, slice);
-        }
-        default:
-            return val_void();
     }
 }
 
@@ -277,7 +289,7 @@ void lex_next(Lexer *lex) {
     if (best_type_len > 0) {
         lex->cur.kind = TOK_VAL;
         lex->cur.len  = (uint16_t)best_type_len;
-        lex->cur.val  = construct_consumed_token(mem, tab, best_type_id, lex->src, lex->pos, (uint16_t)best_type_len);
+        lex->cur.val  = delegate_construct_token(mem, tab, best_type_id, lex->src, lex->pos, (uint16_t)best_type_len);
         lex->pos += (uint16_t)best_type_len;
         return;
     }

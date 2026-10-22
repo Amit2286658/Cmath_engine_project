@@ -6,8 +6,7 @@
  * Purpose:
  *   Isolates all C-backed `@<intrinsic>` operations that extension modules
  *   delegate to via `@` syntax (`@add`, `@sub`, `@sin`, `@vnew`, `@vpush`,
- *   `@vshift`, `@vpeek`, `@vrange`, `@vin`, `@fcall`, `@vmap`, `@vfilter`,
- *   `@vreduce`, `@vany`, `@vall`, `@vfind`, `@vcount`, `@mzero`, `@mmul`,
+ *   `@vshift`, `@vrange`, `@vin`, `@fcall`, `@mzero`, `@mmul`,
  *   `@mdet`, `@minv`, `@calc_diff`, `@calc_integ`, `@calc_lim`, `@calc_sigma`,
  *   `@calc_prod`, `@calc_solve`, `@calc_fmin`, `@calc_fmax`, `@tostr`,
  *   `@fromstr`, `@f64`, `@lparen`, `@seq`, `@store`, etc.).
@@ -30,15 +29,32 @@ extern "C" {
 /*Below section is the C's native lookup resolver for operator/function delegates @<intrinsic>*/
 /*Construct @f64, @lparen, @seq, @store, @add, @sin, @vnew, @mmul, @calc_diff, @tostr, @fromstr*/
 IntrinsicId delegate_lookup_intrinsic(const char *s, uint16_t len);
+Value       delegate_construct_token(MemArena *mem, const SymTable *tab,
+                                     uint16_t type_id, const char *src,
+                                     uint16_t off, uint16_t len);
+bool        delegate_extract_slice_indices(MemArena *mem, const SymTable *tab,
+                                           Value idx_val, int dim_len,
+                                           uint16_t *out_indices, uint16_t *out_count,
+                                           uint16_t max_cap);
 
-/*Below section is the C's native scalar and unit validation helpers for operator delegates @add, @sub, @eq..@approx*/
-/*Construct unit-checked arithmetic/comparison and integer index/dimension checks*/
-bool  delegate_is_zero_unitless_scalar(const MemArena *mem, const SymTable *tab, Value v);
-bool  delegate_check_additive_unit_compat(MemArena *mem, const SymTable *tab,
-                                          const char *op_name, int op_len,
-                                          Value a, Value b, uint8_t *out_unit);
-bool  delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
-                                const char *ctx, int *out_int);
+/*Below section is the C's native scalar, additive unit compatibility, and compound SI dimensional algebra helpers*/
+/*Construct unit-checked arithmetic/comparison, compound unit cancellation & dimensional algebra (*, /, ^, √, cbrt), and integer index/dimension checks*/
+bool    delegate_is_zero_unitless_scalar(const MemArena *mem, const SymTable *tab, Value v);
+bool    delegate_check_additive_unit_compat(MemArena *mem, const SymTable *tab,
+                                            const char *op_name, int op_len,
+                                            Value a, Value b, uint8_t *out_unit);
+uint8_t delegate_resolve_mul_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub);
+uint8_t delegate_resolve_div_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub);
+uint8_t delegate_resolve_pow_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub, double exp_val);
+uint8_t delegate_resolve_root_unit(const MemArena *mem, const SymTable *tab,
+                                   uint8_t ua, int root_n);
+bool    delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
+                                  const char *ctx, int *out_int);
+Value   delegate_eval_range_step(MemArena *mem, const SymTable *tab,
+                                 Value va, Value vb, Value vstep, int mode);
 
 /*Below section is the C's native closure invocation engine for operator/function delegates @lambda and @fcall*/
 /*Construct (x) => expr, f(x), call(f, x)*/

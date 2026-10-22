@@ -146,6 +146,8 @@ bool ext_link_units(MemArena *mem, SymTable *tab, const ExtBuildCtx *ctx) {
     uint64_t saved_active_modules = tab->active_modules;
     uint8_t  saved_type_count     = tab->type_count;
     uint8_t  saved_unit_count     = tab->unit_count;
+    UnitDimDef saved_unit_dims[SYM_MAX_UNITS];
+    memcpy(saved_unit_dims, tab->unit_dims, sizeof(saved_unit_dims));
     uint16_t saved_pat_elem_count = tab->pat_elem_count;
     uint16_t saved_field_count    = tab->field_count;
     uint16_t saved_sym_count      = tab->sym_count;
@@ -174,6 +176,7 @@ bool ext_link_units(MemArena *mem, SymTable *tab, const ExtBuildCtx *ctx) {
         tab->active_modules = saved_active_modules;
         tab->type_count     = saved_type_count;
         tab->unit_count     = saved_unit_count;
+        memcpy(tab->unit_dims, saved_unit_dims, sizeof(saved_unit_dims));
         tab->pat_elem_count = saved_pat_elem_count;
         tab->field_count    = saved_field_count;
         tab->sym_count      = saved_sym_count;

@@ -18,6 +18,9 @@ extern "C" {
 
 Value eval_ast(MemArena *mem, SymTable *tab,
                uint16_t node_idx, uint16_t frame_base, uint8_t cur_ret_type);
+Value eval_dispatch_overload(MemArena *mem, SymTable *tab,
+                             uint16_t sym_id, OpFixity fixity,
+                             uint8_t argc, const Value *args);
 
 #ifdef __cplusplus
 }

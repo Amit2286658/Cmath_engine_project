@@ -5,6 +5,10 @@
 [calculus]
 <[arith]
 <[trig]
+<[vec]
+<[mat]
+<[string]
+<[geom_ext]
 <[algebra]
 
 # 1. Symbolic Polynomial Evaluation, Differentiation & Integration
@@ -134,3 +138,107 @@ taylor_sin(x, n_terms = 10) =
 
 taylor_cos(x, n_terms = 10) =
     sigma(k_idx, ((-1) ^ k_idx) * (x ^ (2k_idx)) / ((2k_idx)!), 0, n_terms - 1)
+
+# 6. Multivariate Calculus: Partial Derivatives, Gradients, Laplacian, Hessian & Gradient Descent
+pdiff_x(f:fn, x0, y0) = {
+    h := 1e-5 * (1 + @abs(x0))
+    (-f(x0 + 2h, y0) + 8 * f(x0 + h, y0) - 8 * f(x0 - h, y0) + f(x0 - 2h, y0)) / (12h)
+}
+
+pdiff_y(f:fn, x0, y0) = {
+    h := 1e-5 * (1 + @abs(y0))
+    (-f(x0, y0 + 2h) + 8 * f(x0, y0 + h) - 8 * f(x0, y0 - h) + f(x0, y0 - 2h)) / (12h)
+}
+
+grad2(f:fn, x0, y0) -> vec2 = vec2(pdiff_x(f, x0, y0), pdiff_y(f, x0, y0))
+
+grad3(f:fn, x0, y0, z0) -> vec3 = {
+    hx := 1e-5 * (1 + @abs(x0))
+    hy := 1e-5 * (1 + @abs(y0))
+    hz := 1e-5 * (1 + @abs(z0))
+    gx := (-f(x0 + 2hx, y0, z0) + 8 * f(x0 + hx, y0, z0) - 8 * f(x0 - hx, y0, z0) + f(x0 - 2hx, y0, z0)) / (12hx)
+    gy := (-f(x0, y0 + 2hy, z0) + 8 * f(x0, y0 + hy, z0) - 8 * f(x0, y0 - hy, z0) + f(x0, y0 - 2hy, z0)) / (12hy)
+    gz := (-f(x0, y0, z0 + 2hz) + 8 * f(x0, y0, z0 + hz) - 8 * f(x0, y0, z0 - hz) + f(x0, y0, z0 - 2hz)) / (12hz)
+    vec3(gx, gy, gz)
+}
+
+grad3(f:fn, p:vec3) -> vec3 = {
+    hx := 1e-5 * (1 + @abs(p.x))
+    hy := 1e-5 * (1 + @abs(p.y))
+    hz := 1e-5 * (1 + @abs(p.z))
+    gx := (-f(vec3(p.x + 2hx, p.y, p.z)) + 8 * f(vec3(p.x + hx, p.y, p.z)) - 8 * f(vec3(p.x - hx, p.y, p.z)) + f(vec3(p.x - 2hx, p.y, p.z))) / (12hx)
+    gy := (-f(vec3(p.x, p.y + 2hy, p.z)) + 8 * f(vec3(p.x, p.y + hy, p.z)) - 8 * f(vec3(p.x, p.y - hy, p.z)) + f(vec3(p.x, p.y - 2hy, p.z))) / (12hy)
+    gz := (-f(vec3(p.x, p.y, p.z + 2hz)) + 8 * f(vec3(p.x, p.y, p.z + hz)) - 8 * f(vec3(p.x, p.y, p.z - hz)) + f(vec3(p.x, p.y, p.z - 2hz))) / (12hz)
+    vec3(gx, gy, gz)
+}
+
+laplacian2(f:fn, x0, y0) = {
+    hx  := 1e-4 * (1 + @abs(x0))
+    hy  := 1e-4 * (1 + @abs(y0))
+    f0  := f(x0, y0)
+    dxx := (-f(x0 + 2hx, y0) + 16 * f(x0 + hx, y0) - 30 * f0 + 16 * f(x0 - hx, y0) - f(x0 - 2hx, y0)) / (12 * (hx^2))
+    dyy := (-f(x0, y0 + 2hy) + 16 * f(x0, y0 + hy) - 30 * f0 + 16 * f(x0, y0 - hy) - f(x0, y0 - 2hy)) / (12 * (hy^2))
+    dxx + dyy
+}
+
+hessian2(f:fn, x0, y0) -> mat2 = {
+    hx  := 1e-4 * (1 + @abs(x0))
+    hy  := 1e-4 * (1 + @abs(y0))
+    f0  := f(x0, y0)
+    dxx := (-f(x0 + 2hx, y0) + 16 * f(x0 + hx, y0) - 30 * f0 + 16 * f(x0 - hx, y0) - f(x0 - 2hx, y0)) / (12 * (hx^2))
+    dyy := (-f(x0, y0 + 2hy) + 16 * f(x0, y0 + hy) - 30 * f0 + 16 * f(x0, y0 - hy) - f(x0, y0 - 2hy)) / (12 * (hy^2))
+    dxy := (f(x0 + hx, y0 + hy) - f(x0 + hx, y0 - hy) - f(x0 - hx, y0 + hy) + f(x0 - hx, y0 - hy)) / (4 * hx * hy)
+    mat2(dxx, dxy, dxy, dyy)
+}
+
+dir_deriv2(f:fn, x0, y0, u:vec2) = {
+    g := grad2(f, x0, y0)
+    dot(g, u) / vec2_mag(u)
+}
+
+grad_descent_1d(f:fn, x0, lr = 0.1, steps = 100) = {
+    x := x0
+    k := 0
+    (k < steps) ?? {
+        h  := 1e-5 * (1 + @abs(x))
+        dx := (f(x + h) - f(x - h)) / (2h)
+        x  -= lr * dx
+        k  += 1
+    }
+    x
+}
+
+grad_descent_2d(f:fn, p0:vec2, lr = 0.1, steps = 100) -> vec2 = {
+    p := p0
+    k := 0
+    (k < steps) ?? {
+        g := grad2(f, p.x, p.y)
+        p  = p - lr * g
+        k += 1
+    }
+    p
+}
+
+# 7. First-Class Closure System ODE Solver (`ode_rk4_sys(f, t0, y0, t1, steps = 100)`)
+ode_rk4_sys(f:fn, t0, y0:T, t1, steps = 100) -> vec = {
+    if (steps <= 0) { error("ode_rk4_sys() steps must be positive") }
+    h    := (t1 - t0) / steps
+    t    := t0
+    y    := [x for x in y0]
+    n    := y.len()
+    step := 0
+    (step < steps) ?? {
+        k1 := [x for x in f(t, y)]
+        if (k1.len() != n) { error("ode_rk4_sys() RHS dimension mismatch") }
+        y2 := [y[i] + 0.5 * h * k1[i] for i in 0..<n]
+        k2 := [x for x in f(t + 0.5 * h, y2)]
+        y3 := [y[i] + 0.5 * h * k2[i] for i in 0..<n]
+        k3 := [x for x in f(t + 0.5 * h, y3)]
+        y4 := [y[i] + h * k3[i] for i in 0..<n]
+        k4 := [x for x in f(t + h, y4)]
+        y   = [y[i] + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i]) for i in 0..<n]
+        t  += h
+        step += 1
+    }
+    y
+}

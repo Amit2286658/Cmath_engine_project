@@ -127,6 +127,19 @@ MATH_ENGINE_API const char *eng_type_name(const Engine *eng, uint16_t type_id, c
 MATH_ENGINE_API const char *eng_unit_name(const Engine *eng, uint8_t unit_id, char *buf, size_t cap);
 MATH_ENGINE_API const char *eng_last_error(const Engine *eng);
 
+/* Host Registry & Module Introspection Helpers */
+MATH_ENGINE_API uint8_t     eng_module_count(const Engine *eng);
+MATH_ENGINE_API const char *eng_module_name(const Engine *eng, uint8_t mod_id, char *buf, size_t cap);
+MATH_ENGINE_API uint16_t    eng_overload_count(const Engine *eng);
+MATH_ENGINE_API uint8_t     eng_const_count(const Engine *eng);
+
+/* Scratch Arena Defragmentation / Mark-Sweep Compaction & Symbolic Helpers */
+MATH_ENGINE_API uint16_t    eng_compact_scratch(Engine *eng);
+MATH_ENGINE_API uint16_t    eng_scratch_pool_used(const Engine *eng);
+MATH_ENGINE_API bool        eng_sym_simplify(Engine *eng, const char *expr, char *out_buf, size_t buf_cap);
+MATH_ENGINE_API bool        eng_sym_diff(Engine *eng, const char *var_name, const char *expr,
+                                         char *out_buf, size_t buf_cap);
+
 #ifdef __cplusplus
 }
 #endif

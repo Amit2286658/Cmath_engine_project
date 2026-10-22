@@ -71,6 +71,7 @@ _Static_assert(offsetof(MathcHeader, active_modules) == 32, "MathcHeader.active_
 _Static_assert(offsetof(MathcHeader, checksum)       == 36, "MathcHeader.checksum offset");
 
 _Static_assert(sizeof(StrSlice) == 4, "StrSlice must be 4 bytes");
+_Static_assert(sizeof(UnitDimDef) == 8, "UnitDimDef must be 8 bytes");
 _Static_assert(offsetof(StrSlice, off) == 0 && offsetof(StrSlice, len) == 2, "StrSlice layout");
 
 _Static_assert(sizeof(AstNode) == 8, "AstNode must be 8 bytes");

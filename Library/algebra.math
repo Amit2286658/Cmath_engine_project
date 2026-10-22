@@ -7,6 +7,8 @@
 <[trig]
 <[complex_ext]
 <[geom_ext]
+<[vec]
+<[mat]
 
 # 1. 2x2 Matrix Struct (`$mat2`: row-major [a, b; c, d])
 $mat2(a, b, c, d)
@@ -27,8 +29,26 @@ $mat2(a, b, c, d)
 (m:mat2) "*" (v:vec2) :<60 -> vec2 =
     vec2(m.a * v.x + m.b * v.y, m.c * v.x + m.d * v.y)
 
-(s) "*" (m:mat2) :<60 -> mat2 =
+"-" (m:mat2)             :80  -> mat2 =
+    mat2(-m.a, -m.b, -m.c, -m.d)
+
+(s)      "*" (m:mat2) :<60 -> mat2 =
     mat2(s * m.a, s * m.b, s * m.c, s * m.d)
+
+(m:mat2) "*" (s)      :<60 -> mat2 =
+    mat2(m.a * s, m.b * s, m.c * s, m.d * s)
+
+(m:mat2) "/" (s)      :<60 -> mat2 =
+    mat2(m.a / s, m.b / s, m.c / s, m.d / s)
+
+(m1:mat2) "==" (m2:mat2) :<30 =
+    (m1.a == m2.a) && (m1.b == m2.b) && (m1.c == m2.c) && (m1.d == m2.d)
+
+(m1:mat2) "!=" (m2:mat2) :<30 =
+    (m1.a != m2.a) || (m1.b != m2.b) || (m1.c != m2.c) || (m1.d != m2.d)
+
+(m1:mat2) "~"  (m2:mat2) :<30 =
+    (m1.a ~ m2.a) && (m1.b ~ m2.b) && (m1.c ~ m2.c) && (m1.d ~ m2.d)
 
 det(m:mat2)              = m.a * m.d - m.b * m.c
 trace(m:mat2)            = m.a + m.d
@@ -160,26 +180,3 @@ poly_newton(coeffs:vec, x0, steps = 12) = {
     x
 }
 
-# 5. Multidimensional Matrix Data Type (`$mat` via `[...]` Literals)
-"-" (m:mat, T)             :80  -> mat, T = @mscal(m, -1)
-(a:mat, T) "+"  (b:mat, T) :<50 -> mat, T = @madd(a, b)
-(a:mat, T) "-"  (b:mat, T) :<50 -> mat, T = @msub(a, b)
-(a:mat, T) into (b:mat, T) :>55 -> mat, T = @madd(a, b)
-(a:mat)    "*"  (b:mat)    :<60 -> mat    = @mmul(a, b)
-(m:mat, T) "*"  (s)        :<60 -> mat, T = @mscal(m, s)
-(s)        "*"  (m:mat, T) :<60 -> mat, T = @mscal(m, s)
-(m:mat, T) "/"  (s)        :<60 -> mat, T = @mscal(m, 1 / s)
-
-mat_zeros(r, c)              -> mat     = @mzero(r, c)
-mat_ones(r, c)               -> mat     = @mones(r, c)
-mat_eye(n)                   -> mat     = @meye(n)
-mat_fill(r, c, v:real, T)    -> mat, T  = @mfill(r, c, v)
-mat_rows(m:mat)                         = @mrows(m)
-mat_cols(m:mat)                         = @mcols(m)
-mat_rank(m:mat)                         = @mrank(m)
-mat_len(m:mat)                          = @mlen(m)
-mat_shape(m:mat)             -> vec     = @mshape(m)
-transpose(m:mat, T)          -> mat, T  = @mtrans(m)
-trace(m:mat, T)              -> real, T = @mtrace(m)
-det(m:mat)                              = @mdet(m)
-inv(m:mat)                   -> mat     = @minv(m)

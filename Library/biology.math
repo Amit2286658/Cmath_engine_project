@@ -5,6 +5,7 @@
 [biology]
 <[arith]
 <[trig]
+<[vec]
 <[chemistry]
 
 # 1. Population Genetics (Hardy-Weinberg Equilibrium `p + q = 1`, `p^2 + 2pq + q^2 = 1`)

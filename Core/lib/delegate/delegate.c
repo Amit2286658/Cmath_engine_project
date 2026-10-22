@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ============================================================================
@@ -33,6 +34,7 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "vec_type",      INTR_VEC_TYPE },
     { "mat_type",      INTR_MAT_TYPE },
     { "fn_type",       INTR_FN_TYPE },
+    { "map_type",      INTR_MAP_TYPE },
     { "lparen",        INTR_LPAREN },
     { "rparen",        INTR_RPAREN },
     { "lbrace",        INTR_LBRACE },
@@ -43,6 +45,7 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "seq",           INTR_SEQ },
     { "store",         INTR_STORE },
     { "while",         INTR_WHILE },
+    { "do_while",      INTR_DO_WHILE },
     { "if",            INTR_IF },
     { "or_branch",     INTR_OR_BRANCH },
     { "then_branch",   INTR_OR_BRANCH },
@@ -57,6 +60,7 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "continue_loop", INTR_CONTINUE_LOOP },
     { "return_fn",     INTR_RETURN_FN },
     { "lambda",        INTR_LAMBDA },
+    { "pipe",          INTR_PIPE },
     { "cand",          INTR_CAND },
     { "cor",           INTR_COR },
     { "cnot",          INTR_CNOT },
@@ -72,13 +76,20 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "calc_solve",    INTR_CALC_SOLVE },
     { "calc_fmin",     INTR_CALC_FMIN },
     { "calc_fmax",     INTR_CALC_FMAX },
+    { "calc_ode",      INTR_CALC_ODE },
+    { "calc_ode_vec",     INTR_CALC_ODE_VEC },
+    { "calc_ode_sys",     INTR_CALC_ODE_SYS },
+    { "calc_ode_coupled", INTR_CALC_ODE_COUPLED },
+    { "sym_diff",         INTR_SYM_DIFF },
+    { "sym_simplify",     INTR_SYM_SIMPLIFY },
+    { "sym_eval",         INTR_SYM_EVAL },
+    { "sym_taylor",       INTR_SYM_TAYLOR },
     { "field",         INTR_FIELD },
     { "vnew",          INTR_VNEW },
     { "vfill",         INTR_VFILL },
     { "vpush",         INTR_VPUSH },
     { "vpop",          INTR_VPOP },
     { "vshift",        INTR_VSHIFT },
-    { "vpeek",         INTR_VPEEK },
     { "vget",          INTR_VGET },
     { "vset",          INTR_VSET },
     { "vlen",          INTR_VLEN },
@@ -87,19 +98,19 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "vshrink",       INTR_VSHRINK },
     { "vclear",        INTR_VCLEAR },
     { "vrange",        INTR_VRANGE },
+    { "vrange_step",   INTR_VRANGE_STEP },
     { "vin",           INTR_VIN },
     { "fcall",         INTR_FCALL },
-    { "vmap",          INTR_VMAP },
-    { "vfilter",       INTR_VFILTER },
-    { "vreduce",       INTR_VREDUCE },
-    { "vany",          INTR_VANY },
-    { "vall",          INTR_VALL },
-    { "vfind",         INTR_VFIND },
-    { "vcount",        INTR_VCOUNT },
+    { "vsort",         INTR_VSORT },
+    { "map_new",       INTR_MAP_NEW },
+    { "map_set",       INTR_MAP_SET },
+    { "map_get",       INTR_MAP_GET },
+    { "map_has",       INTR_MAP_HAS },
+    { "map_del",       INTR_MAP_DEL },
+    { "map_keys",      INTR_MAP_KEYS },
+    { "map_vals",      INTR_MAP_VALS },
+    { "map_entries",   INTR_MAP_ENTRIES },
     { "mzero",         INTR_MZERO },
-    { "mones",         INTR_MONES },
-    { "meye",          INTR_MEYE },
-    { "mfill",         INTR_MFILL },
     { "mrows",         INTR_MROWS },
     { "mcols",         INTR_MCOLS },
     { "mrank",         INTR_MRANK },
@@ -110,9 +121,14 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "mscal",         INTR_MSCAL },
     { "mmul",          INTR_MMUL },
     { "mtrans",        INTR_MTRANS },
-    { "mtrace",        INTR_MTRACE },
     { "mdet",          INTR_MDET },
     { "minv",          INTR_MINV },
+    { "mlinsolve",     INTR_MLINSOLVE },
+    { "mhadamard",     INTR_MHADAMARD },
+    { "mreshape",      INTR_MRESHAPE },
+    { "meigvals",      INTR_MEIGVALS },
+    { "meigvecs",      INTR_MEIGVECS },
+    { "msvd",          INTR_MSVD },
     { "add",           INTR_ADD },
     { "sub",           INTR_SUB },
     { "mul",           INTR_MUL },
@@ -138,24 +154,36 @@ static const IntrEntry k_delegate_intrinsics[] = {
     { "sinh",          INTR_SINH },
     { "cosh",          INTR_COSH },
     { "tanh",          INTR_TANH },
+    { "erf",           INTR_ERF },
+    { "erfc",          INTR_ERFC },
+    { "gamma",         INTR_GAMMA },
+    { "lgamma",        INTR_LGAMMA },
     { "eq",            INTR_EQ },
     { "ne",            INTR_NE },
     { "lt",            INTR_LT },
     { "le",            INTR_LE },
     { "gt",            INTR_GT },
     { "ge",            INTR_GE },
-    { "approx",        INTR_APPROX },
-    { "land",          INTR_LAND },
-    { "lor",           INTR_LOR },
     { "lnot",          INTR_LNOT },
-    { "lxor",          INTR_LXOR },
-    { "lnor",          INTR_LNOR },
-    { "lnand",         INTR_LNAND },
+    { "band",          INTR_BAND },
+    { "bor",           INTR_BOR },
+    { "bxor",          INTR_BXOR },
+    { "bnot",          INTR_BNOT },
+    { "bshl",          INTR_BSHL },
+    { "bshr",          INTR_BSHR },
     { "raw",           INTR_RAW },
     { "type_name",     INTR_TYPE_NAME },
     { "unit_name",     INTR_UNIT_NAME },
     { "tostr",         INTR_TOSTR },
     { "fromstr",       INTR_FROMSTR },
+    { "str_fmt",       INTR_STR_FMT },
+    { "regex_match",   INTR_REGEX_MATCH },
+    { "regex_find",    INTR_REGEX_FIND },
+    { "regex_find_all",INTR_REGEX_FINDALL },
+    { "regex_replace", INTR_REGEX_REPLACE },
+    { "regex_split",   INTR_REGEX_SPLIT },
+    { "gc_compact",    INTR_GC_COMPACT },
+    { "pool_used",     INTR_POOL_USED },
     { "err",           INTR_ERR },
     { NULL,            INTR_NONE }
 };
@@ -168,6 +196,72 @@ IntrinsicId delegate_lookup_intrinsic(const char *s, uint16_t len) {
         }
     }
     return INTR_NONE;
+}
+
+/*Below section is the C's native token constructor for consuming type delegates @f64, @f64_trim1, @i64, @str_slice*/
+/*Construct $real (~ \d+ ("_" \d+)* ... => @f64), $iota (=> @f64_trim1), and $str (=> @str_slice)*/
+Value delegate_construct_token(MemArena *mem, const SymTable *tab,
+                               uint16_t type_id, const char *src,
+                               uint16_t off, uint16_t len) {
+    const TypeDef *td = &tab->types[type_id];
+    char tmp[64];
+    uint16_t copy_len = 0;
+    for (uint16_t i = 0; i < len && copy_len < 63; ++i) {
+        char ch = src[off + i];
+        if (ch == '_' && td->parser_intr != INTR_PARSE_STR_SLICE) continue;
+        tmp[copy_len++] = ch;
+    }
+    tmp[copy_len] = '\0';
+
+    switch (td->parser_intr) {
+        case INTR_PARSE_F64: {
+            if (copy_len >= 3 && tmp[0] == '0' && (tmp[1] == 'x' || tmp[1] == 'X')) {
+                unsigned long long u = strtoull(tmp + 2, NULL, 16);
+                return val_make_f64(mem, type_id, (double)u);
+            }
+            if (copy_len >= 3 && tmp[0] == '0' && (tmp[1] == 'b' || tmp[1] == 'B')) {
+                unsigned long long u = strtoull(tmp + 2, NULL, 2);
+                return val_make_f64(mem, type_id, (double)u);
+            }
+            double d = strtod(tmp, NULL);
+            return val_make_f64(mem, type_id, d);
+        }
+        case INTR_PARSE_F64_TRIM1: {
+            if (copy_len > 0) tmp[copy_len - 1] = '\0';
+            double d = strtod(tmp, NULL);
+            return val_make_f64(mem, type_id, d);
+        }
+        case INTR_PARSE_I64: {
+            double d = (double)strtoll(tmp, NULL, 10);
+            return val_make_f64(mem, type_id, d);
+        }
+        case INTR_PARSE_STR_SLICE: {
+            uint16_t s_off = off;
+            uint16_t s_len = len;
+            if (s_len >= 2 && src[s_off] == '"' && src[s_off + s_len - 1] == '"') {
+                s_off += 1;
+                s_len -= 2;
+            }
+            char ubuf[512];
+            uint16_t ulen = 0;
+            for (uint16_t k = 0; k < s_len && (size_t)ulen + 2u < sizeof(ubuf); ++k) {
+                char c = src[s_off + k];
+                if (c == '\\' && k + 1 < s_len) {
+                    char nx = src[s_off + k + 1];
+                    if (nx == '\\') { ubuf[ulen++] = '\\'; k++; continue; }
+                    if (nx == 'n')  { ubuf[ulen++] = '\n'; k++; continue; }
+                    if (nx == 't')  { ubuf[ulen++] = '\t'; k++; continue; }
+                    if (nx == 'r')  { ubuf[ulen++] = '\r'; k++; continue; }
+                    if (nx == '"')  { ubuf[ulen++] = '"';  k++; continue; }
+                }
+                ubuf[ulen++] = c;
+            }
+            StrSlice slice = mem_intern_str(mem, ubuf, ulen);
+            return val_make_str(mem, type_id, slice);
+        }
+        default:
+            return val_void();
+    }
 }
 
 /* ============================================================================
@@ -212,12 +306,125 @@ bool delegate_check_additive_unit_compat(MemArena *mem, const SymTable *tab,
     return false;
 }
 
+/*Below section is the C's native 7D compound SI dimensional exponent algebra for @mul, @div, @pow, @sqrt, @cbrt (driven by @dim in Library/units.math)*/
+/*Construct Compound unit formation & cancellation on *, /, ^, √/sqrt, cbrt across all 7 SI base units (m^L * kg^M * s^T * A^I * K^Th * mol^N * cd^J)*/
+static bool find_si_unit_dim(const SymTable *tab, uint8_t uid, UnitDimDef *out_dim) {
+    if (uid == MEM_UNIT_NONE) {
+        memset(out_dim, 0, sizeof(*out_dim));
+        out_dim->has_dim = 1;
+        return true;
+    }
+    if (!tab || uid >= tab->unit_count || !tab->unit_dims[uid].has_dim) return false;
+    *out_dim = tab->unit_dims[uid];
+    return true;
+}
+
+static uint8_t lookup_si_dim_unit_id(const SymTable *tab, const int exps[7]) {
+    bool all_zero = true;
+    for (int d = 0; d < 7; ++d) {
+        if (exps[d] != 0) { all_zero = false; break; }
+    }
+    if (all_zero) return MEM_UNIT_NONE;
+    if (!tab) return MEM_UNIT_NONE;
+    for (uint8_t u = 1; u < tab->unit_count; ++u) {
+        if (!tab->unit_dims[u].has_dim) continue;
+        bool match = true;
+        for (int d = 0; d < 7; ++d) {
+            if ((int)tab->unit_dims[u].exp[d] != exps[d]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return u;
+    }
+    return MEM_UNIT_NONE;
+}
+
+uint8_t delegate_resolve_mul_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub) {
+    (void)mem;
+    if (ua == MEM_UNIT_NONE) return ub;
+    if (ub == MEM_UNIT_NONE) return ua;
+    UnitDimDef da, db;
+    if (find_si_unit_dim(tab, ua, &da) && find_si_unit_dim(tab, ub, &db)) {
+        int sum_e[7];
+        for (int d = 0; d < 7; ++d) sum_e[d] = (int)da.exp[d] + (int)db.exp[d];
+        return lookup_si_dim_unit_id(tab, sum_e);
+    }
+    return (ua == ub) ? ua : MEM_UNIT_NONE;
+}
+
+uint8_t delegate_resolve_div_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub) {
+    (void)mem;
+    if (ub == MEM_UNIT_NONE) return ua;
+    if (ua == ub) return MEM_UNIT_NONE;
+    UnitDimDef da, db;
+    if (find_si_unit_dim(tab, ua, &da) && find_si_unit_dim(tab, ub, &db)) {
+        int diff_e[7];
+        for (int d = 0; d < 7; ++d) diff_e[d] = (int)da.exp[d] - (int)db.exp[d];
+        return lookup_si_dim_unit_id(tab, diff_e);
+    }
+    return MEM_UNIT_NONE;
+}
+
+uint8_t delegate_resolve_pow_unit(const MemArena *mem, const SymTable *tab,
+                                  uint8_t ua, uint8_t ub, double exp_val) {
+    (void)mem;
+    if (ub != MEM_UNIT_NONE || ua == MEM_UNIT_NONE) return MEM_UNIT_NONE;
+    if (fabs(exp_val) <= 1e-12) return MEM_UNIT_NONE;
+    if (fabs(exp_val - 1.0) <= 1e-12) return ua;
+    UnitDimDef da;
+    if (find_si_unit_dim(tab, ua, &da)) {
+        double r = floor(exp_val + 0.5);
+        if (fabs(exp_val - r) <= 1e-9 && r >= -4.0 && r <= 4.0) {
+            int k = (int)r;
+            int scaled[7];
+            for (int d = 0; d < 7; ++d) scaled[d] = (int)da.exp[d] * k;
+            return lookup_si_dim_unit_id(tab, scaled);
+        }
+        if (fabs(exp_val - 0.5) <= 1e-9 || fabs(exp_val - (1.0 / 3.0)) <= 1e-9) {
+            int root_n = (fabs(exp_val - 0.5) <= 1e-9) ? 2 : 3;
+            int scaled[7];
+            for (int d = 0; d < 7; ++d) {
+                if ((int)da.exp[d] % root_n != 0) return MEM_UNIT_NONE;
+                scaled[d] = (int)da.exp[d] / root_n;
+            }
+            return lookup_si_dim_unit_id(tab, scaled);
+        }
+        return MEM_UNIT_NONE;
+    }
+    return ua;
+}
+
+uint8_t delegate_resolve_root_unit(const MemArena *mem, const SymTable *tab,
+                                   uint8_t ua, int root_n) {
+    (void)mem;
+    if (ua == MEM_UNIT_NONE || root_n <= 0) return MEM_UNIT_NONE;
+    UnitDimDef da;
+    if (find_si_unit_dim(tab, ua, &da)) {
+        int scaled[7];
+        for (int d = 0; d < 7; ++d) {
+            if ((int)da.exp[d] % root_n != 0) return MEM_UNIT_NONE;
+            scaled[d] = (int)da.exp[d] / root_n;
+        }
+        return lookup_si_dim_unit_id(tab, scaled);
+    }
+    return ua;
+}
+
 bool delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
                                const char *ctx, int *out_int) {
     uint16_t tid = val_get_type(mem, v);
     if (tid == 0 || tid >= tab->type_count ||
         !tab->types[tid].is_consuming || tid == mem->str_type_id) {
         mem_err(mem, "Invalid non-numeric %s", ctx);
+        return false;
+    }
+    if (val_get_unit(mem, v) != MEM_UNIT_NONE &&
+        strcmp(ctx, "range start") != 0 &&
+        strcmp(ctx, "range end") != 0) {
+        mem_err(mem, "Expected unitless integer for %s", ctx);
         return false;
     }
     double d = val_get_f64(mem, v);
@@ -234,6 +441,149 @@ bool delegate_val_to_exact_int(MemArena *mem, const SymTable *tab, Value v,
     return true;
 }
 
+Value delegate_eval_range_step(MemArena *mem, const SymTable *tab,
+                               Value va, Value vb, Value vstep, int mode) {
+    uint16_t ta = val_get_type(mem, va);
+    uint16_t tb = val_get_type(mem, vb);
+    if (ta == 0 || ta >= tab->type_count || !tab->types[ta].is_consuming || ta == mem->str_type_id ||
+        tb == 0 || tb >= tab->type_count || !tab->types[tb].is_consuming || tb == mem->str_type_id) {
+        mem_err(mem, "Range bounds must be numeric scalars");
+        return val_void();
+    }
+    uint8_t elem_uid = MEM_UNIT_NONE;
+    if (!delegate_check_additive_unit_compat(mem, tab, "..", 2, va, vb, &elem_uid)) {
+        return val_void();
+    }
+    double da = val_get_f64(mem, va);
+    double db = val_get_f64(mem, vb);
+    double step = (da <= db) ? 1.0 : -1.0;
+
+    if (val_get_type(mem, vstep) != MEM_TYPE_VOID) {
+        uint16_t ts = val_get_type(mem, vstep);
+        if (ts == 0 || ts >= tab->type_count || !tab->types[ts].is_consuming || ts == mem->str_type_id) {
+            mem_err(mem, "Range step must be a numeric scalar");
+            return val_void();
+        }
+        uint8_t us = val_get_unit(mem, vstep);
+        if (us != MEM_UNIT_NONE && us != elem_uid) {
+            mem_err(mem, "Unit mismatch in stepped range 'by'");
+            return val_void();
+        }
+        step = val_get_f64(mem, vstep);
+        if (!isfinite(step) || fabs(step) <= 1e-15) {
+            mem_err(mem, "Range step cannot be zero");
+            return val_void();
+        }
+    } else {
+        int lo_i = 0, hi_i = 0;
+        if (!delegate_val_to_exact_int(mem, tab, va, "range start", &lo_i) ||
+            !delegate_val_to_exact_int(mem, tab, vb, "range end",   &hi_i)) {
+            return val_void();
+        }
+        da = (double)lo_i;
+        db = (double)hi_i;
+    }
+
+    double eps = 1e-11 * (1.0 + fabs(da) + fabs(db) + fabs(step));
+    long long start_k = (mode & 2) ? 1LL : 0LL;
+    double first_val  = da + (double)start_k * step;
+    long long cnt_ll  = 0;
+
+    if (step > 0.0) {
+        bool ok = (mode & 1) ? (first_val < db - eps) : (first_val <= db + eps);
+        if (ok) {
+            cnt_ll = (long long)floor(((db - first_val) + ((mode & 1) ? -eps : eps)) / step) + 1LL;
+        }
+    } else {
+        bool ok = (mode & 1) ? (first_val > db + eps) : (first_val >= db - eps);
+        if (ok) {
+            cnt_ll = (long long)floor(((first_val - db) + ((mode & 1) ? -eps : eps)) / (-step)) + 1LL;
+        }
+    }
+    if (cnt_ll < 0) cnt_ll = 0;
+    if (cnt_ll > (long long)MEM_MAX_F64_POOL) {
+        mem_err(mem, "Range length (%lld) exceeds pool capacity", cnt_ll);
+        return val_void();
+    }
+
+    uint16_t count    = (uint16_t)cnt_ll;
+    uint16_t elem_tid = mem->fast_real_type;
+    uint16_t packed_t = (uint16_t)(((uint32_t)elem_uid << 8u) | ((uint32_t)elem_tid & 0xFFu));
+    uint16_t hdr_idx  = mem_vec_alloc_hdr(mem, packed_t, count);
+    if (mem->has_error) return val_void();
+    if (count > 0) {
+        if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+        for (uint16_t i = 0; i < count; ++i) {
+            double v = da + (double)(start_k + (long long)i) * step;
+            if (fabs(v) < 1e-15) v = 0.0;
+            mem_write_pool(mem, (uint16_t)(data_idx + i), v);
+        }
+        mem_write_pool(mem, hdr_idx + 1, (double)count);
+    }
+    if (val_get_type(mem, vstep) == MEM_TYPE_VOID && hdr_idx != 0) {
+        uint8_t slot = (uint8_t)(mem->vrange_cnt++ & 3u);
+        mem->vrange_hdr[slot]  = hdr_idx;
+        mem->vrange_mode[slot] = (uint8_t)mode;
+        mem->vrange_unit[slot] = elem_uid;
+        mem->vrange_a[slot]    = da;
+        mem->vrange_b[slot]    = db;
+    }
+    return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+}
+
+bool delegate_extract_slice_indices(MemArena *mem, const SymTable *tab,
+                                    Value idx_val, int dim_len,
+                                    uint16_t *out_indices, uint16_t *out_count,
+                                    uint16_t max_cap) {
+    uint16_t tid = val_get_type(mem, idx_val);
+    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
+        uint16_t hdr_idx = val_get_pool_idx(idx_val);
+        uint16_t len     = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+        uint16_t dat_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+        if (len > max_cap) {
+            mem_err(mem, "Slice length (%u) exceeds maximum capacity (%u)", (unsigned)len, (unsigned)max_cap);
+            return false;
+        }
+        for (uint16_t i = 0; i < len; ++i) {
+            Value ev = val_make_f64(mem, mem->fast_real_type, mem_read_pool(mem, dat_idx + i));
+            int k = 0;
+            if (!delegate_val_to_exact_int(mem, tab, ev, "slice index", &k)) return false;
+            if (k < 0) k += dim_len;
+            if (k < 0 || k >= dim_len) {
+                mem_err(mem, "Slice index %d out of bounds (size=%d)", k, dim_len);
+                return false;
+            }
+            out_indices[i] = (uint16_t)k;
+        }
+        *out_count = len;
+        return true;
+    }
+    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
+        uint8_t  rank = 0;
+        uint16_t tot_len = 0, dat_idx = 0, dims[4] = { 0 };
+        delegate_mat_get_info(mem, idx_val, &rank, &tot_len, &dat_idx, dims);
+        if (rank != 1 || tot_len > max_cap) {
+            mem_err(mem, "Matrix slice index must be a 1D index vector");
+            return false;
+        }
+        for (uint16_t i = 0; i < tot_len; ++i) {
+            Value ev = val_make_f64(mem, mem->fast_real_type, mem_read_pool(mem, dat_idx + i));
+            int k = 0;
+            if (!delegate_val_to_exact_int(mem, tab, ev, "slice index", &k)) return false;
+            if (k < 0) k += dim_len;
+            if (k < 0 || k >= dim_len) {
+                mem_err(mem, "Slice index %d out of bounds (size=%d)", k, dim_len);
+                return false;
+            }
+            out_indices[i] = (uint16_t)k;
+        }
+        *out_count = tot_len;
+        return true;
+    }
+    return false;
+}
+
 /* ============================================================================
  * 2b. FIRST-CLASS LAMBDA (`$fn`) INVOCATION DELEGATE
  * ============================================================================ */
@@ -246,61 +596,90 @@ Value delegate_call_fn(MemArena *mem, SymTable *tab,
         mem_err(mem, "Expected function ($fn) handle");
         return val_void();
     }
-    uint16_t hdr_idx    = val_get_pool_idx(fn_val);
-    uint16_t body_ast   = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
-    uint8_t  param_cnt  = (uint8_t)mem_read_pool(mem, hdr_idx + 1);
-    uint32_t packed_slt = (uint32_t)mem_read_pool(mem, hdr_idx + 2);
-    uint16_t fbase      = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+    uint16_t hdr_idx     = val_get_pool_idx(fn_val);
+    uint16_t body_ast    = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+    uint8_t  param_cnt   = (uint8_t)((uint8_t)mem_read_pool(mem, hdr_idx + 1) & 0x3Fu);
+    uint32_t packed_slt  = (uint32_t)mem_read_pool(mem, hdr_idx + 2);
+    uint16_t slot_range  = (uint16_t)(packed_slt & 0xFFFFu);
+    uint16_t def_head    = (uint16_t)((packed_slt >> 16u) & 0xFFFFu);
+    uint8_t  slot_start  = (uint8_t)(slot_range & 0xFFu);
+    uint8_t  total_slots = (uint8_t)((slot_range >> 8u) & 0xFFu);
+    uint16_t fbase       = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
 
-    if (argc != param_cnt) {
-        mem_err(mem, "Lambda expects %u argument(s), got %u",
-                (unsigned)param_cnt, (unsigned)argc);
+    if (total_slots < param_cnt) total_slots = param_cnt;
+    if (total_slots > 64u) total_slots = 64u;
+
+    /* Count minimum required parameters (those without default ASTs in def_head) */
+    uint8_t min_req = param_cnt;
+    if (def_head != MEM_NO_IDX && def_head != 0) {
+        const AstNode *dl = mem_get_ast(mem, def_head);
+        if (dl->kind == AST_ARG_LINK && dl->sub < min_req) {
+            min_req = dl->sub;
+        }
+    }
+    if (argc < min_req || argc > param_cnt) {
+        if (min_req == param_cnt) {
+            mem_err(mem, "Lambda expects %u argument(s), got %u",
+                    (unsigned)param_cnt, (unsigned)argc);
+        } else {
+            mem_err(mem, "Function expects %u..%u argument(s), got %u",
+                    (unsigned)min_req, (unsigned)param_cnt, (unsigned)argc);
+        }
         return val_void();
     }
 
-    uint8_t slots[4] = {
-        (uint8_t)(packed_slt & 0xFFu),
-        (uint8_t)((packed_slt >> 8)  & 0xFFu),
-        (uint8_t)((packed_slt >> 16) & 0xFFu),
-        (uint8_t)((packed_slt >> 24) & 0xFFu)
-    };
-
-    uint16_t saved_sp = mem->sp;
-    uint16_t max_needed = fbase;
-    for (uint8_t k = 0; k < param_cnt; ++k) {
-        uint16_t pos = (uint16_t)(fbase + slots[k] + 1);
-        if (pos > max_needed) max_needed = pos;
-    }
+    uint16_t saved_sp   = mem->sp;
+    uint16_t max_needed = (uint16_t)(fbase + slot_start + total_slots);
     if (max_needed > MEM_MAX_CALL_STACK) {
-        mem_err(mem, "Call stack overflow in lambda invocation");
+        mem_err(mem, "Call stack overflow in function invocation");
         return val_void();
     }
     if (mem->sp < max_needed) {
         mem->sp = max_needed;
     }
 
-    Value   saved_vals[4];
-    uint8_t saved_ltype[4];
-    uint8_t saved_lunit[4];
-    for (uint8_t k = 0; k < param_cnt; ++k) {
-        uint16_t abs_s = (uint16_t)(fbase + slots[k]);
+    Value   saved_vals[64];
+    uint8_t saved_ltype[64];
+    uint8_t saved_lunit[64];
+    for (uint8_t k = 0; k < total_slots; ++k) {
+        uint16_t abs_s = (uint16_t)(fbase + slot_start + k);
         saved_vals[k]  = mem->stack[abs_s];
         saved_ltype[k] = mem->slot_locked_type[abs_s];
         saved_lunit[k] = mem->slot_locked_unit[abs_s];
         mem->slot_locked_type[abs_s] = 0;
         mem->slot_locked_unit[abs_s] = 0;
-        mem->stack[abs_s]            = args[k];
+        if (k < argc) {
+            mem->stack[abs_s] = args[k];
+        }
     }
 
-    Value res = eval_ast(mem, tab, body_ast, fbase, 0);
-    if (mem->jump_active == JUMP_RETURN) {
-        res = mem->jump_val;
-        mem->jump_val    = val_void();
-        mem->jump_active = JUMP_NONE;
+    /* Evaluate default parameter expressions for omitted trailing parameters */
+    if (argc < param_cnt && def_head != MEM_NO_IDX && def_head != 0) {
+        uint16_t cur_d = def_head;
+        while (cur_d != MEM_NO_IDX && !mem->has_error) {
+            const AstNode *dl = mem_get_ast(mem, cur_d);
+            uint8_t p_idx = dl->sub;
+            if (p_idx >= argc && p_idx < param_cnt) {
+                Value dval = eval_ast(mem, tab, dl->left, fbase, 0);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) break;
+                mem->stack[fbase + slot_start + p_idx] = dval;
+            }
+            cur_d = dl->right;
+        }
     }
 
-    for (uint8_t k = 0; k < param_cnt; ++k) {
-        uint16_t abs_s = (uint16_t)(fbase + slots[k]);
+    Value res = val_void();
+    if (!mem->has_error && mem->jump_active == JUMP_NONE) {
+        res = eval_ast(mem, tab, body_ast, fbase, 0);
+        if (mem->jump_active == JUMP_RETURN) {
+            res = mem->jump_val;
+            mem->jump_val    = val_void();
+            mem->jump_active = JUMP_NONE;
+        }
+    }
+
+    for (uint8_t k = 0; k < total_slots; ++k) {
+        uint16_t abs_s = (uint16_t)(fbase + slot_start + k);
         mem->stack[abs_s]            = saved_vals[k];
         mem->slot_locked_type[abs_s] = saved_ltype[k];
         mem->slot_locked_unit[abs_s] = saved_lunit[k];
@@ -347,44 +726,6 @@ Value delegate_vec_read_elem(MemArena *mem, const SymTable *tab,
     }
 }
 
-static bool seq_coll_len(const MemArena *mem, Value coll, uint16_t *out_len) {
-    uint16_t tid = val_get_type(mem, coll);
-    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
-        uint16_t hdr_idx = val_get_pool_idx(coll);
-        *out_len = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
-        return true;
-    }
-    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
-        uint16_t tot_len = 0, dims[4] = { 0 };
-        delegate_mat_get_info(mem, coll, NULL, &tot_len, NULL, dims);
-        *out_len = tot_len;
-        return true;
-    }
-    return false;
-}
-
-static Value seq_coll_get(MemArena *mem, const SymTable *tab, Value coll, uint16_t idx) {
-    uint16_t tid = val_get_type(mem, coll);
-    if (tid == mem->vec_type_id && mem->vec_type_id != 0) {
-        uint16_t hdr_idx  = val_get_pool_idx(coll);
-        uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
-        uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-        uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8) & 0xFFu);
-        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
-        uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
-                            ? tab->types[elem_tid].flat_size : 1;
-        return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
-                                      (uint16_t)(data_idx + idx * stride));
-    }
-    if (tid == mem->mat_type_id && mem->mat_type_id != 0) {
-        uint16_t data_idx = 0, dims[4] = { 0 };
-        delegate_mat_get_info(mem, coll, NULL, NULL, &data_idx, dims);
-        uint8_t u = val_get_unit(mem, coll);
-        return val_make_f64_unit(mem, mem->fast_real_type, u, mem_read_pool(mem, data_idx + idx));
-    }
-    return val_void();
-}
-
 /*Below section is the C's native for operator/function delegates @fcall, @vmap, @vfilter, @vreduce, @vany, @vall, @vfind, @vcount, @vnew, @vfill, @vrange, @vin, @vpush, @vpop, @vshift, @vpeek, @vget, @vset, @vlen, @vcap, @vresize, @vshrink, @vclear*/
 /*Construct call(f, ...), map, filter, reduce, fold, any, all, find, count_if, vec/list/stack/queue, .., ..., ..<, <.., in, into, push, pop, enqueue, dequeue, shift, peek, top, front, back*/
 Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
@@ -397,138 +738,181 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
             return val_void();
         }
         uint16_t hdr_idx   = val_get_pool_idx(a);
-        uint8_t  param_cnt = (uint8_t)mem_read_pool(mem, hdr_idx + 1);
+        uint8_t  param_cnt = (uint8_t)((uint8_t)mem_read_pool(mem, hdr_idx + 1) & 0x3Fu);
         Value args[2] = { b, c };
         return delegate_call_fn(mem, tab, a, param_cnt, args);
+    }
+
+    /*Below section is the C's native for operator/function delegates @map_new..@map_entries and @vlen/@vclear/@vin on $map*/
+    /*Construct map(), dict(), m[k], m[k] = v, k in m, map_set, map_get, map_has, map_del, keys(m), vals(m), entries(m)*/
+    if (intr >= INTR_MAP_NEW && intr <= INTR_MAP_ENTRIES) {
+        if (mem->map_type_id == 0) {
+            mem_err(mem, "Map type ($map) is not loaded");
+            return val_void();
+        }
+        if (intr == INTR_MAP_NEW) {
+            int cap_in = 0;
+            if (val_get_type(mem, a) != MEM_TYPE_VOID) {
+                if (!delegate_val_to_exact_int(mem, tab, a, "map capacity", &cap_in)) return val_void();
+            }
+            if (cap_in < 0 || cap_in > MEM_MAX_F64_POOL / 2) {
+                mem_err(mem, "Map capacity out of range (%d)", cap_in);
+                return val_void();
+            }
+            uint16_t hdr_idx = mem_map_alloc_hdr(mem, 0, (uint16_t)cap_in);
+            if (mem->has_error) return val_void();
+            return val_make_comp(mem, mem->map_type_id, hdr_idx, MEM_MAP_HDR_SLOTS);
+        }
+        if (val_get_type(mem, a) != mem->map_type_id) {
+            mem_err(mem, "Expected map ($map) as first argument");
+            return val_void();
+        }
+        uint16_t hdr_idx  = val_get_pool_idx(a);
+        uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
+        uint16_t lock_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+        uint8_t  lock_uid = (uint8_t)((raw_hdr0 >> 8u) & 0xFFu);
+        uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+
+        if (intr == INTR_MAP_KEYS) {
+            uint16_t vhdr = mem_vec_alloc_hdr(mem, mem->str_type_id, len);
+            if (mem->has_error) return val_void();
+            Value out_v = val_make_comp(mem, mem->vec_type_id, vhdr, MEM_VEC_HDR_SLOTS);
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                StrSlice ks = mem_map_entry_key(mem, data_idx, i);
+                Value kv = val_make_str(mem, mem->str_type_id, ks);
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_v, kv, val_void());
+            }
+            return out_v;
+        }
+        if (intr == INTR_MAP_VALS) {
+            uint16_t vhdr = mem_vec_alloc_hdr(mem, 0, len);
+            if (mem->has_error) return val_void();
+            Value out_v = val_make_comp(mem, mem->vec_type_id, vhdr, MEM_VEC_HDR_SLOTS);
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                Value vv = mem_map_entry_val(mem, data_idx, i);
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_v, vv, val_void());
+            }
+            return out_v;
+        }
+        if (intr == INTR_MAP_ENTRIES) {
+            uint16_t vhdr = mem_vec_alloc_hdr(mem, mem->str_type_id, len);
+            if (mem->has_error) return val_void();
+            Value out_v = val_make_comp(mem, mem->vec_type_id, vhdr, MEM_VEC_HDR_SLOTS);
+            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
+                StrSlice ks = mem_map_entry_key(mem, data_idx, i);
+                Value    vv = mem_map_entry_val(mem, data_idx, i);
+                Value    vs = delegate_eval_intrinsic(mem, tab, INTR_TOSTR, vv, val_void(), val_void(), 0);
+                if (mem->has_error) return val_void();
+                StrSlice vslice = val_get_str(mem, vs);
+                char ebuf[192];
+                int elen = snprintf(ebuf, sizeof(ebuf), "%.*s=%.*s",
+                                    (int)ks.len, mem_str_ptr(mem, ks),
+                                    (int)vslice.len, mem_str_ptr(mem, vslice));
+                if (elen < 0) elen = 0;
+                if ((size_t)elen >= sizeof(ebuf)) elen = (int)(sizeof(ebuf) - 1);
+                Value ev = val_make_str(mem, mem->str_type_id, mem_intern_str(mem, ebuf, (uint16_t)elen));
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_v, ev, val_void());
+            }
+            return out_v;
+        }
+
+        /* Convert key `b` to StrSlice (either direct $str or stringified scalar) */
+        StrSlice key_s = { 0, 0 };
+        if (val_get_type(mem, b) == mem->str_type_id && mem->str_type_id != 0) {
+            key_s = val_get_str(mem, b);
+        } else {
+            Value sb = delegate_eval_intrinsic(mem, tab, INTR_TOSTR, b, val_void(), val_void(), 0);
+            if (mem->has_error) return val_void();
+            key_s = val_get_str(mem, sb);
+        }
+
+        int found_idx = -1;
+        for (uint16_t i = 0; i < len; ++i) {
+            StrSlice ks = mem_map_entry_key(mem, data_idx, i);
+            if (mem_slice_eq(mem, ks, key_s)) {
+                found_idx = (int)i;
+                break;
+            }
+        }
+
+        if (intr == INTR_MAP_HAS) {
+            return val_make_f64(mem, mem->fast_real_type, (found_idx >= 0) ? 1.0 : 0.0);
+        }
+        if (intr == INTR_MAP_GET) {
+            if (found_idx >= 0) {
+                return mem_map_entry_val(mem, data_idx, (uint16_t)found_idx);
+            }
+            if (val_get_type(mem, c) != MEM_TYPE_VOID) {
+                return c; /* get_or(m, key, default_val) */
+            }
+            mem_err(mem, "Key '%.*s' not found in map", (int)key_s.len, mem_str_ptr(mem, key_s));
+            return val_void();
+        }
+        if (intr == INTR_MAP_DEL) {
+            if (found_idx >= 0) {
+                uint16_t new_len = (uint16_t)(len - 1);
+                for (uint16_t i = (uint16_t)found_idx; i < new_len; ++i) {
+                    StrSlice nk = mem_map_entry_key(mem, data_idx, (uint16_t)(i + 1));
+                    Value    nv = mem_map_entry_val(mem, data_idx, (uint16_t)(i + 1));
+                    mem_map_set_entry(mem, data_idx, i, nk, nv);
+                }
+                mem_write_pool(mem, hdr_idx + 1, (double)new_len);
+            }
+            return a;
+        }
+        if (intr == INTR_MAP_SET) {
+            uint16_t v_tid = val_get_type(mem, c);
+            uint8_t  v_uid = val_get_unit(mem, c);
+            if (lock_tid != 0 && lock_tid != v_tid) {
+                char exp_t[32], got_t[32];
+                sym_type_name(tab, mem, lock_tid, exp_t, sizeof(exp_t));
+                sym_type_name(tab, mem, v_tid, got_t, sizeof(got_t));
+                mem_err(mem, "Map value type mismatch: expected '%s', got '%s'", exp_t, got_t);
+                return val_void();
+            }
+            if (lock_uid != 0 && lock_uid != v_uid) {
+                mem_err(mem, "Map value unit mismatch");
+                return val_void();
+            }
+            Value stored_v = c;
+            if (v_tid != 0 && v_tid < tab->type_count && !tab->types[v_tid].is_consuming &&
+                v_tid != mem->vec_type_id && v_tid != mem->mat_type_id &&
+                v_tid != mem->fn_type_id && v_tid != mem->map_type_id) {
+                stored_v = val_clone_comp(mem, c, tab->types[v_tid].flat_size);
+                if (mem->has_error) return val_void();
+            }
+            if (found_idx >= 0) {
+                mem_map_set_entry(mem, data_idx, (uint16_t)found_idx, key_s, stored_v);
+                return a;
+            }
+            if (!mem_map_reserve(mem, hdr_idx, (uint16_t)(len + 1))) {
+                return val_void();
+            }
+            data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            mem_map_set_entry(mem, data_idx, len, key_s, stored_v);
+            mem_write_pool(mem, hdr_idx + 1, (double)(len + 1));
+            return a;
+        }
+    }
+
+    if (mem->map_type_id != 0 && val_get_type(mem, a) == mem->map_type_id) {
+        uint16_t hdr_idx = val_get_pool_idx(a);
+        if (intr == INTR_VLEN) {
+            return val_make_f64(mem, mem->fast_real_type, mem_read_pool(mem, hdr_idx + 1));
+        }
+        if (intr == INTR_VCLEAR) {
+            mem_write_pool(mem, hdr_idx + 1, 0.0);
+            return a;
+        }
+    }
+    if (intr == INTR_VIN && mem->map_type_id != 0 && val_get_type(mem, b) == mem->map_type_id) {
+        return delegate_eval_vec_intrinsic(mem, tab, INTR_MAP_HAS, b, a, val_void());
     }
 
     if (mem->vec_type_id == 0) {
         mem_err(mem, "Dynamic vector type ($vec) is not loaded");
         return val_void();
-    }
-
-    /*Below section is the C's native for operator delegates @vmap, @vfilter, @vreduce, @vany, @vall, @vfind, @vcount*/
-    /*Construct map(v, f), filter(v, f), reduce(v, f), fold(v, init, f), any(v, f), all(v, f), find(v, f), count_if(v, f)*/
-    if (intr >= INTR_VMAP && intr <= INTR_VCOUNT) {
-        uint16_t len = 0;
-        if (!seq_coll_len(mem, a, &len)) {
-            mem_err(mem, "Expected vector ($vec) or matrix ($mat) as first argument");
-            return val_void();
-        }
-        if (intr == INTR_VMAP) {
-            if (val_get_type(mem, a) == mem->mat_type_id && mem->mat_type_id != 0) {
-                uint8_t  rank = 0;
-                uint16_t tot_len = 0, dat_in = 0, dims[4] = { 0 };
-                delegate_mat_get_info(mem, a, &rank, &tot_len, &dat_in, dims);
-                uint16_t out_tot = 0, out_dat = 0;
-                uint16_t out_hdr = mem_mat_alloc_hdr(mem, rank, dims, &out_tot, &out_dat);
-                if (mem->has_error) return val_void();
-                uint8_t out_u = MEM_UNIT_NONE;
-                for (uint16_t i = 0; i < tot_len && !mem->has_error; ++i) {
-                    Value item   = seq_coll_get(mem, tab, a, i);
-                    Value mapped = delegate_call_fn(mem, tab, b, 1, &item);
-                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                    if (i == 0) out_u = val_get_unit(mem, mapped);
-                    mem_write_pool(mem, (uint16_t)(out_dat + i), val_get_f64(mem, mapped));
-                }
-                return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, out_hdr, MEM_MAT_HDR_SLOTS), out_u);
-            }
-            uint16_t out_hdr = mem_vec_alloc_hdr(mem, 0, len);
-            if (mem->has_error) return val_void();
-            Value out_vec = val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item   = seq_coll_get(mem, tab, a, i);
-                Value mapped = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, mapped, val_void());
-            }
-            return out_vec;
-        }
-        if (intr == INTR_VFILTER) {
-            uint16_t out_hdr = mem_vec_alloc_hdr(mem, 0, len);
-            if (mem->has_error) return val_void();
-            Value out_vec = val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item = seq_coll_get(mem, tab, a, i);
-                Value keep = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                if (fabs(val_get_f64(mem, keep)) > 1e-15) {
-                    (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, item, val_void());
-                }
-            }
-            return out_vec;
-        }
-        if (intr == INTR_VREDUCE) {
-            bool is_two_arg = (val_get_type(mem, b) == mem->fn_type_id && mem->fn_type_id != 0);
-            if (is_two_arg) {
-                if (len == 0) {
-                    mem_err(mem, "Cannot reduce an empty collection without an initial value");
-                    return val_void();
-                }
-                Value acc = seq_coll_get(mem, tab, a, 0);
-                for (uint16_t i = 1; i < len && !mem->has_error; ++i) {
-                    Value item = seq_coll_get(mem, tab, a, i);
-                    Value call_args[2] = { acc, item };
-                    acc = delegate_call_fn(mem, tab, b, 2, call_args);
-                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                }
-                return acc;
-            } else {
-                Value acc = b;
-                for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                    Value item = seq_coll_get(mem, tab, a, i);
-                    Value call_args[2] = { acc, item };
-                    acc = delegate_call_fn(mem, tab, c, 2, call_args);
-                    if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                }
-                return acc;
-            }
-        }
-        if (intr == INTR_VANY) {
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item = seq_coll_get(mem, tab, a, i);
-                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
-                    return val_make_f64(mem, mem->fast_real_type, 1.0);
-                }
-            }
-            return val_make_f64(mem, mem->fast_real_type, 0.0);
-        }
-        if (intr == INTR_VALL) {
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item = seq_coll_get(mem, tab, a, i);
-                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                if (fabs(val_get_f64(mem, cond)) <= 1e-15) {
-                    return val_make_f64(mem, mem->fast_real_type, 0.0);
-                }
-            }
-            return val_make_f64(mem, mem->fast_real_type, 1.0);
-        }
-        if (intr == INTR_VFIND) {
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item = seq_coll_get(mem, tab, a, i);
-                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
-                    return item;
-                }
-            }
-            return val_make_f64(mem, mem->fast_real_type, 0.0);
-        }
-        if (intr == INTR_VCOUNT) {
-            uint16_t hits = 0;
-            for (uint16_t i = 0; i < len && !mem->has_error; ++i) {
-                Value item = seq_coll_get(mem, tab, a, i);
-                Value cond = delegate_call_fn(mem, tab, b, 1, &item);
-                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
-                if (fabs(val_get_f64(mem, cond)) > 1e-15) {
-                    hits++;
-                }
-            }
-            return val_make_f64(mem, mem->fast_real_type, (double)hits);
-        }
     }
 
     /*Below section is the C's native for operator delegate @vnew*/
@@ -573,52 +957,123 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
         return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
     }
 
-    /*Below section is the C's native for operator delegate @vrange*/
-    /*Construct a...b (inclusive), a..<b (right-open), a<..b (left-open), a..b (open)*/
-    if (intr == INTR_VRANGE) {
-        int lo = 0, hi = 0;
-        if (!delegate_val_to_exact_int(mem, tab, a, "range start", &lo) ||
-            !delegate_val_to_exact_int(mem, tab, b, "range end",   &hi)) {
-            return val_void();
+    /*Below section is the C's native for operator delegates @vlen and @vget on $str*/
+    /*Construct len(s:str), at(s:str, i), s[i], s[a...b], and s[a...b by step]*/
+    if (val_get_type(mem, a) == mem->str_type_id && mem->str_type_id != 0) {
+        if (intr == INTR_VLEN) {
+            return val_make_f64(mem, mem->fast_real_type, (double)val_get_str(mem, a).len);
         }
-        uint8_t elem_uid = MEM_UNIT_NONE;
-        if (!delegate_check_additive_unit_compat(mem, tab, "..", 2, a, b, &elem_uid)) {
-            return val_void();
-        }
-        int mode = (val_get_type(mem, c) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, c) : 0;
-        int step = (lo <= hi) ? 1 : -1;
-        if (mode & 2) lo += step; /* bit 1: exclude start */
-        if (mode & 1) hi -= step; /* bit 0: exclude end   */
-
-        long long cnt_ll = 0;
-        if ((step == 1 && lo <= hi) || (step == -1 && lo >= hi)) {
-            cnt_ll = (step == 1)
-                     ? ((long long)hi - (long long)lo + 1LL)
-                     : ((long long)lo - (long long)hi + 1LL);
-        }
-        if (cnt_ll > (long long)MEM_MAX_F64_POOL) {
-            mem_err(mem, "Range length (%lld) exceeds pool capacity", cnt_ll);
-            return val_void();
-        }
-        uint16_t count    = (uint16_t)cnt_ll;
-        uint16_t elem_tid = mem->fast_real_type;
-        uint16_t packed_t = (uint16_t)(((uint32_t)elem_uid << 8u) | ((uint32_t)elem_tid & 0xFFu));
-        uint16_t hdr_idx  = mem_vec_alloc_hdr(mem, packed_t, count);
-        if (mem->has_error) return val_void();
-        if (count > 0) {
-            if (!mem_vec_reserve(mem, hdr_idx, 1, count)) return val_void();
-            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
-            for (uint16_t i = 0; i < count; ++i) {
-                mem_write_pool(mem, (uint16_t)(data_idx + i), (double)(lo + (int)i * step));
+        if (intr == INTR_VGET) {
+            StrSlice str_s = val_get_str(mem, a);
+            uint16_t b_tid = val_get_type(mem, b);
+            if ((b_tid == mem->vec_type_id && mem->vec_type_id != 0) ||
+                (b_tid == mem->mat_type_id && mem->mat_type_id != 0)) {
+                uint16_t slice_idx[128];
+                uint16_t slice_cnt = 0;
+                if (!delegate_extract_slice_indices(mem, tab, b, (int)str_s.len,
+                                                    slice_idx, &slice_cnt, 128)) {
+                    return val_void();
+                }
+                char buf[256];
+                uint16_t out_len = (slice_cnt < (uint16_t)(sizeof(buf) - 1))
+                                   ? slice_cnt : (uint16_t)(sizeof(buf) - 1);
+                const char *sp = mem_str_ptr(mem, str_s);
+                for (uint16_t i = 0; i < out_len; ++i) {
+                    buf[i] = sp[slice_idx[i]];
+                }
+                StrSlice out_s = mem_intern_str(mem, buf, out_len);
+                if (mem->has_error) return val_void();
+                return val_make_str(mem, mem->str_type_id, out_s);
+            } else {
+                int k = 0;
+                if (!delegate_val_to_exact_int(mem, tab, b, "string index", &k)) {
+                    return val_void();
+                }
+                if (k < 0) k += (int)str_s.len;
+                if (k < 0 || k >= (int)str_s.len) {
+                    mem_err(mem, "String index %d out of bounds (len=%u)", k, (unsigned)str_s.len);
+                    return val_void();
+                }
+                const char *sp = mem_str_ptr(mem, str_s);
+                StrSlice ch_s = mem_intern_str(mem, sp + k, 1);
+                if (mem->has_error) return val_void();
+                return val_make_str(mem, mem->str_type_id, ch_s);
             }
-            mem_write_pool(mem, hdr_idx + 1, (double)count);
         }
-        return val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+    }
+
+    /*Below section is the C's native for operator delegates @vrange and @vrange_step*/
+    /*Construct a...b, a..<b, a<..b, a..b, and stepped ranges (a...b by step) / strided vectors (v by step)*/
+    if (intr == INTR_VRANGE) {
+        int mode = (val_get_type(mem, c) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, c) : 0;
+        return delegate_eval_range_step(mem, tab, a, b, val_void(), mode);
+    }
+    if (intr == INTR_VRANGE_STEP) {
+        if (val_get_type(mem, a) != mem->vec_type_id) {
+            return delegate_eval_range_step(mem, tab, a, b, c, 0);
+        }
+        uint16_t rng_hdr = val_get_pool_idx(a);
+        for (uint8_t k = 0; k < 4; ++k) {
+            if (rng_hdr != 0 && mem->vrange_hdr[k] == rng_hdr) {
+                Value va = val_make_f64_unit(mem, mem->fast_real_type, mem->vrange_unit[k], mem->vrange_a[k]);
+                Value vb = val_make_f64_unit(mem, mem->fast_real_type, mem->vrange_unit[k], mem->vrange_b[k]);
+                return delegate_eval_range_step(mem, tab, va, vb, b, (int)mem->vrange_mode[k]);
+            }
+        }
+        int step_k = 0;
+        if (!delegate_val_to_exact_int(mem, tab, b, "vector stride step", &step_k) || step_k == 0) {
+            if (!mem->has_error) mem_err(mem, "Range or vector step cannot be zero");
+            return val_void();
+        }
+        uint16_t src_hdr  = val_get_pool_idx(a);
+        uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, src_hdr + 0);
+        uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+        uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8) & 0xFFu);
+        uint16_t src_len  = (uint16_t)mem_read_pool(mem, src_hdr + 1);
+        uint16_t src_dat  = (uint16_t)mem_read_pool(mem, src_hdr + 3);
+        uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
+                            ? tab->types[elem_tid].flat_size : 1;
+
+        uint32_t abs_step = (uint32_t)(step_k > 0 ? step_k : -step_k);
+        uint16_t out_hdr  = mem_vec_alloc_hdr(mem, raw_hdr0, (uint16_t)(((uint32_t)src_len / abs_step) + 1u));
+        if (mem->has_error) return val_void();
+        Value out_vec = val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+        if (src_len > 0) {
+            if (step_k > 0) {
+                for (int idx = 0; idx < (int)src_len && !mem->has_error; idx += step_k) {
+                    Value item = delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
+                                                        (uint16_t)(src_dat + (uint16_t)idx * stride));
+                    (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, item, val_void());
+                }
+            } else {
+                for (int idx = (int)src_len - 1; idx >= 0 && !mem->has_error; idx += step_k) {
+                    Value item = delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
+                                                        (uint16_t)(src_dat + (uint16_t)idx * stride));
+                    (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, out_vec, item, val_void());
+                }
+            }
+        }
+        return out_vec;
     }
 
     /*Below section is the C's native for operator delegate @vin*/
     /*Construct item in vec, item in mat, item in a...b*/
     if (intr == INTR_VIN) {
+        if (val_get_type(mem, b) == mem->str_type_id && mem->str_type_id != 0 &&
+            val_get_type(mem, a) == mem->str_type_id) {
+            StrSlice needle = val_get_str(mem, a);
+            StrSlice hay    = val_get_str(mem, b);
+            if (needle.len == 0) return val_make_f64(mem, mem->fast_real_type, 1.0);
+            if (needle.len > hay.len) return val_make_f64(mem, mem->fast_real_type, 0.0);
+            const char *np = mem_str_ptr(mem, needle);
+            const char *hp = mem_str_ptr(mem, hay);
+            for (uint16_t i = 0; i + needle.len <= hay.len; ++i) {
+                if (memcmp(hp + i, np, needle.len) == 0) {
+                    return val_make_f64(mem, mem->fast_real_type, 1.0);
+                }
+            }
+            return val_make_f64(mem, mem->fast_real_type, 0.0);
+        }
         if (val_get_type(mem, b) == mem->mat_type_id && mem->mat_type_id != 0) {
             uint8_t  rank = 0;
             uint16_t tot_len = 0, data_idx = 0, dims[4] = { 0 };
@@ -765,7 +1220,7 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
             if (elem_tid != 0 && elem_tid < tab->type_count &&
                 !tab->types[elem_tid].is_consuming &&
                 elem_tid != mem->vec_type_id && elem_tid != mem->mat_type_id &&
-                elem_tid != mem->fn_type_id) {
+                elem_tid != mem->fn_type_id && elem_tid != mem->map_type_id) {
                 first = val_clone_comp(mem, first, stride);
                 if (mem->has_error) return val_void();
             }
@@ -777,19 +1232,6 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
             }
             mem_write_pool(mem, hdr_idx + 1, (double)new_len);
             return first;
-        }
-
-        /*Below section is the C's native for operator delegate @vpeek*/
-        /*Construct peek(s), top(s), back(s) (mode 0) and front(q) (mode 1)*/
-        case INTR_VPEEK: {
-            if (len == 0) {
-                mem_err(mem, "Cannot peek into an empty vector");
-                return val_void();
-            }
-            int mode = (val_get_type(mem, b) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, b) : 0;
-            uint16_t idx = (mode == 1) ? 0u : (uint16_t)(len - 1);
-            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
-            return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid, (uint16_t)(data_idx + idx * stride));
         }
 
         /*Below section is the C's native for operator delegates @vget and @vset*/
@@ -851,6 +1293,55 @@ Value delegate_eval_vec_intrinsic(MemArena *mem, SymTable *tab,
             mem_write_pool(mem, hdr_idx + 1, (double)new_len);
             return a;
         }
+        /*Below section is the C's native for operator delegate @vsort*/
+        /*Construct sort(v) (mode 0 ascending) and sort_desc(v) (mode 1 descending)*/
+        case INTR_VSORT: {
+            int desc = (val_get_type(mem, b) != MEM_TYPE_VOID && fabs(val_get_f64(mem, b)) > 1e-15) ? 1 : 0;
+            uint16_t out_hdr = mem_vec_alloc_hdr(mem, elem_tid, len);
+            if (mem->has_error) return val_void();
+            mem_write_pool(mem, out_hdr + 0, (double)raw_hdr0);
+            if (len == 0) {
+                return val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+            }
+            if (elem_tid == 0 || elem_tid >= tab->type_count || !tab->types[elem_tid].is_consuming) {
+                mem_err(mem, "sort() requires a vector of scalar or string elements");
+                return val_void();
+            }
+            if (!mem_vec_reserve(mem, out_hdr, 1, len)) return val_void();
+            uint16_t src_data = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            uint16_t dst_data = (uint16_t)mem_read_pool(mem, out_hdr + 3);
+            memcpy(&mem->f64_pool[dst_data], &mem->f64_pool[src_data], (size_t)len * sizeof(double));
+            mem_write_pool(mem, out_hdr + 1, (double)len);
+
+            bool is_str = (elem_tid == mem->str_type_id && mem->str_type_id != 0);
+            for (uint16_t gap = (uint16_t)(len / 2u); gap > 0u; gap = (uint16_t)(gap / 2u)) {
+                for (uint16_t i = gap; i < len; ++i) {
+                    double temp = mem->f64_pool[dst_data + i];
+                    uint16_t j = i;
+                    while (j >= gap) {
+                        double prev = mem->f64_pool[dst_data + j - gap];
+                        bool swap_needed = false;
+                        if (is_str) {
+                            uint32_t pa = (uint32_t)prev;
+                            uint32_t pb = (uint32_t)temp;
+                            StrSlice sa = { (uint16_t)(pa >> 16), (uint16_t)(pa & 0xFFFFu) };
+                            StrSlice sb = { (uint16_t)(pb >> 16), (uint16_t)(pb & 0xFFFFu) };
+                            uint16_t min_l = (sa.len < sb.len) ? sa.len : sb.len;
+                            int cmp = (min_l > 0) ? memcmp(mem_str_ptr(mem, sa), mem_str_ptr(mem, sb), min_l) : 0;
+                            if (cmp == 0) cmp = (int)sa.len - (int)sb.len;
+                            swap_needed = desc ? (cmp < 0) : (cmp > 0);
+                        } else {
+                            swap_needed = desc ? (prev < temp) : (prev > temp);
+                        }
+                        if (!swap_needed) break;
+                        mem->f64_pool[dst_data + j] = prev;
+                        j = (uint16_t)(j - gap);
+                    }
+                    mem->f64_pool[dst_data + j] = temp;
+                }
+            }
+            return val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+        }
         default:
             return val_void();
     }
@@ -888,7 +1379,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
         return val_void();
     }
 
-    if (intr == INTR_MZERO || intr == INTR_MONES || intr == INTR_MFILL) {
+    if (intr == INTR_MZERO) {
         int r_in = 0, c_in = 0;
         if (!delegate_val_to_exact_int(mem, tab, a, "matrix rows", &r_in) ||
             !delegate_val_to_exact_int(mem, tab, b, "matrix cols", &c_in)) {
@@ -902,34 +1393,128 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
         uint16_t tot_len = 0, data_idx = 0;
         uint16_t hdr_idx = mem_mat_alloc_hdr(mem, 2, dims, &tot_len, &data_idx);
         if (mem->has_error) return val_void();
-
-        double fill_v = (intr == INTR_MONES) ? 1.0 :
-                        (intr == INTR_MFILL) ? val_get_f64(mem, c) : 0.0;
-        uint8_t uid   = (intr == INTR_MFILL) ? val_get_unit(mem, c) : MEM_UNIT_NONE;
-        if (fill_v != 0.0) {
-            for (uint16_t i = 0; i < tot_len; ++i) {
-                mem_write_pool(mem, data_idx + i, fill_v);
-            }
-        }
-        return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_idx, MEM_MAT_HDR_SLOTS), uid);
+        return val_make_comp(mem, mem->mat_type_id, hdr_idx, MEM_MAT_HDR_SLOTS);
     }
 
-    if (intr == INTR_MEYE) {
-        int n_in = 0;
-        if (!delegate_val_to_exact_int(mem, tab, a, "identity matrix size", &n_in)) return val_void();
-        if (n_in <= 0 || n_in > 4096) {
-            mem_err(mem, "Identity matrix size must be positive (%d)", n_in);
+    if (intr == INTR_MRESHAPE) {
+        int r_in = 0, c_in = 0;
+        if (!delegate_val_to_exact_int(mem, tab, b, "reshape rows", &r_in) ||
+            !delegate_val_to_exact_int(mem, tab, c, "reshape cols", &c_in)) {
             return val_void();
         }
-        uint16_t n = (uint16_t)n_in;
-        uint16_t dims[4] = { n, n, 0, 0 };
-        uint16_t tot_len = 0, data_idx = 0;
-        uint16_t hdr_idx = mem_mat_alloc_hdr(mem, 2, dims, &tot_len, &data_idx);
-        if (mem->has_error) return val_void();
-        for (uint16_t i = 0; i < n; ++i) {
-            mem_write_pool(mem, (uint16_t)(data_idx + i * n + i), 1.0);
+        if (r_in <= 0 || c_in <= 0 || r_in > 4096 || c_in > 4096) {
+            mem_err(mem, "Reshape dimensions must be positive (%d x %d)", r_in, c_in);
+            return val_void();
         }
-        return val_make_comp(mem, mem->mat_type_id, hdr_idx, MEM_MAT_HDR_SLOTS);
+        uint16_t src_len = 0, src_dat = 0;
+        uint8_t  src_uid = MEM_UNIT_NONE;
+        uint8_t  ra_tmp  = 0;
+        uint16_t da_tmp[4] = { 0 };
+        if (delegate_mat_get_info(mem, a, &ra_tmp, &src_len, &src_dat, da_tmp)) {
+            src_uid = val_get_unit(mem, a);
+        } else if (mem->vec_type_id != 0 && val_get_type(mem, a) == mem->vec_type_id) {
+            uint16_t hdr_a    = val_get_pool_idx(a);
+            uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_a + 0);
+            uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+            src_uid = (uint8_t)((raw_hdr0 >> 8u) & 0xFFu);
+            src_len = (uint16_t)mem_read_pool(mem, hdr_a + 1);
+            src_dat = (uint16_t)mem_read_pool(mem, hdr_a + 3);
+            if (src_len > 0 && elem_tid != mem->fast_real_type) {
+                mem_err(mem, "reshape() requires a real scalar vector or matrix");
+                return val_void();
+            }
+        } else {
+            mem_err(mem, "reshape() expects a matrix ($mat) or vector ($vec)");
+            return val_void();
+        }
+        if ((uint32_t)r_in * (uint32_t)c_in != (uint32_t)src_len) {
+            mem_err(mem, "Cannot reshape %u element(s) into %d x %d matrix",
+                    (unsigned)src_len, r_in, c_in);
+            return val_void();
+        }
+        uint16_t dims[4] = { (uint16_t)r_in, (uint16_t)c_in, 0, 0 };
+        uint16_t tot_out = 0, dat_out = 0;
+        uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, dims, &tot_out, &dat_out);
+        if (hdr_out == MEM_NO_IDX || mem->has_error) return val_void();
+        if (src_len > 0) {
+            memcpy(&mem->f64_pool[dat_out], &mem->f64_pool[src_dat], (size_t)src_len * sizeof(double));
+        }
+        return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS), src_uid);
+    }
+
+    if (intr == INTR_MMUL) {
+        bool a_is_vec = (mem->vec_type_id != 0 && val_get_type(mem, a) == mem->vec_type_id);
+        bool b_is_vec = (mem->vec_type_id != 0 && val_get_type(mem, b) == mem->vec_type_id);
+        if (a_is_vec || b_is_vec) {
+            if (a_is_vec && !b_is_vec) {
+                uint8_t rb = 0;
+                uint16_t tot_b = 0, dat_b = 0, db_dims[4] = { 0 };
+                if (!delegate_mat_get_info(mem, b, &rb, &tot_b, &dat_b, db_dims) || rb != 2) {
+                    mem_err(mem, "vec * mat requires a 2D matrix on the right");
+                    return val_void();
+                }
+                uint16_t hdr_a = val_get_pool_idx(a);
+                uint16_t raw0  = (uint16_t)mem_read_pool(mem, hdr_a + 0);
+                uint16_t len_a = (uint16_t)mem_read_pool(mem, hdr_a + 1);
+                uint16_t dat_v = (uint16_t)mem_read_pool(mem, hdr_a + 3);
+                uint8_t  u_a   = (uint8_t)((raw0 >> 8u) & 0xFFu);
+                uint8_t  u_b   = val_get_unit(mem, b);
+                uint8_t  r_u   = delegate_resolve_mul_unit(mem, tab, u_a, u_b);
+                uint16_t M = db_dims[0], N = db_dims[1];
+                if (len_a != M) {
+                    mem_err(mem, "vec * mat dimension mismatch: (%u) vs (%ux%u)",
+                            (unsigned)len_a, (unsigned)M, (unsigned)N);
+                    return val_void();
+                }
+                uint16_t out_hdr = mem_vec_alloc_hdr(mem, (uint16_t)(mem->fast_real_type | ((uint16_t)r_u << 8u)), N);
+                if (mem->has_error || !mem_vec_reserve(mem, out_hdr, 1, N)) return val_void();
+                uint16_t out_dat = (uint16_t)mem_read_pool(mem, out_hdr + 3);
+                for (uint16_t col = 0; col < N; ++col) {
+                    double sum = 0.0;
+                    for (uint16_t r = 0; r < M; ++r) {
+                        sum += mem_read_pool(mem, (uint16_t)(dat_v + r)) *
+                               mem_read_pool(mem, (uint16_t)(dat_b + r * N + col));
+                    }
+                    mem_write_pool(mem, (uint16_t)(out_dat + col), sum);
+                }
+                mem_write_pool(mem, out_hdr + 1, (double)N);
+                return val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+            }
+            if (!a_is_vec && b_is_vec) {
+                uint8_t ra_m = 0;
+                uint16_t tot_m = 0, dat_m = 0, dm_dims[4] = { 0 };
+                if (!delegate_mat_get_info(mem, a, &ra_m, &tot_m, &dat_m, dm_dims) || ra_m != 2) {
+                    mem_err(mem, "mat * vec requires a 2D matrix on the left");
+                    return val_void();
+                }
+                uint16_t hdr_b = val_get_pool_idx(b);
+                uint16_t raw0  = (uint16_t)mem_read_pool(mem, hdr_b + 0);
+                uint16_t len_b = (uint16_t)mem_read_pool(mem, hdr_b + 1);
+                uint16_t dat_v = (uint16_t)mem_read_pool(mem, hdr_b + 3);
+                uint8_t  u_a   = val_get_unit(mem, a);
+                uint8_t  u_b   = (uint8_t)((raw0 >> 8u) & 0xFFu);
+                uint8_t  r_u   = delegate_resolve_mul_unit(mem, tab, u_a, u_b);
+                uint16_t M = dm_dims[0], K = dm_dims[1];
+                if (K != len_b) {
+                    mem_err(mem, "mat * vec dimension mismatch: (%ux%u) vs (%u)",
+                            (unsigned)M, (unsigned)K, (unsigned)len_b);
+                    return val_void();
+                }
+                uint16_t out_hdr = mem_vec_alloc_hdr(mem, (uint16_t)(mem->fast_real_type | ((uint16_t)r_u << 8u)), M);
+                if (mem->has_error || !mem_vec_reserve(mem, out_hdr, 1, M)) return val_void();
+                uint16_t out_dat = (uint16_t)mem_read_pool(mem, out_hdr + 3);
+                for (uint16_t r = 0; r < M; ++r) {
+                    double sum = 0.0;
+                    for (uint16_t k = 0; k < K; ++k) {
+                        sum += mem_read_pool(mem, (uint16_t)(dat_m + r * K + k)) *
+                               mem_read_pool(mem, (uint16_t)(dat_v + k));
+                    }
+                    mem_write_pool(mem, (uint16_t)(out_dat + r), sum);
+                }
+                mem_write_pool(mem, out_hdr + 1, (double)M);
+                return val_make_comp(mem, mem->vec_type_id, out_hdr, MEM_VEC_HDR_SLOTS);
+            }
+        }
     }
 
     uint8_t  ra = 0;
@@ -957,7 +1542,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
         case INTR_MSCAL: {
             double  s  = val_get_f64(mem, b);
             uint8_t ub = val_get_unit(mem, b);
-            uint8_t ru = (ua != 0 && ub == 0) ? ua : ((ua == 0 && ub != 0) ? ub : MEM_UNIT_NONE);
+            uint8_t ru = delegate_resolve_mul_unit(mem, tab, ua, ub);
             uint16_t tot_out = 0, dat_out = 0;
             uint16_t hdr_out = mem_mat_alloc_hdr(mem, ra, da, &tot_out, &dat_out);
             if (mem->has_error) return val_void();
@@ -1007,7 +1592,7 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                 return val_void();
             }
             uint8_t ub = val_get_unit(mem, b);
-            uint8_t ru = (ua != 0 && ub == 0) ? ua : ((ua == 0 && ub != 0) ? ub : MEM_UNIT_NONE);
+            uint8_t ru = delegate_resolve_mul_unit(mem, tab, ua, ub);
 
             if (ra == 2 && rb == 2) {
                 uint16_t M = da[0], K = da[1], Kb = db_dims[0], N = db_dims[1];
@@ -1094,18 +1679,6 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
                 }
             }
             return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS), ua);
-        }
-        case INTR_MTRACE: {
-            if (ra != 2 || da[0] != da[1]) {
-                mem_err(mem, "trace() requires a square 2D matrix");
-                return val_void();
-            }
-            uint16_t N = da[0];
-            double tr = 0.0;
-            for (uint16_t i = 0; i < N; ++i) {
-                tr += mem_read_pool(mem, (uint16_t)(dat_a + i * N + i));
-            }
-            return val_make_f64_unit(mem, mem->fast_real_type, ua, tr);
         }
         case INTR_MDET: {
             if (ra != 2 || da[0] != da[1] || da[0] == 0 || da[0] > 16) {
@@ -1217,6 +1790,408 @@ Value delegate_eval_mat_intrinsic(MemArena *mem, const SymTable *tab,
             mem->pool_top = saved_pool;
             return val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS);
         }
+        case INTR_MLINSOLVE: {
+            if (ra != 2 || da[0] != da[1] || da[0] == 0 || da[0] > 16) {
+                mem_err(mem, "linsolve(A, b) requires a square 2D matrix A (1x1 up to 16x16)");
+                return val_void();
+            }
+            bool     b_is_vec = (val_get_type(mem, b) == mem->vec_type_id && mem->vec_type_id != 0);
+            uint8_t  rb = 0;
+            uint16_t tot_b = 0, dat_b = 0, db_dims[4] = { 0 };
+            uint8_t  ub = val_get_unit(mem, b);
+            if (b_is_vec) {
+                uint16_t hdr_b  = val_get_pool_idx(b);
+                uint16_t raw_b0 = (uint16_t)mem_read_pool(mem, hdr_b + 0);
+                ub         = (uint8_t)((raw_b0 >> 8) & 0xFFu);
+                rb         = 1;
+                db_dims[0] = (uint16_t)mem_read_pool(mem, hdr_b + 1);
+                tot_b      = db_dims[0];
+                dat_b      = (uint16_t)mem_read_pool(mem, hdr_b + 3);
+                if (db_dims[0] != da[0]) {
+                    mem_err(mem, "linsolve(A, b) dimension mismatch: b must have %u elements", (unsigned)da[0]);
+                    return val_void();
+                }
+            } else if (!delegate_mat_get_info(mem, b, &rb, &tot_b, &dat_b, db_dims) ||
+                       (rb != 1 && rb != 2) || db_dims[0] != da[0]) {
+                mem_err(mem, "linsolve(A, b) dimension mismatch: b must have %u rows", (unsigned)da[0]);
+                return val_void();
+            }
+            uint16_t N    = da[0];
+            uint16_t K    = (rb == 2) ? db_dims[1] : 1u;
+            uint16_t cols = (uint16_t)(N + K);
+            uint8_t  ru   = delegate_resolve_div_unit(mem, tab, ub, ua);
+
+            uint16_t out_dims[4] = { N, (rb == 2) ? K : 0u, 0, 0 };
+            uint16_t tot_out = 0, dat_out = 0, hdr_out = 0;
+            if (b_is_vec) {
+                uint16_t packed_t = (uint16_t)(((uint32_t)ru << 8u) | ((uint32_t)mem->fast_real_type & 0xFFu));
+                hdr_out = mem_vec_alloc_hdr(mem, packed_t, N);
+                if (mem->has_error || !mem_vec_reserve(mem, hdr_out, 1, N)) return val_void();
+                dat_out = (uint16_t)mem_read_pool(mem, hdr_out + 3);
+                mem_write_pool(mem, hdr_out + 1, (double)N);
+            } else {
+                hdr_out = mem_mat_alloc_hdr(mem, rb, out_dims, &tot_out, &dat_out);
+                if (hdr_out == MEM_NO_IDX || mem->has_error) return val_void();
+            }
+
+            uint16_t saved_pool = mem->pool_top;
+            uint16_t aug_idx    = mem_alloc_pool(mem, (uint16_t)(N * cols));
+            if (aug_idx == MEM_NO_IDX || mem->has_error) return val_void();
+            double *aug = &mem->f64_pool[aug_idx];
+
+            for (uint16_t r = 0; r < N; ++r) {
+                for (uint16_t col = 0; col < N; ++col) {
+                    aug[r * cols + col] = mem_read_pool(mem, (uint16_t)(dat_a + r * N + col));
+                }
+                for (uint16_t col = 0; col < K; ++col) {
+                    aug[r * cols + N + col] = mem_read_pool(mem, (uint16_t)(dat_b + r * K + col));
+                }
+            }
+            for (uint16_t i = 0; i < N; ++i) {
+                uint16_t piv = i;
+                double max_v = fabs(aug[i * cols + i]);
+                for (uint16_t r = (uint16_t)(i + 1); r < N; ++r) {
+                    double v = fabs(aug[r * cols + i]);
+                    if (v > max_v) { max_v = v; piv = r; }
+                }
+                if (max_v <= 1e-14) {
+                    mem->pool_top = saved_pool;
+                    mem_err(mem, "Singular matrix in linsolve(A, b) (det == 0)");
+                    return val_void();
+                }
+                if (piv != i) {
+                    for (uint16_t col = 0; col < cols; ++col) {
+                        double t = aug[i * cols + col];
+                        aug[i * cols + col] = aug[piv * cols + col];
+                        aug[piv * cols + col] = t;
+                    }
+                }
+                double diag = aug[i * cols + i];
+                for (uint16_t col = i; col < cols; ++col) {
+                    aug[i * cols + col] /= diag;
+                }
+                for (uint16_t r = 0; r < N; ++r) {
+                    if (r == i) continue;
+                    double factor = aug[r * cols + i];
+                    if (fabs(factor) > 0.0) {
+                        for (uint16_t col = i; col < cols; ++col) {
+                            aug[r * cols + col] -= factor * aug[i * cols + col];
+                        }
+                    }
+                }
+            }
+            for (uint16_t r = 0; r < N; ++r) {
+                for (uint16_t col = 0; col < K; ++col) {
+                    double v = aug[r * cols + N + col];
+                    if (fabs(v) < 1e-15) v = 0.0;
+                    mem_write_pool(mem, (uint16_t)(dat_out + r * K + col), v);
+                }
+            }
+            mem->pool_top = saved_pool;
+            if (b_is_vec) {
+                return val_make_comp(mem, mem->vec_type_id, hdr_out, MEM_VEC_HDR_SLOTS);
+            }
+            return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS), ru);
+        }
+        case INTR_MHADAMARD: {
+            int mode = (val_get_type(mem, c) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, c) : 0;
+            uint8_t ub = val_get_unit(mem, b);
+            if (mode == 2 && val_get_type(mem, b) != mem->mat_type_id) {
+                double exp_p = val_get_f64(mem, b);
+                uint8_t ru   = delegate_resolve_pow_unit(mem, tab, ua, ub, exp_p);
+                uint16_t tot_out = 0, dat_out = 0;
+                uint16_t hdr_out = mem_mat_alloc_hdr(mem, ra, da, &tot_out, &dat_out);
+                if (hdr_out == MEM_NO_IDX || mem->has_error) return val_void();
+                for (uint16_t i = 0; i < tot_a; ++i) {
+                    mem_write_pool(mem, (uint16_t)(dat_out + i), pow(mem_read_pool(mem, (uint16_t)(dat_a + i)), exp_p));
+                }
+                return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS), ru);
+            }
+            uint8_t  rb = 0;
+            uint16_t tot_b = 0, dat_b = 0, db_dims[4] = { 0 };
+            if (!delegate_mat_get_info(mem, b, &rb, &tot_b, &dat_b, db_dims) || ra != rb) {
+                mem_err(mem, "Elementwise matrix operator requires matching matrix dimensions");
+                return val_void();
+            }
+            for (uint8_t i = 0; i < ra; ++i) {
+                if (da[i] != db_dims[i]) {
+                    mem_err(mem, "Matrix shape mismatch on axis %u (%u vs %u)",
+                            (unsigned)i, (unsigned)da[i], (unsigned)db_dims[i]);
+                    return val_void();
+                }
+            }
+            uint8_t ru = (mode == 0)
+                         ? delegate_resolve_mul_unit(mem, tab, ua, ub)
+                         : delegate_resolve_div_unit(mem, tab, ua, ub);
+            uint16_t tot_out = 0, dat_out = 0;
+            uint16_t hdr_out = mem_mat_alloc_hdr(mem, ra, da, &tot_out, &dat_out);
+            if (hdr_out == MEM_NO_IDX || mem->has_error) return val_void();
+            for (uint16_t i = 0; i < tot_a; ++i) {
+                double va = mem_read_pool(mem, (uint16_t)(dat_a + i));
+                double vb = mem_read_pool(mem, (uint16_t)(dat_b + i));
+                if (mode == 1 && vb == 0.0) {
+                    mem_err(mem, "Division by zero in elementwise './'");
+                    return val_void();
+                }
+                mem_write_pool(mem, (uint16_t)(dat_out + i), (mode == 0) ? (va * vb) : (mode == 1) ? (va / vb) : pow(va, vb));
+            }
+            return val_with_unit(mem, val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS), ru);
+        }
+        case INTR_MEIGVALS:
+        case INTR_MEIGVECS: {
+            if (ra != 2 || da[0] != da[1]) {
+                mem_err(mem, "eigvals/eigvecs requires a square 2D matrix");
+                return val_void();
+            }
+            uint16_t N = da[0];
+            if (N == 2 && intr == INTR_MEIGVALS) {
+                /* Exact characteristic polynomial for any 2x2 real matrix with real eigenvalues */
+                double a00 = mem_read_pool(mem, dat_a + 0);
+                double a01 = mem_read_pool(mem, dat_a + 1);
+                double a10 = mem_read_pool(mem, dat_a + 2);
+                double a11 = mem_read_pool(mem, dat_a + 3);
+                double tr  = a00 + a11;
+                double dt  = a00 * a11 - a01 * a10;
+                double dsc = tr * tr - 4.0 * dt;
+                if (dsc < -1e-11) {
+                    mem_err(mem, "eigvals() matrix has complex eigenvalues (disc=%.6g)", dsc);
+                    return val_void();
+                }
+                if (dsc < 0.0) dsc = 0.0;
+                double sd = sqrt(dsc);
+                double ev[2] = { 0.5 * (tr + sd), 0.5 * (tr - sd) };
+                if (fabs(ev[0]) < 1e-14) ev[0] = 0.0;
+                if (fabs(ev[1]) < 1e-14) ev[1] = 0.0;
+                return val_from_f64_vec(mem, ev, 2);
+            }
+            if (N > 32) {
+                mem_err(mem, "eigvals/eigvecs supports up to 32x32 matrices");
+                return val_void();
+            }
+            /* Cyclic Jacobi eigenvalue/eigenvector algorithm for symmetric NxN matrices */
+            uint16_t saved_pool = mem->pool_top;
+            uint16_t a_idx = mem_alloc_pool(mem, (uint16_t)(N * N));
+            uint16_t v_idx = mem_alloc_pool(mem, (uint16_t)(N * N));
+            if (mem->has_error) { mem->pool_top = saved_pool; return val_void(); }
+            double *A = &mem->f64_pool[a_idx];
+            double *V = &mem->f64_pool[v_idx];
+            memcpy(A, &mem->f64_pool[dat_a], (size_t)(N * N) * sizeof(double));
+            memset(V, 0, (size_t)(N * N) * sizeof(double));
+            for (uint16_t i = 0; i < N; ++i) V[i * N + i] = 1.0;
+
+            for (int sweep = 0; sweep < 60; ++sweep) {
+                double off_norm = 0.0;
+                for (uint16_t p = 0; p < N; ++p) {
+                    for (uint16_t q = (uint16_t)(p + 1); q < N; ++q) {
+                        off_norm += A[p * N + q] * A[p * N + q];
+                    }
+                }
+                if (off_norm < 1e-24) break;
+                for (uint16_t p = 0; p < N; ++p) {
+                    for (uint16_t q = (uint16_t)(p + 1); q < N; ++q) {
+                        double apq = A[p * N + q];
+                        if (fabs(apq) < 1e-15) continue;
+                        double app = A[p * N + p];
+                        double aqq = A[q * N + q];
+                        double tau = (aqq - app) / (2.0 * apq);
+                        double t   = (tau >= 0.0)
+                                     ? (1.0 / (tau + sqrt(1.0 + tau * tau)))
+                                     : (-1.0 / (-tau + sqrt(1.0 + tau * tau)));
+                        double c_r = 1.0 / sqrt(1.0 + t * t);
+                        double s_r = t * c_r;
+                        A[p * N + p] = app - t * apq;
+                        A[q * N + q] = aqq + t * apq;
+                        A[p * N + q] = 0.0;
+                        A[q * N + p] = 0.0;
+                        for (uint16_t r = 0; r < N; ++r) {
+                            if (r != p && r != q) {
+                                double arp = A[r * N + p];
+                                double arq = A[r * N + q];
+                                A[r * N + p] = c_r * arp - s_r * arq;
+                                A[p * N + r] = A[r * N + p];
+                                A[r * N + q] = s_r * arp + c_r * arq;
+                                A[q * N + r] = A[r * N + q];
+                            }
+                            double vrp = V[r * N + p];
+                            double vrq = V[r * N + q];
+                            V[r * N + p] = c_r * vrp - s_r * vrq;
+                            V[r * N + q] = s_r * vrp + c_r * vrq;
+                        }
+                    }
+                }
+            }
+            /* Sort eigenvalues descending and permute eigenvector columns accordingly */
+            for (uint16_t i = 0; i < N; ++i) {
+                uint16_t best = i;
+                for (uint16_t j = (uint16_t)(i + 1); j < N; ++j) {
+                    if (A[j * N + j] > A[best * N + best]) best = j;
+                }
+                if (best != i) {
+                    double tmp = A[i * N + i];
+                    A[i * N + i] = A[best * N + best];
+                    A[best * N + best] = tmp;
+                    for (uint16_t r = 0; r < N; ++r) {
+                        double tv = V[r * N + i];
+                        V[r * N + i] = V[r * N + best];
+                        V[r * N + best] = tv;
+                    }
+                }
+            }
+            if (intr == INTR_MEIGVALS) {
+                double evals[32];
+                for (uint16_t i = 0; i < N; ++i) {
+                    double v = A[i * N + i];
+                    if (fabs(v) < 1e-13) v = 0.0;
+                    evals[i] = v;
+                }
+                mem->pool_top = saved_pool;
+                return val_from_f64_vec(mem, evals, N);
+            } else {
+                double v_tmp[1024];
+                for (uint16_t i = 0; i < (uint16_t)(N * N); ++i) {
+                    v_tmp[i] = (fabs(V[i]) < 1e-14) ? 0.0 : V[i];
+                }
+                mem->pool_top = saved_pool;
+                uint16_t tot_out = 0, dat_out = 0;
+                uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, da, &tot_out, &dat_out);
+                if (mem->has_error) return val_void();
+                for (uint16_t i = 0; i < (uint16_t)(N * N); ++i) {
+                    mem_write_pool(mem, (uint16_t)(dat_out + i), v_tmp[i]);
+                }
+                return val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS);
+            }
+        }
+        case INTR_MSVD: {
+            if (ra != 2) {
+                mem_err(mem, "SVD / pinv / lstsq requires a 2D matrix");
+                return val_void();
+            }
+            uint16_t M = da[0], N = da[1];
+            if (M > 32 || N > 32) {
+                mem_err(mem, "SVD / pinv / lstsq supports up to 32x32 matrices");
+                return val_void();
+            }
+            uint16_t saved_pool = mem->pool_top;
+            uint16_t ata_idx = mem_alloc_pool(mem, (uint16_t)(N * N));
+            uint16_t v_idx   = mem_alloc_pool(mem, (uint16_t)(N * N));
+            uint16_t u_idx   = mem_alloc_pool(mem, (uint16_t)(M * N));
+            if (mem->has_error) { mem->pool_top = saved_pool; return val_void(); }
+            double *ATA = &mem->f64_pool[ata_idx];
+            double *V   = &mem->f64_pool[v_idx];
+            double *U   = &mem->f64_pool[u_idx];
+            const double *A = &mem->f64_pool[dat_a];
+
+            for (uint16_t i = 0; i < N; ++i) {
+                for (uint16_t j = 0; j < N; ++j) {
+                    double sum = 0.0;
+                    for (uint16_t r = 0; r < M; ++r) sum += A[r * N + i] * A[r * N + j];
+                    ATA[i * N + j] = sum;
+                }
+            }
+            memset(V, 0, (size_t)(N * N) * sizeof(double));
+            for (uint16_t i = 0; i < N; ++i) V[i * N + i] = 1.0;
+
+            for (int sweep = 0; sweep < 60; ++sweep) {
+                double off_norm = 0.0;
+                for (uint16_t p = 0; p < N; ++p)
+                    for (uint16_t q = (uint16_t)(p + 1); q < N; ++q)
+                        off_norm += ATA[p * N + q] * ATA[p * N + q];
+                if (off_norm < 1e-24) break;
+                for (uint16_t p = 0; p < N; ++p) {
+                    for (uint16_t q = (uint16_t)(p + 1); q < N; ++q) {
+                        double apq = ATA[p * N + q];
+                        if (fabs(apq) < 1e-15) continue;
+                        double app = ATA[p * N + p], aqq = ATA[q * N + q];
+                        double tau = (aqq - app) / (2.0 * apq);
+                        double t   = (tau >= 0.0)
+                                     ? (1.0 / (tau + sqrt(1.0 + tau * tau)))
+                                     : (-1.0 / (-tau + sqrt(1.0 + tau * tau)));
+                        double c_r = 1.0 / sqrt(1.0 + t * t), s_r = t * c_r;
+                        ATA[p * N + p] = app - t * apq;
+                        ATA[q * N + q] = aqq + t * apq;
+                        ATA[p * N + q] = 0.0;
+                        ATA[q * N + p] = 0.0;
+                        for (uint16_t r = 0; r < N; ++r) {
+                            if (r != p && r != q) {
+                                double arp = ATA[r * N + p], arq = ATA[r * N + q];
+                                ATA[r * N + p] = c_r * arp - s_r * arq;
+                                ATA[p * N + r] = ATA[r * N + p];
+                                ATA[r * N + q] = s_r * arp + c_r * arq;
+                                ATA[q * N + r] = ATA[r * N + q];
+                            }
+                            double vrp = V[r * N + p], vrq = V[r * N + q];
+                            V[r * N + p] = c_r * vrp - s_r * vrq;
+                            V[r * N + q] = s_r * vrp + c_r * vrq;
+                        }
+                    }
+                }
+            }
+            double svals[32];
+            for (uint16_t i = 0; i < N; ++i) {
+                uint16_t best = i;
+                for (uint16_t j = (uint16_t)(i + 1); j < N; ++j) {
+                    if (ATA[j * N + j] > ATA[best * N + best]) best = j;
+                }
+                if (best != i) {
+                    double tmp = ATA[i * N + i];
+                    ATA[i * N + i] = ATA[best * N + best];
+                    ATA[best * N + best] = tmp;
+                    for (uint16_t r = 0; r < N; ++r) {
+                        double tv = V[r * N + i];
+                        V[r * N + i] = V[r * N + best];
+                        V[r * N + best] = tv;
+                    }
+                }
+                double lam = ATA[i * N + i];
+                svals[i] = (lam > 1e-24) ? sqrt(lam) : 0.0;
+            }
+            /* Compute U = A * V * Sigma^-1 */
+            memset(U, 0, (size_t)(M * N) * sizeof(double));
+            for (uint16_t j = 0; j < N; ++j) {
+                if (svals[j] > 1e-12) {
+                    for (uint16_t r = 0; r < M; ++r) {
+                        double sum = 0.0;
+                        for (uint16_t k = 0; k < N; ++k) sum += A[r * N + k] * V[k * N + j];
+                        U[r * N + j] = sum / svals[j];
+                    }
+                }
+            }
+
+            int part = (val_get_type(mem, b) != MEM_TYPE_VOID) ? (int)val_get_f64(mem, b) : 0;
+            if (part == 0) {
+                mem->pool_top = saved_pool;
+                uint16_t K = (M < N) ? M : N;
+                return val_from_f64_vec(mem, svals, K);
+            } else if (part == 1) {
+                double u_tmp[1024];
+                for (uint16_t i = 0; i < (uint16_t)(M * N); ++i) {
+                    u_tmp[i] = (fabs(U[i]) < 1e-14) ? 0.0 : U[i];
+                }
+                mem->pool_top = saved_pool;
+                uint16_t dims[4] = { M, N, 0, 0 };
+                uint16_t tot_out = 0, dat_out = 0;
+                uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, dims, &tot_out, &dat_out);
+                if (mem->has_error) return val_void();
+                for (uint16_t i = 0; i < (uint16_t)(M * N); ++i) {
+                    mem_write_pool(mem, (uint16_t)(dat_out + i), u_tmp[i]);
+                }
+                return val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS);
+            } else {
+                double v_tmp[1024];
+                for (uint16_t i = 0; i < (uint16_t)(N * N); ++i) {
+                    v_tmp[i] = (fabs(V[i]) < 1e-14) ? 0.0 : V[i];
+                }
+                mem->pool_top = saved_pool;
+                uint16_t dims[4] = { N, N, 0, 0 };
+                uint16_t tot_out = 0, dat_out = 0;
+                uint16_t hdr_out = mem_mat_alloc_hdr(mem, 2, dims, &tot_out, &dat_out);
+                if (mem->has_error) return val_void();
+                for (uint16_t i = 0; i < (uint16_t)(N * N); ++i) {
+                    mem_write_pool(mem, (uint16_t)(dat_out + i), v_tmp[i]);
+                }
+                return val_make_comp(mem, mem->mat_type_id, hdr_out, MEM_MAT_HDR_SLOTS);
+            }
+        }
         default:
             return val_void();
     }
@@ -1325,8 +2300,32 @@ static void delegate_format_struct_at(const MemArena *mem, const SymTable *tab,
         return;
     }
     if (type_id == mem->fn_type_id && type_id != 0) {
-        unsigned pcnt = (unsigned)mem_read_pool(mem, pool_idx + 1);
+        unsigned pcnt = (unsigned)mem_read_pool(mem, pool_idx + 1) & 0x3Fu;
         snprintf(buf, cap, "<fn/%u>", pcnt);
+        return;
+    }
+    if (type_id == mem->map_type_id && type_id != 0) {
+        uint16_t len      = (uint16_t)mem_read_pool(mem, pool_idx + 1);
+        uint16_t data_idx = (uint16_t)mem_read_pool(mem, pool_idx + 3);
+        size_t used = (size_t)snprintf(buf, cap, "{");
+        for (uint16_t i = 0; i < len && used < cap; ++i) {
+            StrSlice kslice = mem_map_entry_key(mem, data_idx, i);
+            Value    vval   = mem_map_entry_val(mem, data_idx, i);
+            char vstr[96];
+            uint16_t vtid = val_get_type(mem, vval);
+            if (vtid == mem->str_type_id && vtid != 0) {
+                StrSlice vs = val_get_str(mem, vval);
+                snprintf(vstr, sizeof(vstr), "\"%.*s\"", (int)vs.len, mem_str_ptr(mem, vs));
+            } else if (vtid > 0 && vtid < tab->type_count && !tab->types[vtid].is_consuming) {
+                delegate_format_struct_at(mem, tab, vtid, val_get_pool_idx(vval), (uint8_t)(depth + 1), vstr, sizeof(vstr));
+            } else {
+                snprintf(vstr, sizeof(vstr), "%.6g", val_get_f64(mem, vval));
+            }
+            used += (size_t)snprintf(buf + used, cap - used, "%s\"%.*s\": %s",
+                                     (i > 0 ? ", " : ""),
+                                     (int)kslice.len, mem_str_ptr(mem, kslice), vstr);
+        }
+        if (used < cap) snprintf(buf + used, cap - used, "}");
         return;
     }
 
@@ -1435,6 +2434,49 @@ static Value delegate_eval_fromstr(MemArena *mem, SymTable *tab, Value str_val) 
     int  pdepth = 0;
     bool at_arg_start = false;
     bool rewrite_1d_vec = false;
+
+    if (tlen >= 2 && trimmed[0] == '{' && trimmed[tlen - 1] == '}') {
+        uint16_t inner_p = 1;
+        while (inner_p + 1 < tlen && (trimmed[inner_p] == ' ' || trimmed[inner_p] == '\t')) inner_p++;
+        if (inner_p + 1 >= tlen) {
+            uint16_t mhdr = mem_map_alloc_hdr(mem, 0, 0);
+            return mem->has_error ? val_void() : val_make_comp(mem, mem->map_type_id, mhdr, MEM_MAP_HDR_SLOTS);
+        }
+        char dict_buf[512];
+        size_t dw = (size_t)snprintf(dict_buf, sizeof(dict_buf), "dict(");
+        bool in_q = false;
+        int  d_nest = 0;
+        for (uint16_t k = 1; k + 1 < tlen && dw + 2 < sizeof(dict_buf); ++k) {
+            char ch = trimmed[k];
+            if (ch == '"' && (k == 1 || trimmed[k - 1] != '\\')) in_q = !in_q;
+            if (!in_q) {
+                if (ch == '(' || ch == '[' || ch == '{') d_nest++;
+                else if (ch == ')' || ch == ']' || ch == '}') d_nest--;
+                else if (ch == ':' && d_nest == 0) {
+                    dict_buf[dw++] = ',';
+                    continue;
+                }
+            }
+            dict_buf[dw++] = ch;
+        }
+        if (dw + 2 < sizeof(dict_buf)) {
+            dict_buf[dw++] = ')';
+            dict_buf[dw]   = '\0';
+            uint16_t saved_sp2 = mem->sp;
+            Parser MP;
+            parser_init(&MP, mem, tab, dict_buf, (uint16_t)dw, 0, false, false);
+            lex_next(&MP.lex);
+            uint16_t mroot = parser_parse_expr(&MP, 0);
+            if (!mem->has_error && mroot != MEM_NO_IDX && MP.lex.cur.kind == TOK_EOF) {
+                Value mres = eval_ast(mem, tab, mroot, saved_sp2, 0);
+                if (!mem->has_error && val_get_type(mem, mres) == mem->map_type_id) {
+                    return mres;
+                }
+            }
+            mem->sp = saved_sp2;
+            mem_clear_err(mem);
+        }
+    }
 
     if (tlen >= 2 && trimmed[0] == '[' && trimmed[tlen - 1] == ']') {
         bool has_semi_or_sub = false;
@@ -1561,6 +2603,218 @@ static Value delegate_eval_fromstr(MemArena *mem, SymTable *tab, Value str_val) 
 }
 
 /* ============================================================================
+ * 5a. STRING FORMATTING, MANIPULATION & BACKTRACKING REGEX ENGINE DELEGATES
+ * ============================================================================ */
+
+static bool rx_match_here(const char *pat, uint16_t plen, const char *txt, uint16_t tlen,
+                          uint16_t *out_end);
+
+static bool rx_char_in_class(char c, const char *cls, uint16_t clen) {
+    bool neg = (clen > 0 && cls[0] == '^');
+    uint16_t i = neg ? 1 : 0;
+    bool hit = false;
+    while (i < clen) {
+        if (cls[i] == '\\' && i + 1 < clen) {
+            char esc = cls[i + 1];
+            bool m = false;
+            if (esc == 'd') m = (c >= '0' && c <= '9');
+            else if (esc == 'w') m = ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+            else if (esc == 's') m = (c == ' ' || c == '\t' || c == '\r' || c == '\n');
+            else m = (c == esc);
+            if (m) hit = true;
+            i = (uint16_t)(i + 2);
+            continue;
+        }
+        if (i + 2 < clen && cls[i + 1] == '-') {
+            if ((unsigned char)c >= (unsigned char)cls[i] &&
+                (unsigned char)c <= (unsigned char)cls[i + 2]) {
+                hit = true;
+            }
+            i = (uint16_t)(i + 3);
+            continue;
+        }
+        if (c == cls[i]) hit = true;
+        i++;
+    }
+    return neg ? !hit : hit;
+}
+
+static bool rx_atom_matches(const char *pat, uint16_t atom_len, char c) {
+    if (atom_len == 1 && pat[0] == '.') return (c != '\n');
+    if (atom_len == 2 && pat[0] == '\\') {
+        char esc = pat[1];
+        if (esc == 'd') return (c >= '0' && c <= '9');
+        if (esc == 'D') return !(c >= '0' && c <= '9');
+        if (esc == 'w') return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+        if (esc == 'W') return !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+        if (esc == 's') return (c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        if (esc == 'S') return !(c == ' ' || c == '\t' || c == '\r' || c == '\n');
+        if (esc == 'n') return (c == '\n');
+        if (esc == 't') return (c == '\t');
+        return (c == esc);
+    }
+    if (atom_len >= 2 && pat[0] == '[' && pat[atom_len - 1] == ']') {
+        return rx_char_in_class(c, pat + 1, (uint16_t)(atom_len - 2));
+    }
+    return (atom_len == 1 && pat[0] == c);
+}
+
+static uint16_t rx_atom_span(const char *pat, uint16_t plen) {
+    if (plen == 0) return 0;
+    if (pat[0] == '\\' && plen >= 2) return 2;
+    if (pat[0] == '[') {
+        uint16_t i = 1;
+        while (i < plen && pat[i] != ']') {
+            if (pat[i] == '\\' && i + 1 < plen) i++;
+            i++;
+        }
+        return (i < plen) ? (uint16_t)(i + 1) : plen;
+    }
+    if (pat[0] == '(') {
+        int depth = 1;
+        uint16_t i = 1;
+        while (i < plen && depth > 0) {
+            if (pat[i] == '\\' && i + 1 < plen) { i = (uint16_t)(i + 2); continue; }
+            if (pat[i] == '(') depth++;
+            else if (pat[i] == ')') depth--;
+            i++;
+        }
+        return i;
+    }
+    return 1;
+}
+
+static bool rx_match_here(const char *pat, uint16_t plen, const char *txt, uint16_t tlen,
+                          uint16_t *out_end) {
+    /* Top-level alternation `branch1|branch2` */
+    int depth = 0;
+    bool in_cls = false;
+    for (uint16_t i = 0; i < plen; ++i) {
+        if (pat[i] == '\\' && i + 1 < plen) { i++; continue; }
+        if (pat[i] == '[' && !in_cls) { in_cls = true; continue; }
+        if (pat[i] == ']' && in_cls)  { in_cls = false; continue; }
+        if (!in_cls) {
+            if (pat[i] == '(') depth++;
+            else if (pat[i] == ')') depth--;
+            else if (pat[i] == '|' && depth == 0) {
+                uint16_t e1 = 0;
+                if (rx_match_here(pat, i, txt, tlen, &e1)) {
+                    *out_end = e1;
+                    return true;
+                }
+                return rx_match_here(pat + i + 1, (uint16_t)(plen - i - 1), txt, tlen, out_end);
+            }
+        }
+    }
+
+    if (plen == 0) {
+        *out_end = 0;
+        return true;
+    }
+    if (plen == 1 && pat[0] == '$') {
+        if (tlen == 0) { *out_end = 0; return true; }
+        return false;
+    }
+
+    uint16_t alen = rx_atom_span(pat, plen);
+    char quant = (alen < plen && (pat[alen] == '*' || pat[alen] == '+' || pat[alen] == '?'))
+                 ? pat[alen] : '\0';
+    uint16_t rem_off = (quant != '\0') ? (uint16_t)(alen + 1) : alen;
+    const char *rem_pat = pat + rem_off;
+    uint16_t    rem_len = (uint16_t)(plen - rem_off);
+
+    bool is_group = (alen >= 2 && pat[0] == '(' && pat[alen - 1] == ')');
+    const char *g_pat = is_group ? (pat + 1) : pat;
+    uint16_t    g_len = is_group ? (uint16_t)(alen - 2) : alen;
+
+    if (quant == '\0') {
+        if (is_group) {
+            uint16_t g_end = 0;
+            if (!rx_match_here(g_pat, g_len, txt, tlen, &g_end)) return false;
+            uint16_t r_end = 0;
+            if (!rx_match_here(rem_pat, rem_len, txt + g_end, (uint16_t)(tlen - g_end), &r_end)) return false;
+            *out_end = (uint16_t)(g_end + r_end);
+            return true;
+        }
+        if (tlen > 0 && rx_atom_matches(pat, alen, txt[0])) {
+            uint16_t r_end = 0;
+            if (rx_match_here(rem_pat, rem_len, txt + 1, (uint16_t)(tlen - 1), &r_end)) {
+                *out_end = (uint16_t)(1 + r_end);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    if (quant == '?') {
+        if (is_group) {
+            uint16_t g_end = 0;
+            if (rx_match_here(g_pat, g_len, txt, tlen, &g_end)) {
+                uint16_t r_end = 0;
+                if (rx_match_here(rem_pat, rem_len, txt + g_end, (uint16_t)(tlen - g_end), &r_end)) {
+                    *out_end = (uint16_t)(g_end + r_end);
+                    return true;
+                }
+            }
+        } else if (tlen > 0 && rx_atom_matches(pat, alen, txt[0])) {
+            uint16_t r_end = 0;
+            if (rx_match_here(rem_pat, rem_len, txt + 1, (uint16_t)(tlen - 1), &r_end)) {
+                *out_end = (uint16_t)(1 + r_end);
+                return true;
+            }
+        }
+        return rx_match_here(rem_pat, rem_len, txt, tlen, out_end);
+    }
+
+    /* '*' or '+' quantifier (greedy with backtracking) */
+    uint16_t starts[128];
+    uint16_t scnt = 0;
+    if (quant == '*') starts[scnt++] = 0;
+    uint16_t cur = 0;
+    while (cur < tlen && scnt < 128) {
+        uint16_t step = 0;
+        if (is_group) {
+            if (!rx_match_here(g_pat, g_len, txt + cur, (uint16_t)(tlen - cur), &step) || step == 0) break;
+        } else {
+            if (!rx_atom_matches(pat, alen, txt[cur])) break;
+            step = 1;
+        }
+        cur = (uint16_t)(cur + step);
+        starts[scnt++] = cur;
+    }
+    for (int k = (int)scnt - 1; k >= 0; --k) {
+        uint16_t r_end = 0;
+        if (rx_match_here(rem_pat, rem_len, txt + starts[k], (uint16_t)(tlen - starts[k]), &r_end)) {
+            *out_end = (uint16_t)(starts[k] + r_end);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool rx_search(const char *pat, uint16_t plen, const char *txt, uint16_t tlen,
+                      uint16_t *out_start, uint16_t *out_len) {
+    if (plen > 0 && pat[0] == '^') {
+        uint16_t mend = 0;
+        if (rx_match_here(pat + 1, (uint16_t)(plen - 1), txt, tlen, &mend)) {
+            if (out_start) *out_start = 0;
+            if (out_len)   *out_len   = mend;
+            return true;
+        }
+        return false;
+    }
+    for (uint16_t i = 0; i <= tlen; ++i) {
+        uint16_t mend = 0;
+        if (rx_match_here(pat, plen, txt + i, (uint16_t)(tlen - i), &mend)) {
+            if (out_start) *out_start = i;
+            if (out_len)   *out_len   = mend;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* ============================================================================
  * 5. SCALAR ARITHMETIC, BOOLEAN LOGIC & TRANSCENDENTAL DELEGATES
  * ============================================================================ */
 
@@ -1568,15 +2822,298 @@ static Value delegate_eval_fromstr(MemArena *mem, SymTable *tab, Value str_val) 
 /*Construct +, -, *, /, %, ^, √, sin..tanh, ==..~, &&..nand, type_of, unit_of, x_, _s, error*/
 Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
                               IntrinsicId intr, Value a, Value b, Value c, uint8_t ret_type) {
-    if (intr >= INTR_VNEW && intr <= INTR_VCOUNT) {
+    if (intr >= INTR_VNEW && intr <= INTR_MAP_ENTRIES) {
         return delegate_eval_vec_intrinsic(mem, tab, intr, a, b, c);
     }
-    if (intr >= INTR_MZERO && intr <= INTR_MINV) {
+    if (intr >= INTR_MZERO && intr <= INTR_MSVD) {
         return delegate_eval_mat_intrinsic(mem, tab, intr, a, b, c);
     }
 
     /*Below section is the C's native for operator delegates @type_name, @unit_name, @tostr, @fromstr, @err*/
     /*Construct type_of(x), unit_of(x), x_ (postfix "_"), _s (prefix "_"), error(msg)*/
+    if (intr == INTR_GC_COMPACT) {
+        uint16_t reclaimed = mem_compact_scratch(mem, NULL, 0);
+        return val_make_f64(mem, mem->fast_real_type, (double)reclaimed);
+    }
+    if (intr == INTR_POOL_USED) {
+        uint16_t used = mem_scratch_pool_used(mem);
+        return val_make_f64(mem, mem->fast_real_type, (double)used);
+    }
+    if (intr == INTR_STR_FMT) {
+        char fmt_buf[512];
+        if (!val_as_cstr(mem, a, fmt_buf, sizeof(fmt_buf))) {
+            mem_err(mem, "fmt() first argument must be a format string");
+            return val_void();
+        }
+        Value fmt_args[16];
+        uint8_t n_fargs = 0;
+        if (mem->vec_type_id != 0 && val_get_type(mem, b) == mem->vec_type_id &&
+            val_get_type(mem, c) == MEM_TYPE_VOID) {
+            uint16_t vhdr = val_get_pool_idx(b);
+            uint16_t raw0 = (uint16_t)mem_read_pool(mem, vhdr + 0);
+            uint16_t etid = (uint16_t)(raw0 & 0xFFu);
+            uint8_t  euid = (uint8_t)((raw0 >> 8u) & 0xFFu);
+            uint16_t vlen = (uint16_t)mem_read_pool(mem, vhdr + 1);
+            uint16_t vdat = (uint16_t)mem_read_pool(mem, vhdr + 3);
+            uint16_t strd = (etid > 0 && etid < tab->type_count) ? tab->types[etid].flat_size : 1;
+            for (uint16_t k = 0; k < vlen && n_fargs < 16; ++k) {
+                fmt_args[n_fargs++] = delegate_vec_read_elem(mem, tab, etid, euid, (uint16_t)(vdat + k * strd));
+            }
+        } else {
+            if (val_get_type(mem, b) != MEM_TYPE_VOID) fmt_args[n_fargs++] = b;
+            if (val_get_type(mem, c) != MEM_TYPE_VOID) fmt_args[n_fargs++] = c;
+        }
+        char out[1024];
+        size_t pos = 0;
+        uint8_t auto_idx = 0;
+        for (size_t i = 0; fmt_buf[i] != '\0' && pos + 1 < sizeof(out); ) {
+            if (fmt_buf[i] == '{' && fmt_buf[i + 1] == '{') {
+                out[pos++] = '{'; i += 2; continue;
+            }
+            if (fmt_buf[i] == '}' && fmt_buf[i + 1] == '}') {
+                out[pos++] = '}'; i += 2; continue;
+            }
+            if (fmt_buf[i] == '{') {
+                size_t close = i + 1;
+                while (fmt_buf[close] != '\0' && fmt_buf[close] != '}') close++;
+                if (fmt_buf[close] == '}') {
+                    char spec[64];
+                    size_t slen = close - (i + 1);
+                    if (slen >= sizeof(spec)) slen = sizeof(spec) - 1;
+                    memcpy(spec, fmt_buf + i + 1, slen);
+                    spec[slen] = '\0';
+                    uint8_t use_idx = auto_idx;
+                    const char *colon = strchr(spec, ':');
+                    if (colon != NULL) {
+                        if (colon > spec) use_idx = (uint8_t)atoi(spec);
+                        else auto_idx++;
+                    } else if (slen > 0 && spec[0] >= '0' && spec[0] <= '9') {
+                        use_idx = (uint8_t)atoi(spec);
+                    } else {
+                        auto_idx++;
+                    }
+                    if (use_idx < n_fargs) {
+                        Value fv = fmt_args[use_idx];
+                        char vbuf[256];
+                        if (colon != NULL && colon[1] != '\0') {
+                            const char *sp = colon + 1;
+                            bool zero_pad = (*sp == '0');
+                            int width = atoi(sp);
+                            int prec = -1;
+                            const char *dot = strchr(sp, '.');
+                            if (dot) prec = atoi(dot + 1);
+                            char conv = sp[strlen(sp) - 1];
+                            if (conv == 'd' || conv == 'i') {
+                                if (zero_pad && width > 0) snprintf(vbuf, sizeof(vbuf), "%0*lld", width, (long long)llround(val_get_f64(mem, fv)));
+                                else if (width > 0) snprintf(vbuf, sizeof(vbuf), "%*lld", width, (long long)llround(val_get_f64(mem, fv)));
+                                else snprintf(vbuf, sizeof(vbuf), "%lld", (long long)llround(val_get_f64(mem, fv)));
+                            } else if (conv == 'x' || conv == 'X') {
+                                unsigned long long uv = (unsigned long long)llround(val_get_f64(mem, fv));
+                                if (conv == 'x') snprintf(vbuf, sizeof(vbuf), "%llx", uv);
+                                else snprintf(vbuf, sizeof(vbuf), "%llX", uv);
+                            } else if (conv == 'b') {
+                                unsigned long long uv = (unsigned long long)llround(val_get_f64(mem, fv));
+                                if (uv == 0) { snprintf(vbuf, sizeof(vbuf), "0"); }
+                                else {
+                                    char btmp[72]; int bi = 0;
+                                    while (uv > 0 && bi < 64) { btmp[bi++] = (char)('0' + (uv & 1ULL)); uv >>= 1ULL; }
+                                    int oi = 0; while (bi > 0) vbuf[oi++] = btmp[--bi];
+                                    vbuf[oi] = '\0';
+                                }
+                            } else if (conv == 'e') {
+                                snprintf(vbuf, sizeof(vbuf), "%.*e", (prec >= 0) ? prec : 6, val_get_f64(mem, fv));
+                            } else if (conv == 'g') {
+                                snprintf(vbuf, sizeof(vbuf), "%.*g", (prec > 0) ? prec : 6, val_get_f64(mem, fv));
+                            } else {
+                                snprintf(vbuf, sizeof(vbuf), "%.*f", (prec >= 0) ? prec : 6, val_get_f64(mem, fv));
+                            }
+                        } else {
+                            Value sv = delegate_eval_tostr(mem, tab, fv);
+                            val_as_cstr(mem, sv, vbuf, sizeof(vbuf));
+                        }
+                        size_t vl = strlen(vbuf);
+                        if (pos + vl >= sizeof(out)) vl = sizeof(out) - 1 - pos;
+                        memcpy(out + pos, vbuf, vl);
+                        pos += vl;
+                    } else {
+                        /* Preserve unconsumed placeholder for chained multi-arg @str_fmt calls */
+                        size_t raw_l = (close - i) + 1;
+                        if (pos + raw_l < sizeof(out)) {
+                            memcpy(out + pos, fmt_buf + i, raw_l);
+                            pos += raw_l;
+                        }
+                    }
+                    i = close + 1;
+                    continue;
+                }
+            }
+            if (fmt_buf[i] == '%' && fmt_buf[i + 1] != '\0') {
+                if (fmt_buf[i + 1] == '%') {
+                    out[pos++] = '%'; i += 2; continue;
+                }
+                size_t j = i + 1;
+                while (fmt_buf[j] != '\0' &&
+                       (fmt_buf[j] == '-' || fmt_buf[j] == '+' || fmt_buf[j] == '0' ||
+                        fmt_buf[j] == '.' || (fmt_buf[j] >= '0' && fmt_buf[j] <= '9'))) {
+                    j++;
+                }
+                char conv = fmt_buf[j];
+                if (conv == 'f' || conv == 'g' || conv == 'e' || conv == 'd' || conv == 'i' ||
+                    conv == 'x' || conv == 'X' || conv == 's') {
+                    char cfmt[32];
+                    size_t flen = (j - i);
+                    if (flen >= sizeof(cfmt)) flen = sizeof(cfmt) - 1;
+                    memcpy(cfmt, fmt_buf + i + 1, flen - 1);
+                    cfmt[flen - 1] = '\0';
+                    bool zero_pad = (cfmt[0] == '0');
+                    int width = atoi(cfmt);
+                    int prec = -1;
+                    const char *dot = strchr(cfmt, '.');
+                    if (dot) prec = atoi(dot + 1);
+                    if (auto_idx < n_fargs) {
+                        Value fv = fmt_args[auto_idx++];
+                        char vbuf[256];
+                        if (conv == 's') {
+                            Value sv = delegate_eval_tostr(mem, tab, fv);
+                            char sraw[200];
+                            val_as_cstr(mem, sv, sraw, sizeof(sraw));
+                            if (width != 0) snprintf(vbuf, sizeof(vbuf), "%*s", width, sraw);
+                            else snprintf(vbuf, sizeof(vbuf), "%s", sraw);
+                        } else if (conv == 'd' || conv == 'i') {
+                            long long iv = (long long)llround(val_get_f64(mem, fv));
+                            if (zero_pad && width > 0) snprintf(vbuf, sizeof(vbuf), "%0*lld", width, iv);
+                            else if (width != 0) snprintf(vbuf, sizeof(vbuf), "%*lld", width, iv);
+                            else snprintf(vbuf, sizeof(vbuf), "%lld", iv);
+                        } else if (conv == 'x' || conv == 'X') {
+                            unsigned long long uv = (unsigned long long)llround(val_get_f64(mem, fv));
+                            if (conv == 'x') snprintf(vbuf, sizeof(vbuf), "%llx", uv);
+                            else snprintf(vbuf, sizeof(vbuf), "%llX", uv);
+                        } else if (conv == 'e') {
+                            snprintf(vbuf, sizeof(vbuf), "%.*e", (prec >= 0) ? prec : 6, val_get_f64(mem, fv));
+                        } else if (conv == 'g') {
+                            snprintf(vbuf, sizeof(vbuf), "%.*g", (prec > 0) ? prec : 6, val_get_f64(mem, fv));
+                        } else {
+                            if (width > 0) snprintf(vbuf, sizeof(vbuf), "%*.*f", width, (prec >= 0) ? prec : 6, val_get_f64(mem, fv));
+                            else snprintf(vbuf, sizeof(vbuf), "%.*f", (prec >= 0) ? prec : 6, val_get_f64(mem, fv));
+                        }
+                        size_t vl = strlen(vbuf);
+                        if (pos + vl >= sizeof(out)) vl = sizeof(out) - 1 - pos;
+                        memcpy(out + pos, vbuf, vl);
+                        pos += vl;
+                    } else {
+                        size_t raw_l = (j - i) + 1;
+                        if (pos + raw_l < sizeof(out)) {
+                            memcpy(out + pos, fmt_buf + i, raw_l);
+                            pos += raw_l;
+                        }
+                    }
+                    i = j + 1;
+                    continue;
+                }
+            }
+            out[pos++] = fmt_buf[i++];
+        }
+        out[pos] = '\0';
+        return val_from_cstr(mem, out);
+    }
+    if (intr == INTR_REGEX_MATCH || intr == INTR_REGEX_FIND ||
+        intr == INTR_REGEX_FINDALL || intr == INTR_REGEX_REPLACE || intr == INTR_REGEX_SPLIT) {
+        char txt[512], pat[256];
+        if (!val_as_cstr(mem, a, txt, sizeof(txt)) || !val_as_cstr(mem, b, pat, sizeof(pat))) {
+            mem_err(mem, "Regex functions require string arguments (text, pattern)");
+            return val_void();
+        }
+        uint16_t tlen = (uint16_t)strlen(txt);
+        uint16_t plen = (uint16_t)strlen(pat);
+        if (intr == INTR_REGEX_MATCH) {
+            uint16_t mstart = 0, mlen = 0;
+            bool ok = rx_search(pat, plen, txt, tlen, &mstart, &mlen);
+            return val_make_f64(mem, mem->fast_real_type, ok ? 1.0 : 0.0);
+        }
+        if (intr == INTR_REGEX_FIND) {
+            uint16_t mstart = 0, mlen = 0;
+            if (rx_search(pat, plen, txt, tlen, &mstart, &mlen)) {
+                StrSlice ms = mem_intern_str(mem, txt + mstart, mlen);
+                return val_make_str(mem, mem->str_type_id, ms);
+            }
+            return val_from_cstr(mem, "");
+        }
+        if (intr == INTR_REGEX_FINDALL) {
+            uint16_t hdr = mem_vec_alloc_hdr(mem, mem->str_type_id, 4);
+            if (mem->has_error) return val_void();
+            uint16_t pos = 0;
+            while (pos <= tlen) {
+                uint16_t mstart = 0, mlen = 0;
+                if (!rx_search(pat, plen, txt + pos, (uint16_t)(tlen - pos), &mstart, &mlen)) break;
+                StrSlice ms = mem_intern_str(mem, txt + pos + mstart, mlen);
+                Value mv = val_make_str(mem, mem->str_type_id, ms);
+                uint16_t cur_len = (uint16_t)mem_read_pool(mem, hdr + 1);
+                if (!mem_vec_reserve(mem, hdr, 1, (uint16_t)(cur_len + 1))) return val_void();
+                uint16_t dat = (uint16_t)mem_read_pool(mem, hdr + 3);
+                delegate_vec_write_elem(mem, tab, mem->str_type_id, (uint16_t)(dat + cur_len), mv);
+                mem_write_pool(mem, hdr + 1, (double)(cur_len + 1));
+                pos = (uint16_t)(pos + mstart + (mlen > 0 ? mlen : 1));
+            }
+            return val_make_comp(mem, mem->vec_type_id, hdr, MEM_VEC_HDR_SLOTS);
+        }
+        if (intr == INTR_REGEX_SPLIT) {
+            uint16_t hdr = mem_vec_alloc_hdr(mem, mem->str_type_id, 4);
+            if (mem->has_error) return val_void();
+            uint16_t pos = 0;
+            while (pos <= tlen) {
+                uint16_t mstart = 0, mlen = 0;
+                if (!rx_search(pat, plen, txt + pos, (uint16_t)(tlen - pos), &mstart, &mlen) || mlen == 0) {
+                    StrSlice ms = mem_intern_str(mem, txt + pos, (uint16_t)(tlen - pos));
+                    Value mv = val_make_str(mem, mem->str_type_id, ms);
+                    uint16_t cur_len = (uint16_t)mem_read_pool(mem, hdr + 1);
+                    if (!mem_vec_reserve(mem, hdr, 1, (uint16_t)(cur_len + 1))) return val_void();
+                    uint16_t dat = (uint16_t)mem_read_pool(mem, hdr + 3);
+                    delegate_vec_write_elem(mem, tab, mem->str_type_id, (uint16_t)(dat + cur_len), mv);
+                    mem_write_pool(mem, hdr + 1, (double)(cur_len + 1));
+                    break;
+                }
+                StrSlice ms = mem_intern_str(mem, txt + pos, mstart);
+                Value mv = val_make_str(mem, mem->str_type_id, ms);
+                uint16_t cur_len = (uint16_t)mem_read_pool(mem, hdr + 1);
+                if (!mem_vec_reserve(mem, hdr, 1, (uint16_t)(cur_len + 1))) return val_void();
+                uint16_t dat = (uint16_t)mem_read_pool(mem, hdr + 3);
+                delegate_vec_write_elem(mem, tab, mem->str_type_id, (uint16_t)(dat + cur_len), mv);
+                mem_write_pool(mem, hdr + 1, (double)(cur_len + 1));
+                pos = (uint16_t)(pos + mstart + mlen);
+            }
+            return val_make_comp(mem, mem->vec_type_id, hdr, MEM_VEC_HDR_SLOTS);
+        }
+        if (intr == INTR_REGEX_REPLACE) {
+            char rep[256];
+            if (!val_as_cstr(mem, c, rep, sizeof(rep))) rep[0] = '\0';
+            size_t rlen = strlen(rep);
+            char out[1024];
+            size_t out_p = 0;
+            uint16_t pos = 0;
+            while (pos <= tlen && out_p + 1 < sizeof(out)) {
+                uint16_t mstart = 0, mlen = 0;
+                if (!rx_search(pat, plen, txt + pos, (uint16_t)(tlen - pos), &mstart, &mlen) || mlen == 0) {
+                    size_t rem = (size_t)(tlen - pos);
+                    if (out_p + rem >= sizeof(out)) rem = sizeof(out) - 1 - out_p;
+                    memcpy(out + out_p, txt + pos, rem);
+                    out_p += rem;
+                    break;
+                }
+                size_t pre = mstart;
+                if (out_p + pre >= sizeof(out)) pre = sizeof(out) - 1 - out_p;
+                memcpy(out + out_p, txt + pos, pre);
+                out_p += pre;
+                size_t nw = rlen;
+                if (out_p + nw >= sizeof(out)) nw = sizeof(out) - 1 - out_p;
+                memcpy(out + out_p, rep, nw);
+                out_p += nw;
+                pos = (uint16_t)(pos + mstart + mlen);
+            }
+            out[out_p] = '\0';
+            return val_from_cstr(mem, out);
+        }
+    }
+
     if (intr == INTR_TYPE_NAME) {
         char tbuf[32];
         sym_type_name(tab, mem, val_get_type(mem, a), tbuf, sizeof(tbuf));
@@ -1618,6 +3155,18 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
         /*Below section is the C's native for operator delegates @add, @sub, @mul, @div, @mod, @neg, @abs, @floor, @ceil, @pow, @sqrt, @cbrt, @exp, @ln, @log10*/
         /*Construct +, -, *, /, %, unary -, abs, floor, ceil, ^, √ / sqrt, cbrt, exp, ln, log10*/
         case INTR_ADD:
+            if (val_get_type(mem, a) == mem->str_type_id && val_get_type(mem, b) == mem->str_type_id && mem->str_type_id != 0) {
+                StrSlice sa = val_get_str(mem, a);
+                StrSlice sb = val_get_str(mem, b);
+                char sbuf[512];
+                uint16_t la = (sa.len < sizeof(sbuf) - 1) ? sa.len : (uint16_t)(sizeof(sbuf) - 1);
+                uint16_t lb = (sb.len < (sizeof(sbuf) - 1 - la)) ? sb.len : (uint16_t)(sizeof(sbuf) - 1 - la);
+                if (la > 0) memcpy(sbuf, mem_str_ptr(mem, sa), la);
+                if (lb > 0) memcpy(sbuf + la, mem_str_ptr(mem, sb), lb);
+                StrSlice sc = mem_intern_str(mem, sbuf, (uint16_t)(la + lb));
+                if (mem->has_error) return val_void();
+                return val_make_str(mem, mem->str_type_id, sc);
+            }
             if (!delegate_check_additive_unit_compat(mem, tab, "+", 1, a, b, &ruid)) return val_void();
             res = da + db;
             break;
@@ -1626,12 +3175,12 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
             res = da - db;
             break;
         case INTR_MUL:
-            ruid = (ua == ub) ? ua : ((ua != 0 && ub == 0) ? ua : ((ua == 0 && ub != 0) ? ub : MEM_UNIT_NONE));
+            ruid = delegate_resolve_mul_unit(mem, tab, ua, ub);
             res = da * db;
             break;
         case INTR_DIV:
             if (db == 0.0) { mem_err(mem, "Division by zero"); return val_void(); }
-            ruid = (ua == ub) ? ua : ((ua != 0 && ub == 0) ? ua : ((ua == 0 && ub != 0) ? ub : MEM_UNIT_NONE));
+            ruid = delegate_resolve_div_unit(mem, tab, ua, ub);
             res = da / db;
             break;
         case INTR_MOD:
@@ -1642,9 +3191,9 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
         case INTR_ABS:   ruid = ua; res = fabs(da); break;
         case INTR_FLOOR: ruid = ua; res = floor(da); break;
         case INTR_CEIL:  ruid = ua; res = ceil(da); break;
-        case INTR_POW:   ruid = (ub == 0) ? ua : MEM_UNIT_NONE; res = pow(da, db); break;
-        case INTR_SQRT:  ruid = ua; res = sqrt(da); break;
-        case INTR_CBRT:  ruid = ua; res = cbrt(da); break;
+        case INTR_POW:   ruid = delegate_resolve_pow_unit(mem, tab, ua, ub, db); res = pow(da, db); break;
+        case INTR_SQRT:  ruid = delegate_resolve_root_unit(mem, tab, ua, 2); res = sqrt(da); break;
+        case INTR_CBRT:  ruid = delegate_resolve_root_unit(mem, tab, ua, 3); res = cbrt(da); break;
         case INTR_EXP:   res = exp(da); break;
         case INTR_LN:    res = log(da); break;
         case INTR_LOG10: res = log10(da); break;
@@ -1658,9 +3207,13 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
         case INTR_ACOS:  res = acos(da); break;
         case INTR_ATAN:  res = atan(da); break;
         case INTR_ATAN2: res = atan2(da, db); break;
-        case INTR_SINH:  res = sinh(da); break;
-        case INTR_COSH:  res = cosh(da); break;
-        case INTR_TANH:  res = tanh(da); break;
+        case INTR_SINH:   res = sinh(da); break;
+        case INTR_COSH:   res = cosh(da); break;
+        case INTR_TANH:   res = tanh(da); break;
+        case INTR_ERF:    res = erf(da); break;
+        case INTR_ERFC:   res = erfc(da); break;
+        case INTR_GAMMA:  res = tgamma(da); break;
+        case INTR_LGAMMA: res = lgamma(da); break;
 
         /*Below section is the C's native for operator delegates @eq, @ne, @lt, @le, @gt, @ge, @approx, @land, @lor, @cnot, @lnot, @lxor, @lnor, @lnand, @raw*/
         /*Construct ==, !=, <, <=, >, >=, ~, && / and, || / or, !, not, xor / ^^, nor, nand, i (iota)*/
@@ -1696,12 +3249,6 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
             if (!delegate_check_additive_unit_compat(mem, tab, ">=", 2, a, b, NULL)) return val_void();
             res = (da >= db) ? 1.0 : 0.0;
             break;
-        case INTR_APPROX:
-            if (!delegate_check_additive_unit_compat(mem, tab, "~", 1, a, b, NULL)) return val_void();
-            res = (fabs(da - db) <= 0.001 + 1e-12) ? 1.0 : 0.0;
-            break;
-        case INTR_LAND:  res = (fabs(da) > 1e-15 && fabs(db) > 1e-15) ? 1.0 : 0.0; break;
-        case INTR_LOR:   res = (fabs(da) > 1e-15 || fabs(db) > 1e-15) ? 1.0 : 0.0; break;
         case INTR_CNOT:
         case INTR_LNOT:
             if (fabs(da) <= 1e-15) {
@@ -1713,9 +3260,49 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
                 return val_void();
             }
             break;
-        case INTR_LXOR:  res = ((fabs(da) > 1e-15) != (fabs(db) > 1e-15)) ? 1.0 : 0.0; break;
-        case INTR_LNOR:  res = (fabs(da) <= 1e-15 && fabs(db) <= 1e-15) ? 1.0 : 0.0; break;
-        case INTR_LNAND: res = !(fabs(da) > 1e-15 && fabs(db) > 1e-15) ? 1.0 : 0.0; break;
+        case INTR_BAND:
+        case INTR_BOR:
+        case INTR_BXOR:
+        case INTR_BNOT:
+        case INTR_BSHL:
+        case INTR_BSHR: {
+            if (ua != MEM_UNIT_NONE || (intr != INTR_BNOT && ub != MEM_UNIT_NONE)) {
+                mem_err(mem, "Bitwise operation requires unitless integer operands");
+                return val_void();
+            }
+            double ra = floor(da + 0.5);
+            if (!isfinite(da) || da < -9007199254740991.0 || da > 9007199254740991.0 || fabs(da - ra) > 1e-9) {
+                mem_err(mem, "Bitwise operation requires an exact integer operand (got %.6g)", da);
+                return val_void();
+            }
+            int64_t ia = (int64_t)ra;
+            if (intr == INTR_BNOT) {
+                res = (double)(~ia);
+                break;
+            }
+            double rb = floor(db + 0.5);
+            if (!isfinite(db) || db < -9007199254740991.0 || db > 9007199254740991.0 || fabs(db - rb) > 1e-9) {
+                mem_err(mem, "Bitwise operation requires an exact integer operand (got %.6g)", db);
+                return val_void();
+            }
+            int64_t ib = (int64_t)rb;
+            if (intr == INTR_BSHL || intr == INTR_BSHR) {
+                if (ib < 0 || ib > 52) {
+                    mem_err(mem, "Bit shift count %lld out of range (0..52)", (long long)ib);
+                    return val_void();
+                }
+                res = (intr == INTR_BSHL)
+                      ? (double)((int64_t)((uint64_t)ia << (unsigned)ib))
+                      : (double)(ia >> (unsigned)ib);
+            } else if (intr == INTR_BAND) {
+                res = (double)(ia & ib);
+            } else if (intr == INTR_BOR) {
+                res = (double)(ia | ib);
+            } else {
+                res = (double)(ia ^ ib);
+            }
+            break;
+        }
         case INTR_RAW:   ruid = ua; res = da; break;
         default:         mem_err(mem, "Unhandled intrinsic %d", (int)intr); return val_void();
     }
@@ -1728,12 +3315,20 @@ Value delegate_eval_intrinsic(MemArena *mem, SymTable *tab,
 
 /*Below section is the C's native for operator/function delegates @calc_diff, @calc_diff2, @calc_diffn, @calc_integ, @calc_lim, @calc_lim_l, @calc_lim_r, @calc_sigma, @calc_prod, @calc_solve, @calc_fmin, @calc_fmax*/
 /*Construct diff, diff2, diff_n, integrate, ntg, lim, lim_left, lim_right, sigma, prod, solve, fmin, fmax*/
+static double eval_calc_point_u(MemArena *mem, SymTable *tab,
+                                uint8_t var_slot, uint8_t var_unit, uint16_t expr_ast,
+                                uint16_t frame_base, uint8_t cur_ret_type, double x_val,
+                                uint8_t *out_expr_unit) {
+    mem_set_slot(mem, frame_base, var_slot, val_make_f64_unit(mem, mem->fast_real_type, var_unit, x_val));
+    Value v = eval_ast(mem, tab, expr_ast, frame_base, cur_ret_type);
+    if (out_expr_unit) *out_expr_unit = val_get_unit(mem, v);
+    return val_get_f64(mem, v);
+}
+
 static double eval_calc_point(MemArena *mem, SymTable *tab,
                               uint8_t var_slot, uint16_t expr_ast,
                               uint16_t frame_base, uint8_t cur_ret_type, double x_val) {
-    mem_set_slot(mem, frame_base, var_slot, val_make_f64(mem, mem->fast_real_type, x_val));
-    Value v = eval_ast(mem, tab, expr_ast, frame_base, cur_ret_type);
-    return val_get_f64(mem, v);
+    return eval_calc_point_u(mem, tab, var_slot, MEM_UNIT_NONE, expr_ast, frame_base, cur_ret_type, x_val, NULL);
 }
 
 static double eval_solve_residual(MemArena *mem, SymTable *tab,
@@ -1759,16 +3354,935 @@ static double snap_calc_noise(double res, double tol) {
     return res;
 }
 
+/* ============================================================================
+ * 6a. SYMBOLIC DIFFERENTIATION, ALGEBRAIC SIMPLIFICATION & TAYLOR EXPANSION
+ * ============================================================================ */
+
+static uint16_t sym_make_num(MemArena *mem, double v) {
+    uint16_t pidx = mem_alloc_pool(mem, 1);
+    if (mem->has_error) return MEM_NO_IDX;
+    mem_write_pool(mem, pidx, v);
+    return mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, pidx, 0, 0);
+}
+
+static bool sym_is_num(const MemArena *mem, uint16_t idx, double *out_v) {
+    if (idx == MEM_NO_IDX) return false;
+    const AstNode *n = mem_get_ast(mem, idx);
+    if (n->kind == AST_LIT && n->sub == mem->fast_real_type) {
+        if (out_v) *out_v = mem_read_pool(mem, n->ref);
+        return true;
+    }
+    return false;
+}
+
+static bool sym_ast_equal(const MemArena *mem, const SymTable *tab, uint16_t a, uint16_t b) {
+    if (a == b) return true;
+    if (a == MEM_NO_IDX || b == MEM_NO_IDX) return false;
+    const AstNode *na = mem_get_ast(mem, a);
+    const AstNode *nb = mem_get_ast(mem, b);
+    if (na->kind != nb->kind) return false;
+    if (na->kind == AST_LIT) {
+        if (na->sub != nb->sub) return false;
+        if (na->sub == mem->fast_real_type) {
+            return fabs(mem_read_pool(mem, na->ref) - mem_read_pool(mem, nb->ref)) <= 1e-12;
+        }
+        return (na->left == nb->left && na->right == nb->right);
+    }
+    if (na->kind == AST_SLOT_LOAD) return (na->sub == nb->sub);
+    if (na->kind == AST_CONST_SYM) return (na->ref == nb->ref);
+    if (na->kind == AST_UNARY) {
+        return (na->sub == nb->sub && na->ref == nb->ref && sym_ast_equal(mem, tab, na->left, nb->left));
+    }
+    if (na->kind == AST_BINARY) {
+        return (na->sub == nb->sub && na->ref == nb->ref &&
+                sym_ast_equal(mem, tab, na->left, nb->left) &&
+                sym_ast_equal(mem, tab, na->right, nb->right));
+    }
+    if (na->kind == AST_CALL) {
+        if (na->ref != nb->ref || na->sub != nb->sub) return false;
+        uint16_t ca = na->left, cb = nb->left;
+        while (ca != MEM_NO_IDX && cb != MEM_NO_IDX) {
+            const AstNode *la = mem_get_ast(mem, ca);
+            const AstNode *lb = mem_get_ast(mem, cb);
+            if (!sym_ast_equal(mem, tab, la->left, lb->left)) return false;
+            ca = la->right;
+            cb = lb->right;
+        }
+        return (ca == cb);
+    }
+    return false;
+}
+
+static uint16_t sym_find_op(MemArena *mem, SymTable *tab, const char *s) {
+    int id = sym_find(tab, mem, s, (uint16_t)strlen(s));
+    if (id >= 0) return (uint16_t)id;
+    StrSlice sl = mem_intern_str(mem, s, (uint16_t)strlen(s));
+    return sym_intern(tab, mem, sl);
+}
+
+static uint16_t sym_make_bin(MemArena *mem, SymTable *tab, const char *op, uint16_t l, uint16_t r) {
+    uint16_t sid = sym_find_op(mem, tab, op);
+    uint8_t fix = (strcmp(op, "^") == 0) ? (uint8_t)FIX_INFIX_RIGHT : (uint8_t)FIX_INFIX_LEFT;
+    return mem_alloc_ast(mem, AST_BINARY, fix, sid, l, r);
+}
+
+static uint16_t sym_make_neg(MemArena *mem, SymTable *tab, uint16_t x) {
+    uint16_t sid = sym_find_op(mem, tab, "-");
+    return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, sid, x, MEM_NO_IDX);
+}
+
+static uint16_t sym_make_call1(MemArena *mem, SymTable *tab, const char *fn, uint16_t arg) {
+    uint16_t sid  = sym_find_op(mem, tab, fn);
+    uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, arg, MEM_NO_IDX);
+    return mem_alloc_ast(mem, AST_CALL, 1, sid, link, MEM_NO_IDX);
+}
+
+static uint16_t sym_simplify_ast(MemArena *mem, SymTable *tab, uint16_t idx, uint8_t depth) {
+    if (idx == MEM_NO_IDX || mem->has_error || depth > 64) return idx;
+    const AstNode *n = mem_get_ast(mem, idx);
+
+    if (n->kind == AST_UNARY && n->sub == (uint8_t)FIX_PREFIX) {
+        StrSlice s = tab->syms[n->ref];
+        uint16_t op_l = sym_simplify_ast(mem, tab, n->left, (uint8_t)(depth + 1));
+        double lv = 0.0;
+        if (mem_slice_eq_cstr(mem, s, "-")) {
+            if (sym_is_num(mem, op_l, &lv)) return sym_make_num(mem, -lv);
+            const AstNode *ln = mem_get_ast(mem, op_l);
+            if (ln->kind == AST_UNARY && ln->sub == (uint8_t)FIX_PREFIX &&
+                mem_slice_eq_cstr(mem, tab->syms[ln->ref], "-")) {
+                return ln->left;
+            }
+            return sym_make_neg(mem, tab, op_l);
+        }
+        if (mem_slice_eq_cstr(mem, s, "+")) return op_l;
+        if (mem_slice_eq_cstr(mem, s, "√")) {
+            if (sym_is_num(mem, op_l, &lv) && lv >= 0.0) {
+                double r = sqrt(lv);
+                if (fabs(r - floor(r + 0.5)) <= 1e-12) return sym_make_num(mem, floor(r + 0.5));
+            }
+            return mem_alloc_ast(mem, AST_UNARY, (uint8_t)FIX_PREFIX, n->ref, op_l, MEM_NO_IDX);
+        }
+        return mem_alloc_ast(mem, AST_UNARY, n->sub, n->ref, op_l, MEM_NO_IDX);
+    }
+
+    if (n->kind == AST_BINARY) {
+        StrSlice s = tab->syms[n->ref];
+        uint16_t l = sym_simplify_ast(mem, tab, n->left,  (uint8_t)(depth + 1));
+        uint16_t r = sym_simplify_ast(mem, tab, n->right, (uint8_t)(depth + 1));
+        double lv = 0.0, rv = 0.0;
+        bool l_num = sym_is_num(mem, l, &lv);
+        bool r_num = sym_is_num(mem, r, &rv);
+
+        if (mem_slice_eq_cstr(mem, s, "+")) {
+            if (l_num && r_num) return sym_make_num(mem, lv + rv);
+            if (l_num && fabs(lv) <= 1e-12) return r;
+            if (r_num && fabs(rv) <= 1e-12) return l;
+            if (sym_ast_equal(mem, tab, l, r)) {
+                return sym_simplify_ast(mem, tab, sym_make_bin(mem, tab, "*", sym_make_num(mem, 2.0), l), (uint8_t)(depth + 1));
+            }
+            /* Combine c1 * term + c2 * term (including implicit c=1 on bare term) */
+            const AstNode *ln = mem_get_ast(mem, l);
+            const AstNode *rn = mem_get_ast(mem, r);
+            double c1 = 1.0, c2 = 1.0;
+            uint16_t b1 = l, b2 = r;
+            if (ln->kind == AST_BINARY && mem_slice_eq_cstr(mem, tab->syms[ln->ref], "*") &&
+                sym_is_num(mem, ln->left, &c1)) {
+                b1 = ln->right;
+            }
+            if (rn->kind == AST_BINARY && mem_slice_eq_cstr(mem, tab->syms[rn->ref], "*") &&
+                sym_is_num(mem, rn->left, &c2)) {
+                b2 = rn->right;
+            }
+            if (!l_num && !r_num && sym_ast_equal(mem, tab, b1, b2)) {
+                return sym_simplify_ast(mem, tab,
+                    sym_make_bin(mem, tab, "*", sym_make_num(mem, c1 + c2), b1),
+                    (uint8_t)(depth + 1));
+            }
+            if (rn->kind == AST_UNARY && rn->sub == (uint8_t)FIX_PREFIX &&
+                mem_slice_eq_cstr(mem, tab->syms[rn->ref], "-")) {
+                return sym_simplify_ast(mem, tab, sym_make_bin(mem, tab, "-", l, rn->left), (uint8_t)(depth + 1));
+            }
+            return sym_make_bin(mem, tab, "+", l, r);
+        }
+        if (mem_slice_eq_cstr(mem, s, "-")) {
+            if (l_num && r_num) return sym_make_num(mem, lv - rv);
+            if (r_num && fabs(rv) <= 1e-12) return l;
+            if (l_num && fabs(lv) <= 1e-12) return sym_simplify_ast(mem, tab, sym_make_neg(mem, tab, r), (uint8_t)(depth + 1));
+            if (sym_ast_equal(mem, tab, l, r)) return sym_make_num(mem, 0.0);
+            return sym_make_bin(mem, tab, "-", l, r);
+        }
+        if (mem_slice_eq_cstr(mem, s, "*")) {
+            if (l_num && r_num) return sym_make_num(mem, lv * rv);
+            if ((l_num && fabs(lv) <= 1e-12) || (r_num && fabs(rv) <= 1e-12)) return sym_make_num(mem, 0.0);
+            if (l_num && fabs(lv - 1.0) <= 1e-12) return r;
+            if (r_num && fabs(rv - 1.0) <= 1e-12) return l;
+            if (l_num && fabs(lv + 1.0) <= 1e-12) return sym_simplify_ast(mem, tab, sym_make_neg(mem, tab, r), (uint8_t)(depth + 1));
+            if (r_num && fabs(rv + 1.0) <= 1e-12) return sym_simplify_ast(mem, tab, sym_make_neg(mem, tab, l), (uint8_t)(depth + 1));
+            /* Canonicalize constant factor to the left: x * c -> c * x */
+            if (!l_num && r_num) {
+                uint16_t tmp = l; l = r; r = tmp;
+                lv = rv; l_num = true; r_num = false;
+            }
+            /* Fold c1 * (c2 * x) -> (c1 * c2) * x */
+            const AstNode *rn = mem_get_ast(mem, r);
+            if (l_num && rn->kind == AST_BINARY && mem_slice_eq_cstr(mem, tab->syms[rn->ref], "*")) {
+                double c2 = 0.0;
+                if (sym_is_num(mem, rn->left, &c2)) {
+                    return sym_simplify_ast(mem, tab,
+                        sym_make_bin(mem, tab, "*", sym_make_num(mem, lv * c2), rn->right),
+                        (uint8_t)(depth + 1));
+                }
+            }
+            if (sym_ast_equal(mem, tab, l, r)) {
+                return sym_make_bin(mem, tab, "^", l, sym_make_num(mem, 2.0));
+            }
+            return sym_make_bin(mem, tab, "*", l, r);
+        }
+        if (mem_slice_eq_cstr(mem, s, "/")) {
+            if (l_num && fabs(lv) <= 1e-12) return sym_make_num(mem, 0.0);
+            if (r_num && fabs(rv - 1.0) <= 1e-12) return l;
+            if (l_num && r_num && fabs(rv) > 1e-12) {
+                double q = lv / rv;
+                if (fabs(q - floor(q + 0.5)) <= 1e-12) return sym_make_num(mem, floor(q + 0.5));
+            }
+            if (sym_ast_equal(mem, tab, l, r)) return sym_make_num(mem, 1.0);
+            return sym_make_bin(mem, tab, "/", l, r);
+        }
+        if (mem_slice_eq_cstr(mem, s, "^")) {
+            if (r_num && fabs(rv) <= 1e-12) return sym_make_num(mem, 1.0);
+            if (r_num && fabs(rv - 1.0) <= 1e-12) return l;
+            if (l_num && fabs(lv) <= 1e-12) return sym_make_num(mem, 0.0);
+            if (l_num && fabs(lv - 1.0) <= 1e-12) return sym_make_num(mem, 1.0);
+            if (l_num && r_num) return sym_make_num(mem, pow(lv, rv));
+            const AstNode *ln = mem_get_ast(mem, l);
+            if (r_num && ln->kind == AST_BINARY && mem_slice_eq_cstr(mem, tab->syms[ln->ref], "^")) {
+                double p1 = 0.0;
+                if (sym_is_num(mem, ln->right, &p1)) {
+                    return sym_simplify_ast(mem, tab,
+                        sym_make_bin(mem, tab, "^", ln->left, sym_make_num(mem, p1 * rv)),
+                        (uint8_t)(depth + 1));
+                }
+            }
+            return sym_make_bin(mem, tab, "^", l, r);
+        }
+        return mem_alloc_ast(mem, AST_BINARY, n->sub, n->ref, l, r);
+    }
+
+    if (n->kind == AST_CALL && n->sub == 1 && n->left != MEM_NO_IDX) {
+        StrSlice fn_s = tab->syms[n->ref];
+        const AstNode *link = mem_get_ast(mem, n->left);
+        uint16_t arg = sym_simplify_ast(mem, tab, link->left, (uint8_t)(depth + 1));
+        double av = 0.0;
+        if (sym_is_num(mem, arg, &av)) {
+            if (mem_slice_eq_cstr(mem, fn_s, "sin") && fabs(av) <= 1e-12) return sym_make_num(mem, 0.0);
+            if (mem_slice_eq_cstr(mem, fn_s, "cos") && fabs(av) <= 1e-12) return sym_make_num(mem, 1.0);
+            if (mem_slice_eq_cstr(mem, fn_s, "tan") && fabs(av) <= 1e-12) return sym_make_num(mem, 0.0);
+            if (mem_slice_eq_cstr(mem, fn_s, "exp") && fabs(av) <= 1e-12) return sym_make_num(mem, 1.0);
+            if (mem_slice_eq_cstr(mem, fn_s, "ln")  && fabs(av - 1.0) <= 1e-12) return sym_make_num(mem, 0.0);
+            if (mem_slice_eq_cstr(mem, fn_s, "sqrt") && av >= 0.0) {
+                double r = sqrt(av);
+                if (fabs(r - floor(r + 0.5)) <= 1e-12) return sym_make_num(mem, floor(r + 0.5));
+            }
+        }
+        if (mem_slice_eq_cstr(mem, fn_s, "ln")) {
+            const AstNode *an = mem_get_ast(mem, arg);
+            if (an->kind == AST_CONST_SYM && mem_slice_eq_cstr(mem, tab->syms[an->ref], "e")) {
+                return sym_make_num(mem, 1.0);
+            }
+        }
+        uint16_t nlink = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, arg, MEM_NO_IDX);
+        return mem_alloc_ast(mem, AST_CALL, 1, n->ref, nlink, MEM_NO_IDX);
+    }
+
+    return idx;
+}
+
+static bool sym_depends_on(const MemArena *mem, uint16_t idx, uint8_t var_slot) {
+    if (idx == MEM_NO_IDX) return false;
+    const AstNode *n = mem_get_ast(mem, idx);
+    if (n->kind == AST_SLOT_LOAD) return (n->sub == var_slot);
+    if (n->kind == AST_UNARY) return sym_depends_on(mem, n->left, var_slot);
+    if (n->kind == AST_BINARY) {
+        return sym_depends_on(mem, n->left, var_slot) || sym_depends_on(mem, n->right, var_slot);
+    }
+    if (n->kind == AST_CALL) {
+        uint16_t cur = n->left;
+        while (cur != MEM_NO_IDX) {
+            const AstNode *l = mem_get_ast(mem, cur);
+            if (sym_depends_on(mem, l->left, var_slot)) return true;
+            cur = l->right;
+        }
+    }
+    return false;
+}
+
+static uint16_t sym_diff_ast(MemArena *mem, SymTable *tab, uint16_t idx, uint8_t var_slot) {
+    if (idx == MEM_NO_IDX || mem->has_error) return MEM_NO_IDX;
+    if (!sym_depends_on(mem, idx, var_slot)) {
+        return sym_make_num(mem, 0.0);
+    }
+    const AstNode *n = mem_get_ast(mem, idx);
+    if (n->kind == AST_SLOT_LOAD) {
+        return sym_make_num(mem, (n->sub == var_slot) ? 1.0 : 0.0);
+    }
+    if (n->kind == AST_UNARY && n->sub == (uint8_t)FIX_PREFIX) {
+        StrSlice s = tab->syms[n->ref];
+        uint16_t u  = n->left;
+        uint16_t du = sym_diff_ast(mem, tab, u, var_slot);
+        if (mem_slice_eq_cstr(mem, s, "-")) return sym_make_neg(mem, tab, du);
+        if (mem_slice_eq_cstr(mem, s, "+")) return du;
+        if (mem_slice_eq_cstr(mem, s, "√")) {
+            uint16_t denom = sym_make_bin(mem, tab, "*", sym_make_num(mem, 2.0),
+                                          sym_make_call1(mem, tab, "sqrt", u));
+            return sym_make_bin(mem, tab, "/", du, denom);
+        }
+    }
+    if (n->kind == AST_BINARY) {
+        StrSlice s = tab->syms[n->ref];
+        uint16_t u  = n->left,  v  = n->right;
+        uint16_t du = sym_diff_ast(mem, tab, u, var_slot);
+        uint16_t dv = sym_diff_ast(mem, tab, v, var_slot);
+        if (mem_slice_eq_cstr(mem, s, "+")) return sym_make_bin(mem, tab, "+", du, dv);
+        if (mem_slice_eq_cstr(mem, s, "-")) return sym_make_bin(mem, tab, "-", du, dv);
+        if (mem_slice_eq_cstr(mem, s, "*")) {
+            uint16_t t1 = sym_make_bin(mem, tab, "*", du, v);
+            uint16_t t2 = sym_make_bin(mem, tab, "*", u, dv);
+            return sym_make_bin(mem, tab, "+", t1, t2);
+        }
+        if (mem_slice_eq_cstr(mem, s, "/")) {
+            uint16_t num = sym_make_bin(mem, tab, "-",
+                                        sym_make_bin(mem, tab, "*", du, v),
+                                        sym_make_bin(mem, tab, "*", u, dv));
+            uint16_t den = sym_make_bin(mem, tab, "^", v, sym_make_num(mem, 2.0));
+            return sym_make_bin(mem, tab, "/", num, den);
+        }
+        if (mem_slice_eq_cstr(mem, s, "^")) {
+            if (!sym_depends_on(mem, v, var_slot)) {
+                uint16_t vm1  = sym_make_bin(mem, tab, "-", v, sym_make_num(mem, 1.0));
+                uint16_t upow = sym_make_bin(mem, tab, "^", u, vm1);
+                uint16_t base = sym_make_bin(mem, tab, "*", v, upow);
+                return sym_make_bin(mem, tab, "*", base, du);
+            }
+            if (!sym_depends_on(mem, u, var_slot)) {
+                uint16_t lnu  = sym_make_call1(mem, tab, "ln", u);
+                uint16_t base = sym_make_bin(mem, tab, "*", idx, lnu);
+                return sym_make_bin(mem, tab, "*", base, dv);
+            }
+            /* General u(x)^v(x) = u^v * (dv * ln(u) + v * du / u) */
+            uint16_t lnu = sym_make_call1(mem, tab, "ln", u);
+            uint16_t p1  = sym_make_bin(mem, tab, "*", dv, lnu);
+            uint16_t p2  = sym_make_bin(mem, tab, "/", sym_make_bin(mem, tab, "*", v, du), u);
+            return sym_make_bin(mem, tab, "*", idx, sym_make_bin(mem, tab, "+", p1, p2));
+        }
+    }
+    if (n->kind == AST_CALL && n->sub == 1 && n->left != MEM_NO_IDX) {
+        StrSlice s = tab->syms[n->ref];
+        uint16_t u  = mem_get_ast(mem, n->left)->left;
+        uint16_t du = sym_diff_ast(mem, tab, u, var_slot);
+        uint16_t outer = MEM_NO_IDX;
+        if (mem_slice_eq_cstr(mem, s, "sin")) {
+            outer = sym_make_call1(mem, tab, "cos", u);
+        } else if (mem_slice_eq_cstr(mem, s, "cos")) {
+            outer = sym_make_neg(mem, tab, sym_make_call1(mem, tab, "sin", u));
+        } else if (mem_slice_eq_cstr(mem, s, "tan")) {
+            uint16_t cos_u = sym_make_call1(mem, tab, "cos", u);
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0),
+                                 sym_make_bin(mem, tab, "^", cos_u, sym_make_num(mem, 2.0)));
+        } else if (mem_slice_eq_cstr(mem, s, "exp")) {
+            outer = sym_make_call1(mem, tab, "exp", u);
+        } else if (mem_slice_eq_cstr(mem, s, "ln")) {
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0), u);
+        } else if (mem_slice_eq_cstr(mem, s, "sqrt")) {
+            uint16_t den = sym_make_bin(mem, tab, "*", sym_make_num(mem, 2.0),
+                                        sym_make_call1(mem, tab, "sqrt", u));
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0), den);
+        } else if (mem_slice_eq_cstr(mem, s, "sinh")) {
+            outer = sym_make_call1(mem, tab, "cosh", u);
+        } else if (mem_slice_eq_cstr(mem, s, "cosh")) {
+            outer = sym_make_call1(mem, tab, "sinh", u);
+        } else if (mem_slice_eq_cstr(mem, s, "tanh")) {
+            uint16_t ch = sym_make_call1(mem, tab, "cosh", u);
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0),
+                                 sym_make_bin(mem, tab, "^", ch, sym_make_num(mem, 2.0)));
+        } else if (mem_slice_eq_cstr(mem, s, "asin")) {
+            uint16_t rad = sym_make_bin(mem, tab, "-", sym_make_num(mem, 1.0),
+                                        sym_make_bin(mem, tab, "^", u, sym_make_num(mem, 2.0)));
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0),
+                                 sym_make_call1(mem, tab, "sqrt", rad));
+        } else if (mem_slice_eq_cstr(mem, s, "acos")) {
+            uint16_t rad = sym_make_bin(mem, tab, "-", sym_make_num(mem, 1.0),
+                                        sym_make_bin(mem, tab, "^", u, sym_make_num(mem, 2.0)));
+            outer = sym_make_neg(mem, tab, sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0),
+                                                        sym_make_call1(mem, tab, "sqrt", rad)));
+        } else if (mem_slice_eq_cstr(mem, s, "atan")) {
+            uint16_t den = sym_make_bin(mem, tab, "+", sym_make_num(mem, 1.0),
+                                        sym_make_bin(mem, tab, "^", u, sym_make_num(mem, 2.0)));
+            outer = sym_make_bin(mem, tab, "/", sym_make_num(mem, 1.0), den);
+        }
+        if (outer != MEM_NO_IDX) {
+            return sym_make_bin(mem, tab, "*", outer, du);
+        }
+    }
+    return sym_make_num(mem, 0.0);
+}
+
+static int sym_op_prec(const MemArena *mem, const SymTable *tab, uint16_t sym_id) {
+    StrSlice s = tab->syms[sym_id];
+    if (mem_slice_eq_cstr(mem, s, "+") || mem_slice_eq_cstr(mem, s, "-")) return 50;
+    if (mem_slice_eq_cstr(mem, s, "*") || mem_slice_eq_cstr(mem, s, "/")) return 60;
+    if (mem_slice_eq_cstr(mem, s, "^")) return 85;
+    return 40;
+}
+
+static void sym_ast_to_str(const MemArena *mem, const SymTable *tab, uint16_t idx,
+                           int parent_prec, char *buf, size_t cap, size_t *used) {
+    if (idx == MEM_NO_IDX || *used + 1 >= cap) return;
+    const AstNode *n = mem_get_ast(mem, idx);
+    if (n->kind == AST_LIT) {
+        double v = mem_read_pool(mem, n->ref);
+        if (fabs(v) < 1e-15) v = 0.0;
+        *used += (size_t)snprintf(buf + *used, cap - *used, "%.10g", v);
+        return;
+    }
+    if (n->kind == AST_SLOT_LOAD) {
+        uint8_t slot = n->sub;
+        if (slot < 64 && mem->local_slot_names[slot].len > 0) {
+            StrSlice nm = mem->local_slot_names[slot];
+            *used += (size_t)snprintf(buf + *used, cap - *used, "%.*s",
+                                      (int)nm.len, mem_str_ptr(mem, nm));
+        } else {
+            *used += (size_t)snprintf(buf + *used, cap - *used, "x");
+        }
+        return;
+    }
+    if (n->kind == AST_CONST_SYM) {
+        StrSlice cs = tab->syms[n->ref];
+        *used += (size_t)snprintf(buf + *used, cap - *used, "%.*s",
+                                  (int)cs.len, mem_str_ptr(mem, cs));
+        return;
+    }
+    if (n->kind == AST_UNARY && n->sub == (uint8_t)FIX_PREFIX) {
+        StrSlice os = tab->syms[n->ref];
+        bool wrap = (parent_prec > 80);
+        if (wrap && *used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "(");
+        *used += (size_t)snprintf(buf + *used, cap - *used, "%.*s",
+                                  (int)os.len, mem_str_ptr(mem, os));
+        sym_ast_to_str(mem, tab, n->left, 80, buf, cap, used);
+        if (wrap && *used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, ")");
+        return;
+    }
+    if (n->kind == AST_BINARY) {
+        StrSlice os = tab->syms[n->ref];
+        int prec = sym_op_prec(mem, tab, n->ref);
+        bool wrap = (prec < parent_prec);
+        if (wrap && *used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "(");
+        sym_ast_to_str(mem, tab, n->left, prec, buf, cap, used);
+        *used += (size_t)snprintf(buf + *used, cap - *used, " %.*s ",
+                                  (int)os.len, mem_str_ptr(mem, os));
+        int r_prec = (mem_slice_eq_cstr(mem, os, "-") || mem_slice_eq_cstr(mem, os, "/"))
+                     ? (prec + 1) : prec;
+        sym_ast_to_str(mem, tab, n->right, r_prec, buf, cap, used);
+        if (wrap && *used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, ")");
+        return;
+    }
+    if (n->kind == AST_CALL) {
+        StrSlice fs = tab->syms[n->ref];
+        *used += (size_t)snprintf(buf + *used, cap - *used, "%.*s(",
+                                  (int)fs.len, mem_str_ptr(mem, fs));
+        uint16_t cur = n->left;
+        bool first = true;
+        while (cur != MEM_NO_IDX) {
+            const AstNode *l = mem_get_ast(mem, cur);
+            if (!first && *used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, ", ");
+            sym_ast_to_str(mem, tab, l->left, 0, buf, cap, used);
+            first = false;
+            cur = l->right;
+        }
+        if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, ")");
+    }
+}
+
+static bool sym_parse_str_arg(MemArena *mem, SymTable *tab, uint16_t arg_ast,
+                              uint16_t frame_base, uint8_t cur_ret_type,
+                              const char *preferred_var, uint8_t *io_var_slot,
+                              uint16_t *out_ast) {
+    const AstNode *an = mem_get_ast(mem, arg_ast);
+    if (an->kind == AST_LIT && an->sub == mem->str_type_id) {
+        StrSlice s = { an->left, an->right };
+        char sbuf[512];
+        uint16_t slen = (s.len < sizeof(sbuf) - 1) ? s.len : (uint16_t)(sizeof(sbuf) - 1);
+        memcpy(sbuf, mem_str_ptr(mem, s), slen);
+        sbuf[slen] = '\0';
+        Parser SP;
+        parser_init(&SP, mem, tab, sbuf, slen, 0, false, false);
+        SP.in_symbolic_expr = 1;
+        if (preferred_var && preferred_var[0] != '\0') {
+            int sslot = parser_add_local(&SP, preferred_var, (uint16_t)strlen(preferred_var), mem->fast_real_type);
+            if (io_var_slot) *io_var_slot = (uint8_t)sslot;
+        }
+        lex_next(&SP.lex);
+        uint16_t r = parser_parse_expr(&SP, 0);
+        if (mem->has_error || r == MEM_NO_IDX) return false;
+        *out_ast = r;
+        return true;
+    }
+    (void)frame_base;
+    (void)cur_ret_type;
+    *out_ast = arg_ast;
+    return true;
+}
+
 Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
                                   uint8_t mtag, const AstNode *n,
                                   uint16_t frame_base, uint8_t cur_ret_type) {
-    uint16_t arg_asts[6];
+    uint16_t arg_asts[16];
     uint8_t  argc = 0;
     uint16_t cur  = n->left;
-    while (cur != MEM_NO_IDX && argc < 6) {
+    while (cur != MEM_NO_IDX && argc < 16) {
         const AstNode *link = mem_get_ast(mem, cur);
         arg_asts[argc++] = link->left;
         cur = link->right;
+    }
+
+    if (mtag == INTR_SYM_SIMPLIFY) {
+        if (argc < 1) {
+            mem_err(mem, "sym_simplify(expr) requires an expression");
+            return val_void();
+        }
+        uint16_t expr_ast = MEM_NO_IDX;
+        if (!sym_parse_str_arg(mem, tab, arg_asts[0], frame_base, cur_ret_type, NULL, NULL, &expr_ast)) {
+            return val_void();
+        }
+        uint16_t simp = sym_simplify_ast(mem, tab, expr_ast, 0);
+        simp = sym_simplify_ast(mem, tab, simp, 0);
+        char out[512];
+        size_t used = 0;
+        out[0] = '\0';
+        sym_ast_to_str(mem, tab, simp, 0, out, sizeof(out), &used);
+        return val_from_cstr(mem, out);
+    }
+
+    if (mtag == INTR_SYM_DIFF) {
+        if (argc < 2) {
+            mem_err(mem, "sym_diff(x, expr[, order]) requires variable and expression");
+            return val_void();
+        }
+        char vname[32] = "x";
+        uint8_t var_slot = 0;
+        const AstNode *vn = mem_get_ast(mem, arg_asts[0]);
+        if (vn->kind == AST_SLOT_LOAD) {
+            var_slot = vn->sub;
+            if (var_slot < 64 && mem->local_slot_names[var_slot].len > 0) {
+                StrSlice nm = mem->local_slot_names[var_slot];
+                uint16_t cl = (nm.len < sizeof(vname) - 1) ? nm.len : (uint16_t)(sizeof(vname) - 1);
+                memcpy(vname, mem_str_ptr(mem, nm), cl);
+                vname[cl] = '\0';
+            }
+        } else if (vn->kind == AST_LIT && vn->sub == mem->str_type_id) {
+            StrSlice nm = { vn->left, vn->right };
+            uint16_t cl = (nm.len < sizeof(vname) - 1) ? nm.len : (uint16_t)(sizeof(vname) - 1);
+            memcpy(vname, mem_str_ptr(mem, nm), cl);
+            vname[cl] = '\0';
+        }
+        uint16_t expr_ast = MEM_NO_IDX;
+        if (!sym_parse_str_arg(mem, tab, arg_asts[1], frame_base, cur_ret_type, vname, &var_slot, &expr_ast)) {
+            return val_void();
+        }
+        int order = 1;
+        if (argc >= 3) {
+            Value vord = eval_ast(mem, tab, arg_asts[2], frame_base, cur_ret_type);
+            if (mem->has_error) return val_void();
+            order = (int)val_get_f64(mem, vord);
+            if (order < 0) order = 0;
+            if (order > 8) order = 8;
+        }
+        uint16_t cur_ast = sym_simplify_ast(mem, tab, expr_ast, 0);
+        for (int k = 0; k < order && !mem->has_error; ++k) {
+            cur_ast = sym_diff_ast(mem, tab, cur_ast, var_slot);
+            cur_ast = sym_simplify_ast(mem, tab, cur_ast, 0);
+            cur_ast = sym_simplify_ast(mem, tab, cur_ast, 0);
+        }
+        char out[512];
+        size_t used = 0;
+        out[0] = '\0';
+        sym_ast_to_str(mem, tab, cur_ast, 0, out, sizeof(out), &used);
+        return val_from_cstr(mem, out);
+    }
+
+    if (mtag == INTR_SYM_TAYLOR) {
+        if (argc < 4) {
+            mem_err(mem, "sym_taylor(x, expr, x0, order) requires 4 arguments");
+            return val_void();
+        }
+        char vname[32] = "x";
+        uint8_t var_slot = 0;
+        const AstNode *vn = mem_get_ast(mem, arg_asts[0]);
+        if (vn->kind == AST_SLOT_LOAD) {
+            var_slot = vn->sub;
+            if (var_slot < 64 && mem->local_slot_names[var_slot].len > 0) {
+                StrSlice nm = mem->local_slot_names[var_slot];
+                uint16_t cl = (nm.len < sizeof(vname) - 1) ? nm.len : (uint16_t)(sizeof(vname) - 1);
+                memcpy(vname, mem_str_ptr(mem, nm), cl);
+                vname[cl] = '\0';
+            }
+        }
+        uint16_t expr_ast = MEM_NO_IDX;
+        if (!sym_parse_str_arg(mem, tab, arg_asts[1], frame_base, cur_ret_type, vname, &var_slot, &expr_ast)) {
+            return val_void();
+        }
+        Value vx0  = eval_ast(mem, tab, arg_asts[2], frame_base, cur_ret_type);
+        Value vord = eval_ast(mem, tab, arg_asts[3], frame_base, cur_ret_type);
+        if (mem->has_error) return val_void();
+        double x0 = val_get_f64(mem, vx0);
+        int order = (int)val_get_f64(mem, vord);
+        if (order < 0) order = 0;
+        if (order > 8) order = 8;
+
+        Value saved_slot = mem_get_slot(mem, frame_base, var_slot);
+        uint16_t d_ast = sym_simplify_ast(mem, tab, expr_ast, 0);
+        uint16_t poly_ast = sym_make_num(mem, 0.0);
+        double fact = 1.0;
+        for (int k = 0; k <= order && !mem->has_error; ++k) {
+            if (k > 0) fact *= (double)k;
+            mem_set_slot(mem, frame_base, var_slot, val_make_f64(mem, mem->fast_real_type, x0));
+            Value fk_val = eval_ast(mem, tab, d_ast, frame_base, cur_ret_type);
+            double ck = snap_calc_noise(val_get_f64(mem, fk_val) / fact, 1e-12);
+            if (fabs(ck) > 1e-12) {
+                uint16_t var_ref = mem_alloc_ast(mem, AST_SLOT_LOAD, var_slot, 0, 0, 0);
+                uint16_t base = (fabs(x0) <= 1e-12)
+                                ? var_ref
+                                : sym_make_bin(mem, tab, "-", var_ref, sym_make_num(mem, x0));
+                uint16_t term = MEM_NO_IDX;
+                if (k == 0) {
+                    term = sym_make_num(mem, ck);
+                } else if (k == 1) {
+                    term = sym_make_bin(mem, tab, "*", sym_make_num(mem, ck), base);
+                } else {
+                    term = sym_make_bin(mem, tab, "*", sym_make_num(mem, ck),
+                                        sym_make_bin(mem, tab, "^", base, sym_make_num(mem, (double)k)));
+                }
+                poly_ast = sym_make_bin(mem, tab, "+", poly_ast, term);
+            }
+            if (k < order) {
+                d_ast = sym_simplify_ast(mem, tab, sym_diff_ast(mem, tab, d_ast, var_slot), 0);
+            }
+        }
+        mem_set_slot(mem, frame_base, var_slot, saved_slot);
+        poly_ast = sym_simplify_ast(mem, tab, poly_ast, 0);
+        char out[512];
+        size_t used = 0;
+        out[0] = '\0';
+        sym_ast_to_str(mem, tab, poly_ast, 0, out, sizeof(out), &used);
+        return val_from_cstr(mem, out);
+    }
+
+    if (mtag == INTR_SYM_EVAL) {
+        if (argc < 3) {
+            mem_err(mem, "sym_eval(expr_str, x, val) requires 3 arguments");
+            return val_void();
+        }
+        Value s_val = eval_ast(mem, tab, arg_asts[0], frame_base, cur_ret_type);
+        const AstNode *vn = mem_get_ast(mem, arg_asts[1]);
+        Value x_val = eval_ast(mem, tab, arg_asts[2], frame_base, cur_ret_type);
+        if (mem->has_error) return val_void();
+        if (vn->kind != AST_SLOT_LOAD) {
+            mem_err(mem, "Second argument to sym_eval must be a variable name");
+            return val_void();
+        }
+        uint8_t var_slot = vn->sub;
+        char vname[32] = "x";
+        if (var_slot < 64 && mem->local_slot_names[var_slot].len > 0) {
+            StrSlice nm = mem->local_slot_names[var_slot];
+            uint16_t cl = (nm.len < sizeof(vname) - 1) ? nm.len : (uint16_t)(sizeof(vname) - 1);
+            memcpy(vname, mem_str_ptr(mem, nm), cl);
+            vname[cl] = '\0';
+        }
+        char expr_buf[512];
+        if (!val_as_cstr(mem, s_val, expr_buf, sizeof(expr_buf))) {
+            mem_err(mem, "First argument to sym_eval must be a string expression");
+            return val_void();
+        }
+        Parser SP;
+        parser_init(&SP, mem, tab, expr_buf, (uint16_t)strlen(expr_buf), 0, false, false);
+        int sslot = parser_add_local(&SP, vname, (uint16_t)strlen(vname), mem->fast_real_type);
+        lex_next(&SP.lex);
+        uint16_t r = parser_parse_expr(&SP, 0);
+        if (mem->has_error || r == MEM_NO_IDX) return val_void();
+        uint16_t sub_frame = mem_push_frame(mem, SP.local_count > 0 ? SP.local_count : 1);
+        if (mem->has_error) return val_void();
+        mem_set_slot(mem, sub_frame, (uint8_t)sslot, x_val);
+        Value res = eval_ast(mem, tab, r, sub_frame, cur_ret_type);
+        mem_pop_frame(mem, sub_frame);
+        return res;
+    }
+
+    if (mtag == INTR_CALC_ODE_SYS) {
+        bool want_traj = mem_slice_eq_cstr(mem, tab->syms[n->ref], "ode_rk4_sys_traj");
+        const AstNode *first_node = mem_get_ast(mem, arg_asts[0]);
+        if (argc < 6 || first_node->kind != AST_SLOT_LOAD ||
+            mem_get_ast(mem, arg_asts[1])->kind != AST_SLOT_LOAD) {
+            mem_err(mem, "ode_rk4_sys lazy form requires (t, y, rhs_vec, t0, y0_vec, t1[, steps])");
+            return val_void();
+        }
+        uint8_t  t_slot  = first_node->sub;
+        uint8_t  y_slot  = mem_get_ast(mem, arg_asts[1])->sub;
+        uint16_t rhs_ast = arg_asts[2];
+        Value    vt0     = eval_ast(mem, tab, arg_asts[3], frame_base, cur_ret_type);
+        Value    vy0     = eval_ast(mem, tab, arg_asts[4], frame_base, cur_ret_type);
+        Value    vt1     = eval_ast(mem, tab, arg_asts[5], frame_base, cur_ret_type);
+        int      steps   = want_traj ? 20 : 100;
+        if (argc >= 7) {
+            steps = (int)val_get_f64(mem, eval_ast(mem, tab, arg_asts[6], frame_base, cur_ret_type));
+        }
+        if (mem->has_error) return val_void();
+        if (steps < 1) steps = 1;
+        if (steps > 2000) steps = 2000;
+        uint16_t dim = 0, y0_dat = 0;
+        if (val_get_type(mem, vy0) == mem->vec_type_id) {
+            uint16_t y0_hdr = val_get_pool_idx(vy0);
+            dim    = (uint16_t)mem_read_pool(mem, y0_hdr + 1);
+            y0_dat = (uint16_t)mem_read_pool(mem, y0_hdr + 3);
+        } else if (val_get_type(mem, vy0) == mem->mat_type_id) {
+            uint8_t mr = 0; uint16_t md[4] = { 0 };
+            delegate_mat_get_info(mem, vy0, &mr, &dim, &y0_dat, md);
+        } else {
+            mem_err(mem, "ode_rk4_sys initial state y0 must be a vector");
+            return val_void();
+        }
+        if (dim == 0 || dim > 16) {
+            mem_err(mem, "ode_rk4_sys supports state vectors of dimension 1..16");
+            return val_void();
+        }
+        double y_cur[16], k1[16], k2[16], k3[16], k4[16];
+        for (uint16_t d = 0; d < dim; ++d) y_cur[d] = mem_read_pool(mem, (uint16_t)(y0_dat + d));
+
+        uint16_t traj_hdr = 0, traj_dat = 0;
+        if (want_traj) {
+            uint16_t dims[4] = { (uint16_t)(steps + 1), dim, 0, 0 };
+            uint16_t tot_out = 0;
+            traj_hdr = mem_mat_alloc_hdr(mem, 2, dims, &tot_out, &traj_dat);
+            if (mem->has_error) return val_void();
+            for (uint16_t d = 0; d < dim; ++d) {
+                mem_write_pool(mem, (uint16_t)(traj_dat + d), snap_calc_noise(y_cur[d], 1e-9));
+            }
+        }
+
+        uint16_t work_hdr = mem_vec_alloc_hdr(mem, mem->fast_real_type, dim);
+        if (mem->has_error || !mem_vec_reserve(mem, work_hdr, 1, dim)) return val_void();
+        uint16_t work_dat = (uint16_t)mem_read_pool(mem, work_hdr + 3);
+        mem_write_pool(mem, work_hdr + 1, (double)dim);
+        Value work_vec = val_make_comp(mem, mem->vec_type_id, work_hdr, MEM_VEC_HDR_SLOTS);
+
+        Value saved_t = mem_get_slot(mem, frame_base, t_slot);
+        Value saved_y = mem_get_slot(mem, frame_base, y_slot);
+        double t_cur = val_get_f64(mem, vt0);
+        double t_end = val_get_f64(mem, vt1);
+        double h     = (t_end - t_cur) / (double)steps;
+
+        for (int s = 0; s < steps && !mem->has_error; ++s) {
+            double *ks[4] = { k1, k2, k3, k4 };
+            double  dt_f[4] = { 0.0, 0.5, 0.5, 1.0 };
+            for (int stage = 0; stage < 4; ++stage) {
+                double ts = t_cur + dt_f[stage] * h;
+                for (uint16_t d = 0; d < dim; ++d) {
+                    double yd = y_cur[d];
+                    if (stage == 1) yd += 0.5 * h * k1[d];
+                    else if (stage == 2) yd += 0.5 * h * k2[d];
+                    else if (stage == 3) yd += h * k3[d];
+                    mem_write_pool(mem, (uint16_t)(work_dat + d), yd);
+                }
+                uint16_t stage_pool = mem->pool_top;
+                Value dy_val = val_void();
+                mem_set_slot(mem, frame_base, t_slot, val_make_f64(mem, mem->fast_real_type, ts));
+                mem_set_slot(mem, frame_base, y_slot, work_vec);
+                dy_val = eval_ast(mem, tab, rhs_ast, frame_base, cur_ret_type);
+                if (mem->has_error) break;
+                if (val_get_type(mem, dy_val) == mem->vec_type_id) {
+                    uint16_t dhdr = val_get_pool_idx(dy_val);
+                    uint16_t ddat = (uint16_t)mem_read_pool(mem, dhdr + 3);
+                    for (uint16_t d = 0; d < dim; ++d) ks[stage][d] = mem_read_pool(mem, (uint16_t)(ddat + d));
+                } else if (val_get_type(mem, dy_val) == mem->mat_type_id) {
+                    uint8_t mr = 0; uint16_t mt = 0, mdat = 0, md[4] = { 0 };
+                    delegate_mat_get_info(mem, dy_val, &mr, &mt, &mdat, md);
+                    for (uint16_t d = 0; d < dim && d < mt; ++d) ks[stage][d] = mem_read_pool(mem, (uint16_t)(mdat + d));
+                } else {
+                    mem_err(mem, "ode_rk4_sys derivative must evaluate to a vector");
+                    break;
+                }
+                mem->pool_top = stage_pool;
+            }
+            for (uint16_t d = 0; d < dim; ++d) {
+                y_cur[d] += (h / 6.0) * (k1[d] + 2.0 * k2[d] + 2.0 * k3[d] + k4[d]);
+            }
+            t_cur += h;
+            if (want_traj) {
+                for (uint16_t d = 0; d < dim; ++d) {
+                    mem_write_pool(mem, (uint16_t)(traj_dat + (uint16_t)(s + 1) * dim + d),
+                                   snap_calc_noise(y_cur[d], 1e-9));
+                }
+            }
+        }
+        mem_set_slot(mem, frame_base, t_slot, saved_t);
+        mem_set_slot(mem, frame_base, y_slot, saved_y);
+        if (mem->has_error) return val_void();
+        if (want_traj) {
+            return val_make_comp(mem, mem->mat_type_id, traj_hdr, MEM_MAT_HDR_SLOTS);
+        }
+        for (uint16_t d = 0; d < dim; ++d) {
+            y_cur[d] = snap_calc_noise(y_cur[d], 1e-9);
+        }
+        return val_from_f64_vec(mem, y_cur, dim);
+    }
+
+    if (mtag == INTR_CALC_ODE_COUPLED) {
+        bool is_3d = mem_slice_eq_cstr(mem, tab->syms[n->ref], "ode_coupled3");
+        uint8_t min_args = is_3d ? 12 : 9;
+        if (argc < min_args) {
+            mem_err(mem, "%s requires at least %u arguments",
+                    is_3d ? "ode_coupled3" : "ode_coupled2", (unsigned)min_args);
+            return val_void();
+        }
+        uint8_t dim = is_3d ? 3 : 2;
+        uint8_t t_slot = mem_get_ast(mem, arg_asts[0])->sub;
+        uint8_t v_slots[3] = {
+            mem_get_ast(mem, arg_asts[1])->sub,
+            mem_get_ast(mem, arg_asts[2])->sub,
+            is_3d ? mem_get_ast(mem, arg_asts[3])->sub : 0
+        };
+        uint16_t d_asts[3] = {
+            arg_asts[is_3d ? 4 : 3],
+            arg_asts[is_3d ? 5 : 4],
+            is_3d ? arg_asts[6] : MEM_NO_IDX
+        };
+        uint8_t base_idx = is_3d ? 7 : 5;
+        double t_cur = val_get_f64(mem, eval_ast(mem, tab, arg_asts[base_idx], frame_base, cur_ret_type));
+        double y_cur[3] = { 0.0, 0.0, 0.0 };
+        for (uint8_t d = 0; d < dim; ++d) {
+            y_cur[d] = val_get_f64(mem, eval_ast(mem, tab, arg_asts[base_idx + 1 + d], frame_base, cur_ret_type));
+        }
+        double t_end = val_get_f64(mem, eval_ast(mem, tab, arg_asts[base_idx + 1 + dim], frame_base, cur_ret_type));
+        int steps = 100;
+        if (argc > base_idx + 2 + dim) {
+            steps = (int)val_get_f64(mem, eval_ast(mem, tab, arg_asts[base_idx + 2 + dim], frame_base, cur_ret_type));
+            if (steps < 1) steps = 1;
+            if (steps > 4096) steps = 4096;
+        }
+        if (mem->has_error) return val_void();
+
+        Value saved_t = mem_get_slot(mem, frame_base, t_slot);
+        Value saved_v[3];
+        for (uint8_t d = 0; d < dim; ++d) saved_v[d] = mem_get_slot(mem, frame_base, v_slots[d]);
+
+        double h = (t_end - t_cur) / (double)steps;
+        double k1[3], k2[3], k3[3], k4[3];
+        for (int s = 0; s < steps && !mem->has_error; ++s) {
+            double *ks[4] = { k1, k2, k3, k4 };
+            double dt_f[4] = { 0.0, 0.5, 0.5, 1.0 };
+            for (int stage = 0; stage < 4; ++stage) {
+                double ts = t_cur + dt_f[stage] * h;
+                mem_set_slot(mem, frame_base, t_slot, val_make_f64(mem, mem->fast_real_type, ts));
+                for (uint8_t d = 0; d < dim; ++d) {
+                    double yd = y_cur[d];
+                    if (stage == 1) yd += 0.5 * h * k1[d];
+                    else if (stage == 2) yd += 0.5 * h * k2[d];
+                    else if (stage == 3) yd += h * k3[d];
+                    mem_set_slot(mem, frame_base, v_slots[d], val_make_f64(mem, mem->fast_real_type, yd));
+                }
+                for (uint8_t d = 0; d < dim; ++d) {
+                    ks[stage][d] = val_get_f64(mem, eval_ast(mem, tab, d_asts[d], frame_base, cur_ret_type));
+                }
+            }
+            for (uint8_t d = 0; d < dim; ++d) {
+                y_cur[d] += (h / 6.0) * (k1[d] + 2.0 * k2[d] + 2.0 * k3[d] + k4[d]);
+            }
+            t_cur += h;
+        }
+        mem_set_slot(mem, frame_base, t_slot, saved_t);
+        for (uint8_t d = 0; d < dim; ++d) {
+            mem_set_slot(mem, frame_base, v_slots[d], saved_v[d]);
+            y_cur[d] = snap_calc_noise(y_cur[d], 1e-9);
+        }
+        if (mem->has_error) return val_void();
+        return val_from_f64_vec(mem, y_cur, dim);
+    }
+    if (mtag == INTR_CALC_ODE || mtag == INTR_CALC_ODE_VEC) {
+        if (argc < 6) {
+            mem_err(mem, "ode_rk4(t, y, expr, t0, y0, t1[, steps]) requires at least 6 arguments");
+            return val_void();
+        }
+        const AstNode *t_node = mem_get_ast(mem, arg_asts[0]);
+        const AstNode *y_node = mem_get_ast(mem, arg_asts[1]);
+        if (t_node->kind != AST_SLOT_LOAD || y_node->kind != AST_SLOT_LOAD) {
+            mem_err(mem, "First two arguments to ode_rk4 must be variable names (t, y)");
+            return val_void();
+        }
+        uint8_t  t_slot   = t_node->sub;
+        uint8_t  y_slot   = y_node->sub;
+        uint16_t ode_expr = arg_asts[2];
+        Value vt0 = eval_ast(mem, tab, arg_asts[3], frame_base, cur_ret_type);
+        Value vy0 = eval_ast(mem, tab, arg_asts[4], frame_base, cur_ret_type);
+        Value vt1 = eval_ast(mem, tab, arg_asts[5], frame_base, cur_ret_type);
+        if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+        uint8_t u_t = MEM_UNIT_NONE;
+        if (!delegate_check_additive_unit_compat(mem, tab, "ode_rk4", 7, vt0, vt1, &u_t)) {
+            return val_void();
+        }
+        uint8_t u_y = val_get_unit(mem, vy0);
+        int steps = (mtag == INTR_CALC_ODE_VEC) ? 10 : 100;
+        if (argc >= 7) {
+            Value vsteps = eval_ast(mem, tab, arg_asts[6], frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+            steps = (int)val_get_f64(mem, vsteps);
+            if (steps < 1) steps = 1;
+            if (steps > 4096) steps = 4096;
+        }
+        uint16_t traj_hdr = 0, traj_dat = 0;
+        if (mtag == INTR_CALC_ODE_VEC) {
+            traj_hdr = mem_vec_alloc_hdr(mem, mem->fast_real_type, (uint16_t)(steps + 1));
+            if (mem->has_error) return val_void();
+            mem_write_pool(mem, traj_hdr + 0, (double)(mem->fast_real_type | ((uint16_t)u_y << 8u)));
+            if (!mem_vec_reserve(mem, traj_hdr, 1, (uint16_t)(steps + 1))) return val_void();
+            traj_dat = (uint16_t)mem_read_pool(mem, traj_hdr + 3);
+        }
+        Value  saved_t = mem_get_slot(mem, frame_base, t_slot);
+        Value  saved_y = mem_get_slot(mem, frame_base, y_slot);
+        double t_cur   = val_get_f64(mem, vt0);
+        double y_cur   = val_get_f64(mem, vy0);
+        double t_end   = val_get_f64(mem, vt1);
+        double h       = (t_end - t_cur) / (double)steps;
+        if (mtag == INTR_CALC_ODE_VEC) {
+            mem_write_pool(mem, traj_dat + 0, snap_calc_noise(y_cur, 1e-9));
+        }
+        for (int i = 0; i < steps && !mem->has_error; ++i) {
+            mem_set_slot(mem, frame_base, t_slot, val_make_f64_unit(mem, mem->fast_real_type, u_t, t_cur));
+            mem_set_slot(mem, frame_base, y_slot, val_make_f64_unit(mem, mem->fast_real_type, u_y, y_cur));
+            double k1 = val_get_f64(mem, eval_ast(mem, tab, ode_expr, frame_base, cur_ret_type));
+
+            mem_set_slot(mem, frame_base, t_slot, val_make_f64_unit(mem, mem->fast_real_type, u_t, t_cur + 0.5 * h));
+            mem_set_slot(mem, frame_base, y_slot, val_make_f64_unit(mem, mem->fast_real_type, u_y, y_cur + 0.5 * h * k1));
+            double k2 = val_get_f64(mem, eval_ast(mem, tab, ode_expr, frame_base, cur_ret_type));
+
+            mem_set_slot(mem, frame_base, y_slot, val_make_f64_unit(mem, mem->fast_real_type, u_y, y_cur + 0.5 * h * k2));
+            double k3 = val_get_f64(mem, eval_ast(mem, tab, ode_expr, frame_base, cur_ret_type));
+
+            mem_set_slot(mem, frame_base, t_slot, val_make_f64_unit(mem, mem->fast_real_type, u_t, t_cur + h));
+            mem_set_slot(mem, frame_base, y_slot, val_make_f64_unit(mem, mem->fast_real_type, u_y, y_cur + h * k3));
+            double k4 = val_get_f64(mem, eval_ast(mem, tab, ode_expr, frame_base, cur_ret_type));
+
+            y_cur += (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4);
+            t_cur += h;
+            if (mtag == INTR_CALC_ODE_VEC) {
+                mem_write_pool(mem, (uint16_t)(traj_dat + (uint16_t)(i + 1)), snap_calc_noise(y_cur, 1e-9));
+            }
+        }
+        mem_set_slot(mem, frame_base, t_slot, saved_t);
+        mem_set_slot(mem, frame_base, y_slot, saved_y);
+        if (mem->has_error) return val_void();
+        if (mtag == INTR_CALC_ODE_VEC) {
+            mem_write_pool(mem, traj_hdr + 1, (double)(steps + 1));
+            return val_make_comp(mem, mem->vec_type_id, traj_hdr, MEM_VEC_HDR_SLOTS);
+        }
+        return val_make_f64_unit(mem, mem->fast_real_type, u_y, snap_calc_noise(y_cur, 1e-9));
     }
     if (argc < 2 || (mtag != INTR_CALC_SOLVE && argc < 3)) {
         mem_err(mem, "Calculus construct requires at least %d arguments",
@@ -1785,6 +4299,7 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
     uint16_t expr_ast = arg_asts[1];
     Value    saved_v  = mem_get_slot(mem, frame_base, var_slot);
     double   res      = 0.0;
+    uint8_t  res_unit = MEM_UNIT_NONE;
 
     if (mtag == INTR_CALC_DIFF || mtag == INTR_CALC_DIFF2 || mtag == INTR_CALC_DIFFN) {
         Value v_x0 = eval_ast(mem, tab, arg_asts[2], frame_base, cur_ret_type);
@@ -1792,7 +4307,9 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
             mem_set_slot(mem, frame_base, var_slot, saved_v);
             return val_void();
         }
-        double x0 = val_get_f64(mem, v_x0);
+        double  x0  = val_get_f64(mem, v_x0);
+        uint8_t u_x = val_get_unit(mem, v_x0);
+        uint8_t u_y = MEM_UNIT_NONE;
         int order = 1;
         if (mtag == INTR_CALC_DIFF2) {
             order = 2;
@@ -1807,39 +4324,42 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
 
         double scale = (fabs(x0) > 1.0) ? fabs(x0) : 1.0;
         if (order <= 0) {
-            res = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0);
+            res = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0, &u_y);
+            res_unit = u_y;
         } else if (order == 1) {
             double h   = 1e-5 * scale;
-            double fp2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h);
-            double fp1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + h);
-            double fm1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - h);
-            double fm2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h);
+            double fp2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h, &u_y);
+            double fp1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + h, NULL);
+            double fm1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - h, NULL);
+            double fm2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h, NULL);
             res = (-fp2 + 8.0 * fp1 - 8.0 * fm1 + fm2) / (12.0 * h);
             res = snap_calc_noise(res, 1e-9);
+            res_unit = delegate_resolve_div_unit(mem, tab, u_y, u_x);
         } else if (order == 2) {
             double h   = 1e-4 * scale;
-            double fp2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h);
-            double fp1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + h);
-            double f0  = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0);
-            double fm1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - h);
-            double fm2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h);
+            double fp2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h, &u_y);
+            double fp1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + h, NULL);
+            double f0  = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0, NULL);
+            double fm1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - h, NULL);
+            double fm2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h, NULL);
             res = (-fp2 + 16.0 * fp1 - 30.0 * f0 + 16.0 * fm1 - fm2) / (12.0 * h * h);
             res = snap_calc_noise(res, 1e-7);
+            res_unit = delegate_resolve_div_unit(mem, tab, delegate_resolve_div_unit(mem, tab, u_y, u_x), u_x);
         } else if (order == 3) {
             double h   = 1e-3 * scale;
-            double fp2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h);
-            double fp1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + h);
-            double fm1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - h);
-            double fm2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h);
+            double fp2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h, &u_y);
+            double fp1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + h, NULL);
+            double fm1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - h, NULL);
+            double fm2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h, NULL);
             res = (fp2 - 2.0 * fp1 + 2.0 * fm1 - fm2) / (2.0 * h * h * h);
             res = snap_calc_noise(res, 1e-5);
         } else {
             double h   = 2e-3 * scale;
-            double fp2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h);
-            double fp1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 + h);
-            double f0  = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0);
-            double fm1 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - h);
-            double fm2 = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h);
+            double fp2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + 2.0 * h, &u_y);
+            double fp1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 + h, NULL);
+            double f0  = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0, NULL);
+            double fm1 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - h, NULL);
+            double fm2 = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, x0 - 2.0 * h, NULL);
             res = (fp2 - 4.0 * fp1 + 6.0 * f0 - 4.0 * fm1 + fm2) / (h * h * h * h);
             res = snap_calc_noise(res, 1e-4);
         }
@@ -1855,6 +4375,12 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
             mem_set_slot(mem, frame_base, var_slot, saved_v);
             return val_void();
         }
+        uint8_t u_x = MEM_UNIT_NONE;
+        if (!delegate_check_additive_unit_compat(mem, tab, "integrate", 9, va, vb, &u_x)) {
+            mem_set_slot(mem, frame_base, var_slot, saved_v);
+            return val_void();
+        }
+        uint8_t u_y = MEM_UNIT_NONE;
         double a = val_get_f64(mem, va);
         double b = val_get_f64(mem, vb);
         int steps = 200;
@@ -1870,15 +4396,16 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
             if (steps > 10000) steps = 10000;
         }
         double h   = (b - a) / (double)steps;
-        double sum = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, a)
-                   + eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, b);
+        double sum = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, a, &u_y)
+                   + eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, b, NULL);
         for (int k = 1; k < steps && !mem->has_error; ++k) {
             double xk = a + (double)k * h;
-            double fk = eval_calc_point(mem, tab, var_slot, expr_ast, frame_base, cur_ret_type, xk);
+            double fk = eval_calc_point_u(mem, tab, var_slot, u_x, expr_ast, frame_base, cur_ret_type, xk, NULL);
             sum += ((k % 2 == 1) ? 4.0 : 2.0) * fk;
         }
         res = (h / 3.0) * sum;
         res = snap_calc_noise(res, 1e-9);
+        res_unit = delegate_resolve_mul_unit(mem, tab, u_y, u_x);
     } else if (mtag == INTR_CALC_LIM || mtag == INTR_CALC_LIM_L || mtag == INTR_CALC_LIM_R) {
         Value v_x0 = eval_ast(mem, tab, arg_asts[2], frame_base, cur_ret_type);
         if (mem->has_error || mem->jump_active != JUMP_NONE) {
@@ -2019,5 +4546,5 @@ Value delegate_eval_calculus_meta(MemArena *mem, SymTable *tab,
 
     mem_set_slot(mem, frame_base, var_slot, saved_v);
     if (mem->has_error) return val_void();
-    return val_make_f64(mem, mem->fast_real_type, res);
+    return val_make_f64_unit(mem, mem->fast_real_type, res_unit, res);
 }

@@ -167,28 +167,32 @@ static void ext_parse_type_decl(ExtLoader *L) {
             } else if (c == '"') {
                 pe->kind  = PAT_LIT;
                 pe->chars = ext_read_quoted(L);
-            } else if (c == '[' && L->pos + 1 < L->len && L->src[L->pos + 1] == '^') {
-                L->pos = (uint16_t)(L->pos + 2);
-                char excl[32];
+            } else if (c == '[') {
+                bool is_neg = (L->pos + 1 < L->len && L->src[L->pos + 1] == '^');
+                L->pos = (uint16_t)(L->pos + (is_neg ? 2 : 1));
+                char cset[32];
                 uint16_t elen = 0;
                 while (L->pos < L->len && L->src[L->pos] != ']') {
                     if (L->src[L->pos] == '\\' && L->pos + 1 < L->len) L->pos++;
-                    if (elen >= sizeof(excl) - 1) {
-                        mem_err(mem, "Negated character class exceeds maximum length (31 bytes)");
+                    if (elen >= sizeof(cset) - 1) {
+                        mem_err(mem, "Character class exceeds maximum length (31 bytes)");
                         return;
                     }
-                    excl[elen++] = L->src[L->pos];
+                    cset[elen++] = L->src[L->pos];
                     L->pos++;
                 }
                 if (L->pos < L->len && L->src[L->pos] == ']') L->pos++;
-                pe->kind  = PAT_NOT_CHARS;
-                pe->chars = mem_intern_str(mem, excl, elen);
+                pe->kind  = is_neg ? PAT_NOT_CHARS : PAT_CHARS;
+                pe->chars = mem_intern_str(mem, cset, elen);
             } else if (c == '(') {
                 L->pos++;
                 pe->kind = PAT_GROUP_START;
             } else if (c == ')') {
                 L->pos++;
                 pe->kind = PAT_GROUP_END;
+            } else if (c == '|') {
+                L->pos++;
+                pe->kind = PAT_ALT;
             } else {
                 mem_err(mem, "Invalid pattern syntax near '%c'", c);
                 return;
@@ -231,7 +235,14 @@ static void ext_parse_type_decl(ExtLoader *L) {
             if (mem->fn_type_id == 0) {
                 mem->fn_type_id = (uint8_t)tid;
             }
+        } else if (td->parser_intr == INTR_MAP_TYPE) {
+            td->is_consuming = 0;
+            td->flat_size    = MEM_MAP_HDR_SLOTS;
+            if (mem->map_type_id == 0) {
+                mem->map_type_id = (uint8_t)tid;
+            }
         }
+        if (tid < 64u) mem->type_stride[tid] = (uint8_t)td->flat_size;
     } else if (ext_match_char(L, '(')) {
         td->is_consuming = 0;
         td->start_idx    = tab->field_count;
@@ -276,6 +287,7 @@ static void ext_parse_type_decl(ExtLoader *L) {
         }
         td->field_count = fcount;
         td->flat_size   = flat_off;
+        if (tid < 64u) mem->type_stride[tid] = (uint8_t)flat_off;
     } else {
         mem_err(mem, "Expected '~' (consuming/container) or '(' (struct) in type declaration");
     }
@@ -731,6 +743,50 @@ bool ext_compile_slice(MemArena *mem, SymTable *tab,
             continue;
         }
 
+        if (c == '@') {
+            L.pos++;
+            StrSlice dkw = ext_read_ident(&L);
+            if (!mem_slice_eq_cstr(mem, dkw, "dim") && !mem_slice_eq_cstr(mem, dkw, "unit_dim")) {
+                mem_err(mem, "Unknown top-level directive '@%.*s' (expected '@dim')",
+                        (int)dkw.len, mem_str_ptr(mem, dkw));
+                break;
+            }
+            if (!ext_match_char(&L, '(')) {
+                mem_err(mem, "Expected '(' after '@dim'");
+                break;
+            }
+            StrSlice uname = ext_read_ident(&L);
+            if (uname.len == 0) {
+                mem_err(mem, "Expected unit group name in '@dim(...)'");
+                break;
+            }
+            uint8_t uid = sym_find_or_add_unit(tab, mem, mem_str_ptr(mem, uname), uname.len);
+            if (mem->has_error || uid == MEM_UNIT_NONE) break;
+            UnitDimDef udim;
+            memset(&udim, 0, sizeof(udim));
+            udim.has_dim = 1;
+            int idx = 0;
+            while (L.pos < L.len && !mem->has_error && idx < 7) {
+                if (!ext_match_char(&L, ',')) break;
+                ext_skip_ws(&L);
+                char *endp = NULL;
+                long val = strtol(L.src + L.pos, &endp, 10);
+                if (endp == L.src + L.pos) {
+                    mem_err(mem, "Expected integer exponent in '@dim(...)'");
+                    break;
+                }
+                L.pos = (uint16_t)(endp - L.src);
+                udim.exp[idx++] = (int8_t)val;
+            }
+            if (mem->has_error) break;
+            if (!ext_match_char(&L, ')')) {
+                mem_err(mem, "Expected ')' at end of '@dim(...)'");
+                break;
+            }
+            tab->unit_dims[uid] = udim;
+            continue;
+        }
+
         if (c == '"') {
             StrSlice sym = ext_read_quoted(&L);
             if (mem->has_error) break;
@@ -1060,8 +1116,8 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
             pos++;
             at_stmt_start = false;
         } else if (in_pattern) {
-            if (src[pos] == '[' && pos + 1 < len && src[pos + 1] == '^') {
-                pos = (uint16_t)(pos + 2);
+            if (src[pos] == '[') {
+                pos = (uint16_t)(pos + 1);
                 while (pos < len && src[pos] != ']') {
                     if (src[pos] == '\\' && pos + 1 < len) pos = (uint16_t)(pos + 2);
                     else pos++;

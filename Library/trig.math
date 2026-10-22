@@ -38,3 +38,12 @@ cbrt(x)       = @cbrt(x)
 root(x, n)    = x ^ (1 / n)
 hypot(a, b)   = √(a^2 + b^2)
 sigmoid(x)    = 1 / (1 + @exp(-x))
+
+# 5. Error Functions, Gamma/Beta Special Functions & Normal Distribution
+erf(x)        = @erf(x)
+erfc(x)       = @erfc(x)
+gamma(x)      = @gamma(x)
+lgamma(x)     = @lgamma(x)
+beta_fn(a, b) = @exp(@lgamma(a) + @lgamma(b) - @lgamma(a + b))
+norm_pdf(x, mu = 0, s = 1) = (1 / (s * √(2π))) * @exp(-0.5 * (((x - mu) / s) ^ 2))
+norm_cdf(x, mu = 0, s = 1) = 0.5 * (1 + @erf((x - mu) / (s * √2)))

@@ -12,7 +12,7 @@ static uint32_t calc_mathc_payload_bytes(const MathcHeader *h) {
          + (uint32_t)h->perm_pool_top   * (uint32_t)sizeof(double)
          + (uint32_t)h->mod_count       * (uint32_t)sizeof(StrSlice)
          + (uint32_t)h->type_count      * (uint32_t)sizeof(TypeDef)
-         + (uint32_t)h->unit_count      * (uint32_t)sizeof(StrSlice)
+         + (uint32_t)h->unit_count      * ((uint32_t)sizeof(StrSlice) + (uint32_t)sizeof(UnitDimDef))
          + (uint32_t)h->pat_elem_count  * (uint32_t)sizeof(PatElem)
          + (uint32_t)h->field_count     * (uint32_t)sizeof(FieldDef)
          + (uint32_t)h->sym_count       * (uint32_t)sizeof(StrSlice)
@@ -99,6 +99,7 @@ size_t ext_save_mathc_mem(MemArena *mem, const SymTable *tab,
     WRITE_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
     WRITE_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
     WRITE_SLICE(tab->units,     hdr.unit_count     * sizeof(StrSlice));
+    WRITE_SLICE(tab->unit_dims, hdr.unit_count     * sizeof(UnitDimDef));
     WRITE_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
     WRITE_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
     WRITE_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
@@ -131,6 +132,8 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
     const uint8_t *mods_ptr   = cur; cur += (size_t)hdr->mod_count      * sizeof(StrSlice);
     const uint8_t *types_ptr  = cur; cur += (size_t)hdr->type_count     * sizeof(TypeDef);
     const uint8_t *units_ptr  = cur; cur += (size_t)hdr->unit_count     * sizeof(StrSlice);
+    const uint8_t *udims_ptr  = cur; cur += (size_t)hdr->unit_count     * sizeof(UnitDimDef);
+    (void)udims_ptr;
     const uint8_t *pats_ptr   = cur; cur += (size_t)hdr->pat_elem_count * sizeof(PatElem);
     const uint8_t *fields_ptr = cur; cur += (size_t)hdr->field_count    * sizeof(FieldDef);
     const uint8_t *syms_ptr   = cur; cur += (size_t)hdr->sym_count      * sizeof(StrSlice);
@@ -172,7 +175,7 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
     for (uint16_t i = 0; i < hdr->pat_elem_count; ++i) {
         PatElem pe;
         memcpy(&pe, pats_ptr + (size_t)i * sizeof(PatElem), sizeof(PatElem));
-        if (pe.kind < PAT_DIGIT || pe.kind > PAT_GROUP_END) return false;
+        if (pe.kind < PAT_DIGIT || pe.kind > PAT_ALT) return false;
         if (pe.quant > QUANT_OPT) return false;
         if ((uint32_t)pe.chars.off + (uint32_t)pe.chars.len > hdr->perm_src_len) return false;
         if (pe.kind == PAT_LIT && pe.chars.len == 0) return false;
@@ -267,7 +270,8 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
 
             case AST_SLOT_LOAD:
                 if (n.sub >= PARSER_MAX_LOCALS) return false;
-                if (n.left != MEM_NO_IDX && n.left != SYM_TYPE_ANY && n.left >= hdr->type_count) return false;
+                if (n.left != MEM_NO_IDX && n.left != SYM_TYPE_ANY &&
+                    (n.left & 0x4000u) == 0 && n.left >= hdr->type_count) return false;
                 if (n.right != MEM_NO_IDX && n.right < SYM_UNIT_LOCK_NONE && n.right >= eff_units) return false;
                 break;
 
@@ -291,8 +295,8 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
                 if (n.ref >= hdr->sym_count || !AST_OPT_OK(n.left)) return false;
                 if (n.right != MEM_NO_IDX) {
                     if ((n.right & 0x8000u) != 0) {
-                        uint8_t c_tid = (uint8_t)(n.right & 0xFFu);
-                        uint8_t c_uid = (uint8_t)((n.right >> 8u) & 0x1Fu);
+                        uint8_t c_tid = (uint8_t)(n.right & 0x3Fu);
+                        uint8_t c_uid = (uint8_t)((n.right >> 6u) & 0x3Fu);
                         if (c_tid >= hdr->type_count || c_uid >= eff_units) return false;
                     } else if (!AST_OPT_OK(n.right)) {
                         return false;
@@ -364,7 +368,7 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
                 break;
 
             case AST_LAMBDA:
-                if (n.sub > 4 || !AST_REQ_OK(n.ref)) return false;
+                if (n.sub > MEM_FN_MAX_PARAMS || !AST_REQ_OK(n.ref) || !AST_OPT_OK(n.right)) return false;
                 break;
 
             case AST_FN_CALL:
@@ -481,6 +485,7 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     COPY_SLICE(tab->mod_names, hdr.mod_count      * sizeof(StrSlice));
     COPY_SLICE(tab->types,     hdr.type_count     * sizeof(TypeDef));
     COPY_SLICE(tab->units,     hdr.unit_count     * sizeof(StrSlice));
+    COPY_SLICE(tab->unit_dims, hdr.unit_count     * sizeof(UnitDimDef));
     COPY_SLICE(tab->pat_elems, hdr.pat_elem_count * sizeof(PatElem));
     COPY_SLICE(tab->fields,    hdr.field_count    * sizeof(FieldDef));
     COPY_SLICE(tab->syms,      hdr.sym_count      * sizeof(StrSlice));
@@ -494,10 +499,14 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     mem->vec_type_id    = hdr.vec_type_id;
     mem->mat_type_id    = hdr.mat_type_id;
     mem->fn_type_id     = 0;
+    mem->map_type_id    = 0;
+    memset(mem->type_stride, 0, sizeof(mem->type_stride));
     for (uint16_t i = 1; i < hdr.type_count; ++i) {
-        if (tab->types[i].parser_intr == INTR_FN_TYPE) {
+        if (i < 64u) mem->type_stride[i] = (uint8_t)tab->types[i].flat_size;
+        if (tab->types[i].parser_intr == INTR_FN_TYPE && mem->fn_type_id == 0) {
             mem->fn_type_id = (uint8_t)i;
-            break;
+        } else if (tab->types[i].parser_intr == INTR_MAP_TYPE && mem->map_type_id == 0) {
+            mem->map_type_id = (uint8_t)i;
         }
     }
     mem->src_len        = hdr.perm_src_len;

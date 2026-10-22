@@ -52,7 +52,10 @@ bool     hardcode_can_start_newline_stmt(const Parser *P);
 /*code section below manages hardcoding lookahead for parenthesized lambda parameter lists and vector comprehensions*/
 /*Construct (x, y) => expr, () => expr, [expr for var in iterable (if cond)]*/
 bool     hardcode_is_paren_lambda(const Parser *P);
+bool     hardcode_is_inline_fn_def(const Parser *P);
+bool     hardcode_rhs_starts_lambda(const Parser *P);
 bool     hardcode_scan_comprehension_var(const Parser *P,
+                                         const char **out_idx_name, uint16_t *out_idx_len,
                                          const char **out_vname, uint16_t *out_vlen);
 
 /*code section below manages hardcoding same-line implicit multiplication rules*/
@@ -80,6 +83,8 @@ bool     hardcode_should_use_unit_for_in_rhs(const MemArena *mem, const SymTable
 bool     hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
                                       const AstNode *n, uint16_t frame_base,
                                       uint8_t cur_ret_type, Value *out_val);
+bool     hardcode_is_calc_var_param(uint8_t fn_meta, uint8_t argc);
+uint16_t hardcode_parse_pipe_rhs(Parser *P, uint16_t left, int next_min);
 
 /*code section below manages hardcoding parameterized container nomenclature and variadic constructors*/
 /*Construct vec<T>(...), list<T>(...), stack<T>(...), queue<T>(...), vec(...), list(...), stack(...), queue(...)*/

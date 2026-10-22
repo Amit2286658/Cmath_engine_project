@@ -48,7 +48,11 @@ void mem_rewind_scratch(MemArena *mem) {
     mem->jump_active    = 0;
     mem->jump_target_id = 0;
     mem->jump_val       = val_void();
-    mem->fn_src_count   = 0;
+    mem->fn_src_count    = 0;
+    mem->temp_root_count = 0;
+    memset(mem->local_slot_names, 0, sizeof(mem->local_slot_names));
+    mem->vrange_cnt      = 0;
+    memset(mem->vrange_hdr, 0, sizeof(mem->vrange_hdr));
     mem->eval_depth     = 0;
     mem->eval_steps     = 0;
     for (uint8_t i = 0; i < MEM_MAX_LABELS; ++i) {
@@ -257,6 +261,131 @@ uint16_t mem_mat_alloc_hdr(MemArena *mem, uint8_t rank, const uint16_t *dims,
     if (out_data_idx)  *out_data_idx  = data_idx;
     return hdr_idx;
 }
+
+/*
+ * Dynamic Map (`$map`) 4-Slot Header Layout in `f64_pool[hdr_idx .. hdr_idx+3]`:
+ *   [0] = packed_val_type (low 8 bits = locked val type ID or 0, high 8 bits = locked unit ID)
+ *   [1] = len             (number of active key-value pairs)
+ *   [2] = cap             (allocated entry capacity)
+ *   [3] = data_idx        (start index in `f64_pool` of `cap * 2` doubles:
+ *                          [2*i + 0] = packed key StrSlice, [2*i + 1] = raw 64-bit Value bits)
+ */
+uint16_t mem_map_alloc_hdr(MemArena *mem, uint16_t packed_val_type, uint16_t init_cap) {
+    uint16_t hdr_idx = mem_alloc_pool(mem, MEM_MAP_HDR_SLOTS);
+    if (hdr_idx == MEM_NO_IDX || mem->has_error) return MEM_NO_IDX;
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 0), (double)packed_val_type);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 1), 0.0);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)init_cap);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 3), 0.0);
+    return hdr_idx;
+}
+
+bool mem_map_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t min_cap) {
+    if (!mem || hdr_idx == MEM_NO_IDX || (uint32_t)hdr_idx + MEM_MAP_HDR_SLOTS > MEM_MAX_F64_POOL) {
+        if (mem) mem_err(mem, "Invalid map header index");
+        return false;
+    }
+    uint16_t len      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 1));
+    uint16_t cap      = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 2));
+    uint16_t data_idx = (uint16_t)mem_read_pool(mem, (uint16_t)(hdr_idx + 3));
+
+    if (data_idx == 0) {
+        uint16_t target_cap = (cap >= min_cap) ? cap : min_cap;
+        if (target_cap < 4) target_cap = 4;
+        if ((uint32_t)target_cap * 2u > (uint32_t)MEM_MAX_F64_POOL) {
+            mem_err(mem, "Map capacity exceeds pool limit");
+            return false;
+        }
+        uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(target_cap * 2u));
+        if (new_data == MEM_NO_IDX || mem->has_error) return false;
+        memset(&mem->f64_pool[new_data], 0, (size_t)(target_cap * 2u) * sizeof(double));
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)target_cap);
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 3), (double)new_data);
+        return true;
+    }
+
+    if (cap >= min_cap) return true;
+
+    uint32_t new_cap32 = (cap < 4) ? 4u : ((uint32_t)cap * 2u);
+    if (new_cap32 < (uint32_t)min_cap) new_cap32 = (uint32_t)min_cap;
+    if (new_cap32 * 2u > (uint32_t)MEM_MAX_F64_POOL) {
+        mem_err(mem, "Map capacity exceeds pool limit");
+        return false;
+    }
+    uint16_t new_cap     = (uint16_t)new_cap32;
+    uint16_t extra_slots = (uint16_t)((new_cap - cap) * 2u);
+
+    if ((uint16_t)(data_idx + cap * 2u) == mem->pool_top) {
+        uint16_t ext_idx = mem_alloc_pool(mem, extra_slots);
+        if (ext_idx == MEM_NO_IDX || mem->has_error) return false;
+        memset(&mem->f64_pool[ext_idx], 0, (size_t)extra_slots * sizeof(double));
+        mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)new_cap);
+        return true;
+    }
+
+    uint16_t new_data = mem_alloc_pool(mem, (uint16_t)(new_cap * 2u));
+    if (new_data == MEM_NO_IDX || mem->has_error) return false;
+    uint16_t copy_slots = (uint16_t)(len * 2u);
+    if (copy_slots > 0) {
+        memcpy(&mem->f64_pool[new_data], &mem->f64_pool[data_idx],
+               (size_t)copy_slots * sizeof(double));
+    }
+    if (new_cap * 2u > copy_slots) {
+        memset(&mem->f64_pool[new_data + copy_slots], 0,
+               (size_t)(new_cap * 2u - copy_slots) * sizeof(double));
+    }
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 2), (double)new_cap);
+    mem_write_pool(mem, (uint16_t)(hdr_idx + 3), (double)new_data);
+    return true;
+}
+
+StrSlice mem_map_entry_key(const MemArena *mem, uint16_t data_idx, uint16_t entry_i) {
+    StrSlice empty = { 0, 0 };
+    uint32_t slot = (uint32_t)data_idx + (uint32_t)entry_i * 2u;
+    if (!mem || slot >= MEM_MAX_F64_POOL) return empty;
+    uint32_t packed = (uint32_t)mem->f64_pool[slot];
+    StrSlice s = { (uint16_t)(packed >> 16u), (uint16_t)(packed & 0xFFFFu) };
+    return s;
+}
+
+Value mem_map_entry_val(const MemArena *mem, uint16_t data_idx, uint16_t entry_i) {
+    uint32_t slot = (uint32_t)data_idx + (uint32_t)entry_i * 2u + 1u;
+    if (!mem || slot >= MEM_MAX_F64_POOL) return val_void();
+    Value v = 0;
+    memcpy(&v, &mem->f64_pool[slot], sizeof(Value));
+    return v;
+}
+
+void mem_map_set_entry(MemArena *mem, uint16_t data_idx, uint16_t entry_i,
+                       StrSlice key, Value val) {
+    uint32_t slot = (uint32_t)data_idx + (uint32_t)entry_i * 2u;
+    if (!mem || mem->has_error || slot + 1u >= MEM_MAX_F64_POOL) return;
+    uint32_t packed = ((uint32_t)key.off << 16u) | (uint32_t)key.len;
+    mem->f64_pool[slot] = (double)packed;
+    memcpy(&mem->f64_pool[slot + 1u], &val, sizeof(Value));
+}
+
+uint16_t mem_push_temp_root(MemArena *mem, Value *vptr) {
+    if (!mem || !vptr) return 0;
+    uint16_t saved = mem->temp_root_count;
+    if (mem->temp_root_count < MEM_MAX_TEMP_ROOTS) {
+        mem->temp_roots[mem->temp_root_count++] = vptr;
+    }
+    return saved;
+}
+
+void mem_pop_temp_roots(MemArena *mem, uint16_t saved_count) {
+    if (!mem) return;
+    if (saved_count <= MEM_MAX_TEMP_ROOTS) {
+        mem->temp_root_count = saved_count;
+    }
+}
+
+uint16_t mem_scratch_pool_used(const MemArena *mem) {
+    if (!mem || mem->pool_top <= mem->perm_pool_top) return 0;
+    return (uint16_t)(mem->pool_top - mem->perm_pool_top);
+}
+
 
 uint16_t mem_alloc_ast(MemArena *mem, uint8_t kind, uint8_t sub,
                        uint16_t ref, uint16_t left, uint16_t right) {
@@ -510,4 +639,254 @@ bool val_as_cstr(const MemArena *mem, Value v, char *buf, size_t cap) {
     }
     buf[copy_len] = '\0';
     return true;
+}
+
+/* ============================================================================
+ * 5. SCRATCH POOL MARK-SWEEP / SLIDING COMPACTION GARBAGE COLLECTOR
+ * ============================================================================ */
+
+static void gc_mark_val_rec(MemArena *mem, Value v, uint16_t perm_top, uint16_t old_top, uint8_t depth);
+
+static void gc_mark_vec_hdr(MemArena *mem, uint16_t hdr_idx, uint16_t perm_top, uint16_t old_top, uint8_t depth) {
+    if (depth > 16 || hdr_idx < perm_top || (uint32_t)hdr_idx + MEM_VEC_HDR_SLOTS > old_top) return;
+    if (mem->gc_mark[hdr_idx] == 2u) return;
+    mem->gc_mark[hdr_idx] = 2u;
+    for (uint16_t k = 1; k < MEM_VEC_HDR_SLOTS; ++k) {
+        mem->gc_mark[hdr_idx + k] = 1u;
+    }
+    uint16_t raw_hdr0 = (uint16_t)mem->f64_pool[hdr_idx + 0];
+    uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
+    uint16_t len      = (uint16_t)mem->f64_pool[hdr_idx + 1];
+    uint16_t cap      = (uint16_t)mem->f64_pool[hdr_idx + 2];
+    uint16_t data_idx = (uint16_t)mem->f64_pool[hdr_idx + 3];
+
+    /* Reclaim slack vector capacity during compaction */
+    if (cap > len) {
+        mem->f64_pool[hdr_idx + 2] = (double)len;
+        cap = len;
+    }
+    if (len == 0) {
+        mem->f64_pool[hdr_idx + 3] = 0.0;
+        return;
+    }
+    if (data_idx < perm_top || data_idx >= old_top) return;
+
+    uint16_t stride = (elem_tid < 64u && mem->type_stride[elem_tid] > 0)
+                      ? mem->type_stride[elem_tid] : 1u;
+    uint32_t total = (uint32_t)len * (uint32_t)stride;
+    for (uint32_t s = 0; s < total && (data_idx + s) < old_top; ++s) {
+        if (mem->gc_mark[data_idx + s] == 0u) {
+            mem->gc_mark[data_idx + s] = 1u;
+        }
+    }
+    if (elem_tid == mem->vec_type_id && elem_tid != 0) {
+        for (uint16_t i = 0; i < len; ++i) {
+            gc_mark_vec_hdr(mem, (uint16_t)(data_idx + i * stride), perm_top, old_top, (uint8_t)(depth + 1));
+        }
+    }
+}
+
+static void gc_mark_map_hdr(MemArena *mem, uint16_t hdr_idx, uint16_t perm_top, uint16_t old_top, uint8_t depth) {
+    if (depth > 16 || hdr_idx < perm_top || (uint32_t)hdr_idx + MEM_MAP_HDR_SLOTS > old_top) return;
+    if (mem->gc_mark[hdr_idx] == 3u) return;
+    mem->gc_mark[hdr_idx] = 3u;
+    for (uint16_t k = 1; k < MEM_MAP_HDR_SLOTS; ++k) {
+        mem->gc_mark[hdr_idx + k] = 1u;
+    }
+    uint16_t len      = (uint16_t)mem->f64_pool[hdr_idx + 1];
+    uint16_t cap      = (uint16_t)mem->f64_pool[hdr_idx + 2];
+    uint16_t data_idx = (uint16_t)mem->f64_pool[hdr_idx + 3];
+
+    if (cap > len) {
+        mem->f64_pool[hdr_idx + 2] = (double)len;
+        cap = len;
+    }
+    if (len == 0) {
+        mem->f64_pool[hdr_idx + 3] = 0.0;
+        return;
+    }
+    if (data_idx < perm_top || data_idx >= old_top) return;
+
+    uint32_t total = (uint32_t)len * 2u;
+    for (uint32_t s = 0; s < total && (data_idx + s) < old_top; ++s) {
+        if (mem->gc_mark[data_idx + s] == 0u) {
+            mem->gc_mark[data_idx + s] = 1u;
+        }
+    }
+    for (uint16_t i = 0; i < len; ++i) {
+        Value ev = mem_map_entry_val(mem, data_idx, i);
+        gc_mark_val_rec(mem, ev, perm_top, old_top, (uint8_t)(depth + 1));
+    }
+}
+
+static void gc_mark_mat_hdr(MemArena *mem, uint16_t hdr_idx, uint16_t perm_top, uint16_t old_top) {
+    if (hdr_idx < perm_top || (uint32_t)hdr_idx + MEM_MAT_HDR_SLOTS > old_top) return;
+    if (mem->gc_mark[hdr_idx] == 4u) return;
+    mem->gc_mark[hdr_idx] = 4u;
+    for (uint16_t k = 1; k < MEM_MAT_HDR_SLOTS; ++k) {
+        mem->gc_mark[hdr_idx + k] = 1u;
+    }
+    uint16_t tot_len  = (uint16_t)mem->f64_pool[hdr_idx + 1];
+    uint16_t data_idx = (uint16_t)mem->f64_pool[hdr_idx + 2];
+    if (tot_len > 0 && data_idx >= perm_top && data_idx < old_top) {
+        for (uint16_t s = 0; s < tot_len && (data_idx + s) < old_top; ++s) {
+            if (mem->gc_mark[data_idx + s] == 0u) {
+                mem->gc_mark[data_idx + s] = 1u;
+            }
+        }
+    }
+}
+
+static void gc_mark_val_rec(MemArena *mem, Value v, uint16_t perm_top, uint16_t old_top, uint8_t depth) {
+    uint16_t top = (uint16_t)(v >> NANBOX_TAG_SHIFT);
+    if (top != NB_TAG_POOL) return;
+    uint16_t idx = val_get_pool_idx(v);
+    if (idx < perm_top || idx >= old_top) return;
+
+    uint16_t tid = val_get_type(mem, v);
+    if (tid == mem->vec_type_id && tid != 0) {
+        gc_mark_vec_hdr(mem, idx, perm_top, old_top, depth);
+    } else if (tid == mem->map_type_id && tid != 0) {
+        gc_mark_map_hdr(mem, idx, perm_top, old_top, depth);
+    } else if (tid == mem->mat_type_id && tid != 0) {
+        gc_mark_mat_hdr(mem, idx, perm_top, old_top);
+    } else {
+        uint16_t fsz = (uint16_t)((v >> 16u) & 0xFFFFu);
+        if (fsz == 0) fsz = 1u;
+        for (uint16_t k = 0; k < fsz && (idx + k) < old_top; ++k) {
+            if (mem->gc_mark[idx + k] == 0u) {
+                mem->gc_mark[idx + k] = 1u;
+            }
+        }
+    }
+}
+
+static Value gc_remap_val(const MemArena *mem, Value v, uint16_t perm_top, uint16_t old_top) {
+    uint16_t top = (uint16_t)(v >> NANBOX_TAG_SHIFT);
+    if (top != NB_TAG_POOL) return v;
+    uint16_t idx = val_get_pool_idx(v);
+    if (idx < perm_top || idx >= old_top) return v;
+    uint16_t new_idx = mem->gc_fwd[idx];
+    if (new_idx == MEM_NO_IDX) return v;
+    return (v & ~0xFFFFULL) | (uint64_t)new_idx;
+}
+
+uint16_t mem_compact_scratch(MemArena *mem, Value *extra_roots, uint16_t extra_root_count) {
+    if (!mem || mem->pool_top <= mem->perm_pool_top) return 0;
+    uint16_t perm_top = mem->perm_pool_top;
+    uint16_t old_top  = mem->pool_top;
+
+    memset(&mem->gc_mark[perm_top], 0, (size_t)(old_top - perm_top));
+
+    /* 1. Pin all scratch AST_LIT float slots in [perm_ast_count .. ast_count) */
+    for (uint16_t i = mem->perm_ast_count; i < mem->ast_count; ++i) {
+        const AstNode *n = &mem->ast[i];
+        if (n->kind == 0 /* AST_LIT */ && n->sub != mem->str_type_id && n->sub != MEM_TYPE_VOID) {
+            if (n->ref >= perm_top && n->ref < old_top) {
+                mem->gc_mark[n->ref] = 1u;
+            }
+        }
+    }
+
+    /* 2. Mark all live Value roots (call stack, jump_val, temp_roots, extra_roots) */
+    for (uint16_t i = 0; i < mem->sp; ++i) {
+        gc_mark_val_rec(mem, mem->stack[i], perm_top, old_top, 0);
+    }
+    gc_mark_val_rec(mem, mem->jump_val, perm_top, old_top, 0);
+    for (uint16_t i = 0; i < mem->temp_root_count; ++i) {
+        if (mem->temp_roots[i]) {
+            gc_mark_val_rec(mem, *(mem->temp_roots[i]), perm_top, old_top, 0);
+        }
+    }
+    for (uint16_t i = 0; i < extra_root_count; ++i) {
+        if (extra_roots) {
+            gc_mark_val_rec(mem, extra_roots[i], perm_top, old_top, 0);
+        }
+    }
+
+    /* 3. Compute sliding destination addresses in gc_fwd */
+    uint16_t write_pos = perm_top;
+    for (uint16_t i = perm_top; i < old_top; ++i) {
+        if (mem->gc_mark[i] != 0u) {
+            mem->gc_fwd[i] = write_pos++;
+        } else {
+            mem->gc_fwd[i] = MEM_NO_IDX;
+        }
+    }
+    if (write_pos == old_top) {
+        return 0; /* Nothing to compact */
+    }
+
+    /* 4. Fix up internal container data_idx pointers & map entry Values BEFORE sliding */
+    for (uint16_t i = perm_top; i < old_top; ++i) {
+        uint8_t m = mem->gc_mark[i];
+        if (m == 2u) { /* $vec header */
+            uint16_t d_idx = (uint16_t)mem->f64_pool[i + 3];
+            if (d_idx >= perm_top && d_idx < old_top && mem->gc_fwd[d_idx] != MEM_NO_IDX) {
+                mem->f64_pool[i + 3] = (double)mem->gc_fwd[d_idx];
+            }
+        } else if (m == 3u) { /* $map header */
+            uint16_t len   = (uint16_t)mem->f64_pool[i + 1];
+            uint16_t d_idx = (uint16_t)mem->f64_pool[i + 3];
+            if (d_idx >= perm_top && d_idx < old_top) {
+                for (uint16_t e = 0; e < len; ++e) {
+                    Value    ev = mem_map_entry_val(mem, d_idx, e);
+                    StrSlice ek = mem_map_entry_key(mem, d_idx, e);
+                    ev = gc_remap_val(mem, ev, perm_top, old_top);
+                    mem_map_set_entry(mem, d_idx, e, ek, ev);
+                }
+                if (mem->gc_fwd[d_idx] != MEM_NO_IDX) {
+                    mem->f64_pool[i + 3] = (double)mem->gc_fwd[d_idx];
+                }
+            }
+        } else if (m == 4u) { /* $mat header */
+            uint16_t d_idx = (uint16_t)mem->f64_pool[i + 2];
+            if (d_idx >= perm_top && d_idx < old_top && mem->gc_fwd[d_idx] != MEM_NO_IDX) {
+                mem->f64_pool[i + 2] = (double)mem->gc_fwd[d_idx];
+            }
+        }
+    }
+
+    /* 5. Slide all live f64_pool slots down contiguously */
+    for (uint16_t i = perm_top; i < old_top; ++i) {
+        if (mem->gc_mark[i] != 0u) {
+            uint16_t dst = mem->gc_fwd[i];
+            if (dst != i) {
+                memcpy(&mem->f64_pool[dst], &mem->f64_pool[i], sizeof(double));
+            }
+        }
+    }
+    mem->pool_top = write_pos;
+
+    /* 6. Remap AST_LIT refs, vrange_hdr, stack, jump_val, temp_roots, and extra_roots */
+    for (uint16_t i = mem->perm_ast_count; i < mem->ast_count; ++i) {
+        AstNode *n = &mem->ast[i];
+        if (n->kind == 0 /* AST_LIT */ && n->sub != mem->str_type_id && n->sub != MEM_TYPE_VOID) {
+            if (n->ref >= perm_top && n->ref < old_top && mem->gc_fwd[n->ref] != MEM_NO_IDX) {
+                n->ref = mem->gc_fwd[n->ref];
+            }
+        }
+    }
+    for (uint8_t k = 0; k < 4; ++k) {
+        uint16_t vh = mem->vrange_hdr[k];
+        if (vh >= perm_top && vh < old_top) {
+            mem->vrange_hdr[k] = (mem->gc_fwd[vh] != MEM_NO_IDX) ? mem->gc_fwd[vh] : 0;
+        }
+    }
+    for (uint16_t i = 0; i < mem->sp; ++i) {
+        mem->stack[i] = gc_remap_val(mem, mem->stack[i], perm_top, old_top);
+    }
+    mem->jump_val = gc_remap_val(mem, mem->jump_val, perm_top, old_top);
+    for (uint16_t i = 0; i < mem->temp_root_count; ++i) {
+        if (mem->temp_roots[i]) {
+            *(mem->temp_roots[i]) = gc_remap_val(mem, *(mem->temp_roots[i]), perm_top, old_top);
+        }
+    }
+    for (uint16_t i = 0; i < extra_root_count; ++i) {
+        if (extra_roots) {
+            extra_roots[i] = gc_remap_val(mem, extra_roots[i], perm_top, old_top);
+        }
+    }
+
+    return (uint16_t)(old_top - write_pos);
 }

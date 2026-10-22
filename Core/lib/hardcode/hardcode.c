@@ -347,46 +347,129 @@ bool hardcode_should_use_unit_for_in_rhs(const MemArena *mem, const SymTable *ta
 }
 
 /*code section below manages hardcoding lookahead for parenthesized lambda parameter lists*/
-/*Construct (x, y) => expr, () => expr*/
-bool hardcode_is_paren_lambda(const Parser *P) {
-    if (P->lex.cur.kind != TOK_LPAREN) return false;
-    const char *src = P->lex.src;
-    uint16_t    len = P->lex.len;
-    uint16_t    p   = skip_raw_ws_hc(src, P->lex.pos, len);
-
-    if (p < len && src[p] == ')') {
-        p = skip_raw_ws_hc(src, p + 1, len);
-        return (p + 1 < len && src[p] == '=' && src[p + 1] == '>');
+/*Construct (x, y, ...) => expr, (x, y = 10) => expr, () => expr, f(x, y = 10) := expr, f(x, y) = expr*/
+static uint16_t hc_skip_default_param_expr(const char *src, uint16_t p, uint16_t len) {
+    int depth = 0;
+    while (p < len) {
+        char c = src[p];
+        if (c == '"') {
+            p++;
+            while (p < len && src[p] != '"') {
+                if (src[p] == '\\' && p + 1 < len) p++;
+                p++;
+            }
+            if (p < len) p++;
+            continue;
+        }
+        if (c == '(' || c == '[' || c == '{') {
+            depth++;
+            p++;
+            continue;
+        }
+        if (c == ')' || c == ']' || c == '}') {
+            if (depth == 0) break;
+            depth--;
+            p++;
+            continue;
+        }
+        if (depth == 0 && (c == ',' || c == ';' || c == '\n')) {
+            break;
+        }
+        p++;
     }
+    return p;
+}
 
-    for (uint8_t k = 0; k < 4; ++k) {
+static bool hc_scan_param_list_parens(const char *src, uint16_t p, uint16_t len, uint16_t *out_after_rparen) {
+    p = skip_raw_ws_hc(src, p, len);
+    if (p >= len || src[p] != '(') return false;
+    p = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
+    if (p < len && src[p] == ')') {
+        if (out_after_rparen) *out_after_rparen = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
+        return true;
+    }
+    for (uint8_t k = 0; k < MEM_FN_MAX_PARAMS; ++k) {
         if (p >= len || !lex_is_ident_start((unsigned char)src[p])) return false;
         while (p < len && lex_is_ident_cont((unsigned char)src[p])) p++;
         p = skip_raw_ws_hc(src, p, len);
-
         if (p < len && src[p] == ':' && !(p + 1 < len && src[p + 1] == '=')) {
-            p = skip_raw_ws_hc(src, p + 1, len);
+            p = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
             if (p >= len || !lex_is_ident_start((unsigned char)src[p])) return false;
             while (p < len && lex_is_ident_cont((unsigned char)src[p])) p++;
             p = skip_raw_ws_hc(src, p, len);
         }
-
+        if (p < len && src[p] == '=' &&
+            !(p + 1 < len && (src[p + 1] == '=' || src[p + 1] == '>'))) {
+            p = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
+            p = hc_skip_default_param_expr(src, p, len);
+            p = skip_raw_ws_hc(src, p, len);
+        }
         if (p < len && src[p] == ',') {
-            p = skip_raw_ws_hc(src, p + 1, len);
+            p = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
             continue;
         }
         break;
     }
-
     if (p >= len || src[p] != ')') return false;
-    p = skip_raw_ws_hc(src, p + 1, len);
-    return (p + 1 < len && src[p] == '=' && src[p + 1] == '>');
+    if (out_after_rparen) *out_after_rparen = skip_raw_ws_hc(src, (uint16_t)(p + 1), len);
+    return true;
+}
+
+bool hardcode_is_paren_lambda(const Parser *P) {
+    if (P->lex.cur.kind != TOK_LPAREN) return false;
+    uint16_t after = 0;
+    if (!hc_scan_param_list_parens(P->lex.src, P->lex.cur.off, P->lex.len, &after)) {
+        return false;
+    }
+    return (after + 1 < P->lex.len && P->lex.src[after] == '=' && P->lex.src[after + 1] == '>');
+}
+
+static bool hc_scan_param_paren_to_colon_eq(const char *src, uint16_t p, uint16_t len) {
+    uint16_t after = 0;
+    if (!hc_scan_param_list_parens(src, p, len, &after)) return false;
+    if (after + 1 < len && src[after] == ':' && src[after + 1] == '=') return true;
+    if (after < len && src[after] == '=' &&
+        !(after + 1 < len && (src[after + 1] == '=' || src[after + 1] == '>'))) {
+        return true;
+    }
+    return false;
+}
+
+bool hardcode_is_inline_fn_def(const Parser *P) {
+    if (P->lex.cur.kind != TOK_LPAREN || P->lex.cur.had_newline) return false;
+    if (P->lex.mem->fn_type_id == 0) return false;
+    int ce_sid = sym_find(P->lex.tab, P->lex.mem, ":=", 2);
+    if (ce_sid < 0 || sym_active_meta_tag(P->lex.tab, (uint16_t)ce_sid, FIX_INFIX_RIGHT) != INTR_STORE) {
+        return false;
+    }
+    return hc_scan_param_paren_to_colon_eq(P->lex.src, P->lex.cur.off, P->lex.len);
+}
+
+bool hardcode_rhs_starts_lambda(const Parser *P) {
+    const char *src = P->lex.src;
+    uint16_t    len = P->lex.len;
+    uint16_t    p   = skip_raw_ws_hc(src, P->lex.pos, len);
+    if (p >= len) return false;
+    if (src[p] == '(') {
+        uint16_t after = 0;
+        if (!hc_scan_param_list_parens(src, p, len, &after)) return false;
+        return (after + 1 < len && src[after] == '=' && src[after + 1] == '>');
+    }
+    if (lex_is_ident_start((unsigned char)src[p])) {
+        while (p < len && lex_is_ident_cont((unsigned char)src[p])) p++;
+        p = skip_raw_ws_hc(src, p, len);
+        return (p + 1 < len && src[p] == '=' && src[p + 1] == '>');
+    }
+    return false;
 }
 
 /*code section below manages hardcoding lookahead for vector comprehensions inside '[ ... ]'*/
-/*Construct [expr for var in iterable (if cond)]*/
+/*Construct [expr for var in iterable (if cond)], [expr for idx, var in iterable (if cond)]*/
 bool hardcode_scan_comprehension_var(const Parser *P,
+                                     const char **out_idx_name, uint16_t *out_idx_len,
                                      const char **out_vname, uint16_t *out_vlen) {
+    if (out_idx_name) *out_idx_name = NULL;
+    if (out_idx_len)  *out_idx_len  = 0;
     const char *src = P->lex.src;
     uint16_t    len = P->lex.len;
     uint16_t    p   = P->lex.cur.off;
@@ -438,6 +521,23 @@ bool hardcode_scan_comprehension_var(const Parser *P,
                         if (out_vlen)  *out_vlen  = vlen;
                         return true;
                     }
+                    if (q < len && src[q] == ',') {
+                        uint16_t r = skip_raw_ws_hc(src, q + 1, len);
+                        if (r < len && lex_is_ident_start((unsigned char)src[r])) {
+                            uint16_t v2start = r;
+                            while (r < len && lex_is_ident_cont((unsigned char)src[r])) r++;
+                            uint16_t v2len = r - v2start;
+                            r = skip_raw_ws_hc(src, r, len);
+                            if (r + 2 <= len && src[r] == 'i' && src[r + 1] == 'n' &&
+                                (r + 2 == len || !lex_is_ident_cont((unsigned char)src[r + 2]))) {
+                                if (out_idx_name) *out_idx_name = src + vstart;
+                                if (out_idx_len)  *out_idx_len  = vlen;
+                                if (out_vname)    *out_vname    = src + v2start;
+                                if (out_vlen)     *out_vlen     = v2len;
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
             continue;
@@ -464,12 +564,16 @@ bool hardcode_can_start_implicit_mul_rhs(const Parser *P) {
             return false;
         }
         uint8_t kw = token_func_meta_hc(P, t);
-        if (kw != 0 && (kw < INTR_CALC_DIFF || kw > INTR_CALC_FMAX)) {
+        if (kw != 0 && (kw < INTR_CALC_DIFF || kw > INTR_SYM_TAYLOR)) {
             return false;
         }
-        /* Do not treat missing semicolon before `y := ...`, `Tag : ...`, `i in ...`, or `x => ...` as implicit mul */
+        /* Do not treat missing semicolon before `y := ...`, `f(x) := ...`, `Tag : ...`, `i in ...`, or `x => ...` as implicit mul */
         uint16_t p = skip_raw_ws_hc(P->lex.src, P->lex.pos, P->lex.len);
         if (p < P->lex.len && (P->lex.src[p] == ':' || P->lex.src[p] == '=')) {
+            return false;
+        }
+        if (p < P->lex.len && P->lex.src[p] == '(' &&
+            hc_scan_param_paren_to_colon_eq(P->lex.src, p, P->lex.len)) {
             return false;
         }
         if (p + 1 < P->lex.len && P->lex.src[p + 1] == '=' &&
@@ -513,13 +617,16 @@ bool hardcode_is_plain_store_sym(const MemArena *mem, const SymTable *tab,
 /*Construct (x & y == 1 | 2), case > 10:*/
 bool hardcode_is_rel_comparison_op(const MemArena *mem, const SymTable *tab,
                                    uint16_t sym_id) {
+    bool is_rel = false;
+    (void)hardcode_is_additive_or_rel_sym(mem, tab, sym_id, FIX_INFIX_LEFT, &is_rel);
+    if (is_rel) return true;
     for (uint16_t i = 0; i < tab->overload_count; ++i) {
         const OpOverload *ov = &tab->overloads[i];
         if (ov->sym_id == sym_id && ov->param_count == 2 &&
             sym_mod_enabled(tab, ov->mod_id) && ov->body_ast != MEM_NO_IDX) {
             const AstNode *root = mem_get_ast(mem, ov->body_ast);
             if (root->kind == AST_INTRINSIC &&
-                root->sub >= INTR_EQ && root->sub <= INTR_APPROX) {
+                root->sub >= INTR_EQ && root->sub <= INTR_GE) {
                 return true;
             }
         }
@@ -561,13 +668,19 @@ static int container_kind_from_name_hc(const char *name, uint16_t len) {
     if (len == 4 && memcmp(name, "list", 4) == 0)  return 1;
     if (len == 5 && memcmp(name, "stack", 5) == 0) return 2;
     if (len == 5 && memcmp(name, "queue", 5) == 0) return 3;
+    if (len == 3 && memcmp(name, "map", 3) == 0)   return 4;
+    if (len == 4 && memcmp(name, "dict", 4) == 0)  return 5;
     return -1;
 }
 
 static uint16_t resolve_container_elem_type_hc(const SymTable *tab, const MemArena *mem,
                                                const char *name, uint16_t len) {
-    if (container_kind_from_name_hc(name, len) >= 0 && mem->vec_type_id != 0) {
+    int ck = container_kind_from_name_hc(name, len);
+    if (ck >= 0 && ck <= 3 && mem->vec_type_id != 0) {
         return mem->vec_type_id;
+    }
+    if ((ck == 4 || ck == 5) && mem->map_type_id != 0) {
+        return mem->map_type_id;
     }
     return sym_find_type(tab, mem, name, len);
 }
@@ -654,9 +767,9 @@ bool hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16
 
     if (out_spec) {
         *out_spec = (uint16_t)(0x8000u |
-                               (((uint32_t)kind_code & 0x03u) << 13u) |
-                               (((uint32_t)locked_uid & 0x1Fu) << 8u) |
-                               (uint32_t)locked_tid);
+                               (((uint32_t)kind_code & 0x07u) << 12u) |
+                               (((uint32_t)locked_uid & 0x3Fu) << 6u) |
+                               ((uint32_t)locked_tid & 0x3Fu));
     }
     return true;
 }
@@ -670,15 +783,91 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
     if (kind_code < 0) return false;
 
     bool is_vec_call = (kind_code == 0);
+    bool is_map_call = (kind_code == 4 || kind_code == 5);
     bool has_spec    = (n->right != 0 && n->right != MEM_NO_IDX && (n->right & 0x8000u) != 0);
 
-    if (!has_spec) {
-        if (is_vec_call && n->sub < 3)  return false;
-        if (!is_vec_call && n->sub < 2) return false;
+    if (is_map_call) {
+        if (mem->map_type_id == 0 || !sym_is_module_active(tab, mem, "vec")) return false;
+        /* Distinguish 2-arg HOF `map(coll, fn)` from `map(k1, v1, ...)` */
+        if (kind_code == 4 && !has_spec && n->sub == 2) {
+            const AstNode *l1 = mem_get_ast(mem, n->left);
+            Value a0 = eval_ast(mem, tab, l1->left, frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) {
+                *out_val = val_void();
+                return true;
+            }
+            uint16_t t0 = val_get_type(mem, a0);
+            if (t0 == mem->vec_type_id || t0 == mem->mat_type_id) {
+                const AstNode *l2 = mem_get_ast(mem, l1->right);
+                Value a1 = eval_ast(mem, tab, l2->left, frame_base, cur_ret_type);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) {
+                    *out_val = val_void();
+                    return true;
+                }
+                Value map_args[2] = { a0, a1 };
+                *out_val = eval_dispatch_overload(mem, tab, n->ref, FIX_FUNC, 2, map_args);
+                return true;
+            }
+            if ((n->sub & 1u) != 0) {
+                mem_err(mem, "map() constructor requires key-value pairs (even argument count)");
+                *out_val = val_void();
+                return true;
+            }
+            const AstNode *l2 = mem_get_ast(mem, l1->right);
+            Value a1 = eval_ast(mem, tab, l2->left, frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) {
+                *out_val = val_void();
+                return true;
+            }
+            uint16_t m_hdr = mem_map_alloc_hdr(mem, 0, 2);
+            if (mem->has_error) { *out_val = val_void(); return true; }
+            Value mval = val_make_comp(mem, mem->map_type_id, m_hdr, MEM_MAP_HDR_SLOTS);
+            (void)delegate_eval_vec_intrinsic(mem, tab, INTR_MAP_SET, mval, a0, a1);
+            *out_val = mem->has_error ? val_void() : mval;
+            return true;
+        }
+        if ((n->sub & 1u) != 0) {
+            mem_err(mem, "map()/dict() constructor requires an even number of key-value arguments");
+            *out_val = val_void();
+            return true;
+        }
+        uint8_t  locked_tid = has_spec ? (uint8_t)(n->right & 0x3Fu) : 0;
+        uint8_t  locked_uid = has_spec ? (uint8_t)((n->right >> 6u) & 0x3Fu) : 0;
+        uint16_t hdr0       = (uint16_t)(((uint32_t)locked_uid << 8u) | (uint32_t)locked_tid);
+        uint16_t m_hdr      = mem_map_alloc_hdr(mem, hdr0, (uint16_t)(n->sub / 2u));
+        if (mem->has_error) { *out_val = val_void(); return true; }
+        Value mval = val_make_comp(mem, mem->map_type_id, m_hdr, MEM_MAP_HDR_SLOTS);
+        uint16_t cur_link = n->left;
+        while (cur_link != MEM_NO_IDX && !mem->has_error) {
+            const AstNode *lk = mem_get_ast(mem, cur_link);
+            const AstNode *lv = mem_get_ast(mem, lk->right);
+            Value kval = eval_ast(mem, tab, lk->left, frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) { *out_val = val_void(); return true; }
+            Value vval = eval_ast(mem, tab, lv->left, frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) { *out_val = val_void(); return true; }
+            (void)delegate_eval_vec_intrinsic(mem, tab, INTR_MAP_SET, mval, kval, vval);
+            cur_link = lv->right;
+        }
+        *out_val = mem->has_error ? val_void() : mval;
+        return true;
     }
 
-    uint8_t  locked_tid = has_spec ? (uint8_t)(n->right & 0xFFu) : 0;
-    uint8_t  locked_uid = has_spec ? (uint8_t)((n->right >> 8u) & 0x1Fu) : 0;
+    bool has_active_ctor = false;
+    for (uint16_t i = tab->sym_first_ov[n->ref]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        if (tab->overloads[i].fixity == FIX_FUNC && sym_mod_enabled(tab, tab->overloads[i].mod_id)) {
+            has_active_ctor = true;
+            break;
+        }
+    }
+    if (!has_active_ctor) return false;
+
+    if (!has_spec) {
+        if (!is_vec_call && n->sub < 2) return false;
+        if (is_vec_call && n->sub == 0) return false;
+    }
+
+    uint8_t  locked_tid = has_spec ? (uint8_t)(n->right & 0x3Fu) : 0;
+    uint8_t  locked_uid = has_spec ? (uint8_t)((n->right >> 6u) & 0x3Fu) : 0;
     uint16_t hdr0       = (uint16_t)(((uint32_t)locked_uid << 8u) | (uint32_t)locked_tid);
 
     Value   items[32];
@@ -695,8 +884,8 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
         cur = link->right;
     }
 
-    /* Special `vec<T>()` / `vec<T>(cap)` / `vec<T>(count, init)` variations */
-    if (is_vec_call && has_spec) {
+    /* Special `vec<T>()` / `vec(cap)` / `vec(count, init)` variations when first arg is unitless real */
+    if (is_vec_call) {
         if (argc == 0) {
             uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, 0);
             *out_val = mem->has_error ? val_void()
@@ -759,8 +948,8 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
     return true;
 }
 
-/*code section below manages hardcoding O(1) range membership evaluation without allocating a range vector*/
-/*Construct x in a...b, x in a..b, x in a..<b, x in a<..b*/
+/*code section below manages hardcoding O(1) range & stepped-range evaluation and membership without allocating a range vector*/
+/*Construct x in a...b, x in (a...b by step), a...b by step, a..b by step, a..<b by step, a<..b by step*/
 static bool is_direct_vrange_binary(const MemArena *mem, const SymTable *tab,
                                     uint16_t ast_idx, int *out_mode) {
     if (out_mode) *out_mode = 0;
@@ -788,12 +977,123 @@ static bool is_direct_vrange_binary(const MemArena *mem, const SymTable *tab,
     return false;
 }
 
+static bool is_stepped_vrange_binary(const MemArena *mem, const SymTable *tab,
+                                     uint16_t ast_idx, uint16_t *out_rng_ast,
+                                     uint16_t *out_step_ast, int *out_mode) {
+    if (out_rng_ast)  *out_rng_ast  = MEM_NO_IDX;
+    if (out_step_ast) *out_step_ast = MEM_NO_IDX;
+    if (out_mode)     *out_mode     = 0;
+    if (ast_idx == MEM_NO_IDX) return false;
+    const AstNode *n = mem_get_ast(mem, ast_idx);
+    if (n->kind != AST_BINARY) return false;
+    uint16_t sid = n->ref;
+    if (sid >= tab->sym_count) return false;
+    bool is_by_op = false;
+    for (uint16_t i = tab->sym_first_ov[sid]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->fixity == n->sub && sym_mod_enabled(tab, ov->mod_id) &&
+            ov->body_ast != MEM_NO_IDX) {
+            const AstNode *b = mem_get_ast(mem, ov->body_ast);
+            if (b->kind == AST_INTRINSIC && b->sub == INTR_VRANGE_STEP) {
+                is_by_op = true;
+                break;
+            }
+        }
+    }
+    if (!is_by_op) return false;
+    int mode = 0;
+    if (!is_direct_vrange_binary(mem, tab, n->left, &mode)) return false;
+    if (out_rng_ast)  *out_rng_ast  = n->left;
+    if (out_step_ast) *out_step_ast = n->right;
+    if (out_mode)     *out_mode     = mode;
+    return true;
+}
+
+/*code section below manages hardcoding lazy variable parameter positions for calculus/ODE constructs and pipe operator AST rewriting*/
+/*Construct diff(x, ...), ode_rk4(t, y, ...), and x |> f / x |> f(a, b) / x |> (a => ...)*/
+bool hardcode_is_calc_var_param(uint8_t fn_meta, uint8_t argc) {
+    if (fn_meta == INTR_CALC_ODE_COUPLED) {
+        return (argc <= 2);
+    }
+    if (fn_meta == INTR_SYM_DIFF || fn_meta == INTR_SYM_TAYLOR) {
+        return (argc == 0);
+    }
+    if (fn_meta == INTR_SYM_EVAL) {
+        return (argc == 1);
+    }
+    return (argc == 0 && fn_meta >= INTR_CALC_DIFF && fn_meta <= INTR_CALC_ODE_SYS) ||
+           (argc == 1 && (fn_meta == INTR_CALC_ODE || fn_meta == INTR_CALC_ODE_VEC || fn_meta == INTR_CALC_ODE_SYS));
+}
+
+static bool hc_peek_is_lparen(const Lexer *lex) {
+    uint16_t p = lex->pos;
+    while (p < lex->len && (lex->src[p] == ' ' || lex->src[p] == '\t' || lex->src[p] == '\r')) p++;
+    return (p < lex->len && lex->src[p] == '(');
+}
+
+static bool hc_peek_is_arrow(const Lexer *lex) {
+    uint16_t p = lex->pos;
+    while (p < lex->len && (lex->src[p] == ' ' || lex->src[p] == '\t' || lex->src[p] == '\r')) p++;
+    return (p + 1 < lex->len && lex->src[p] == '=' && lex->src[p + 1] == '>');
+}
+
+static int hc_find_local_idx(const Parser *P, const char *name, uint16_t len) {
+    for (int i = (int)P->vis_count - 1; i >= 0; --i) {
+        StrSlice s = P->locals[i].name;
+        if (s.len == len && memcmp(mem_str_ptr(P->lex.mem, s), name, len) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+uint16_t hardcode_parse_pipe_rhs(Parser *P, uint16_t left, int next_min) {
+    MemArena *mem = P->lex.mem;
+    SymTable *tab = P->lex.tab;
+    if ((P->lex.cur.kind == TOK_IDENT ||
+         (P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) &&
+        !hc_peek_is_lparen(&P->lex) && !hc_peek_is_arrow(&P->lex)) {
+        const char *fname = P->lex.src + P->lex.cur.off;
+        uint16_t    flen  = P->lex.cur.len;
+        if (hc_find_local_idx(P, fname, flen) < 0) {
+            int fn_sid = sym_find(tab, mem, fname, flen);
+            if (fn_sid >= 0) {
+                lex_next(&P->lex);
+                uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, left, MEM_NO_IDX);
+                return mem_alloc_ast(mem, AST_CALL, 1, (uint16_t)fn_sid, link, MEM_NO_IDX);
+            }
+        }
+    }
+    uint16_t rhs_pipe = parser_parse_expr(P, next_min);
+    if (mem->has_error || rhs_pipe == MEM_NO_IDX) return MEM_NO_IDX;
+    const AstNode *rn = mem_get_ast(mem, rhs_pipe);
+    if (rn->kind == AST_CALL) {
+        uint16_t head_link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, left, rn->left);
+        AstNode *mut_call  = mem_get_ast_mut(mem, rhs_pipe);
+        mut_call->left     = head_link;
+        mut_call->sub++;
+        return rhs_pipe;
+    }
+    if (rn->kind == AST_FN_CALL) {
+        uint16_t head_link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, left, rn->right);
+        AstNode *mut_fcall = mem_get_ast_mut(mem, rhs_pipe);
+        mut_fcall->right   = head_link;
+        mut_fcall->sub++;
+        return rhs_pipe;
+    }
+    uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, left, MEM_NO_IDX);
+    return mem_alloc_ast(mem, AST_FN_CALL, 1, 0, rhs_pipe, link);
+}
+
 bool hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
                                   const AstNode *n, uint16_t frame_base,
                                   uint8_t cur_ret_type, Value *out_val) {
+    if (!hardcode_is_in_op_sym(mem, tab, n->ref)) return false;
     int vrange_mode = 0;
-    if (!hardcode_is_in_op_sym(mem, tab, n->ref) ||
-        !is_direct_vrange_binary(mem, tab, n->right, &vrange_mode)) {
+    uint16_t rng_ast  = n->right;
+    uint16_t step_ast = MEM_NO_IDX;
+    if (!is_direct_vrange_binary(mem, tab, n->right, &vrange_mode) &&
+        !is_stepped_vrange_binary(mem, tab, n->right, &rng_ast, &step_ast, &vrange_mode)) {
         return false;
     }
     Value item = eval_ast(mem, tab, n->left, frame_base, cur_ret_type);
@@ -801,7 +1101,7 @@ bool hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
         *out_val = val_void();
         return true;
     }
-    const AstNode *rn = mem_get_ast(mem, n->right);
+    const AstNode *rn = mem_get_ast(mem, rng_ast);
     Value va = eval_ast(mem, tab, rn->left, frame_base, cur_ret_type);
     if (mem->has_error || mem->jump_active != JUMP_NONE) {
         *out_val = val_void();
@@ -812,9 +1112,8 @@ bool hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
         *out_val = val_void();
         return true;
     }
-    int lo = 0, hi = 0;
-    if (!delegate_val_to_exact_int(mem, tab, va, "range start", &lo) ||
-        !delegate_val_to_exact_int(mem, tab, vb, "range end",   &hi)) {
+    Value vs = (step_ast != MEM_NO_IDX) ? eval_ast(mem, tab, step_ast, frame_base, cur_ret_type) : val_void();
+    if (mem->has_error || mem->jump_active != JUMP_NONE) {
         *out_val = val_void();
         return true;
     }
@@ -823,33 +1122,77 @@ bool hardcode_eval_in_vrange_fast(MemArena *mem, SymTable *tab,
         *out_val = val_void();
         return true;
     }
+    if (step_ast == MEM_NO_IDX) {
+        int lo = 0, hi = 0;
+        if (!delegate_val_to_exact_int(mem, tab, va, "range start", &lo) ||
+            !delegate_val_to_exact_int(mem, tab, vb, "range end",   &hi)) {
+            *out_val = val_void();
+            return true;
+        }
+        if (val_get_type(mem, item) != mem->fast_real_type || val_get_unit(mem, item) != elem_uid) {
+            *out_val = val_make_f64(mem, mem->fast_real_type, 0.0);
+            return true;
+        }
+        double ditem = val_get_f64(mem, item);
+        double ritem = round(ditem);
+        if (fabs(ditem - ritem) > 1e-9 || ritem < -2147483647.0 || ritem > 2147483647.0) {
+            *out_val = val_make_f64(mem, mem->fast_real_type, 0.0);
+            return true;
+        }
+        long long k    = (long long)ritem;
+        long long step = (lo <= hi) ? 1LL : -1LL;
+        long long llo  = (long long)lo + ((vrange_mode & 2) ? step : 0LL);
+        long long lhi  = (long long)hi - ((vrange_mode & 1) ? step : 0LL);
+        bool hit = (step > 0) ? (k >= llo && k <= lhi) : (k <= llo && k >= lhi);
+        *out_val = val_make_f64(mem, mem->fast_real_type, hit ? 1.0 : 0.0);
+        return true;
+    }
+    /* Stepped range membership check in O(1) */
+    double da    = val_get_f64(mem, va);
+    double db    = val_get_f64(mem, vb);
+    double dstep = val_get_f64(mem, vs);
+    if (!isfinite(dstep) || fabs(dstep) <= 1e-15) {
+        mem_err(mem, "Range step cannot be zero");
+        *out_val = val_void();
+        return true;
+    }
     if (val_get_type(mem, item) != mem->fast_real_type || val_get_unit(mem, item) != elem_uid) {
         *out_val = val_make_f64(mem, mem->fast_real_type, 0.0);
         return true;
     }
     double ditem = val_get_f64(mem, item);
-    double ritem = round(ditem);
-    if (fabs(ditem - ritem) > 1e-9 || ritem < -2147483647.0 || ritem > 2147483647.0) {
-        *out_val = val_make_f64(mem, mem->fast_real_type, 0.0);
-        return true;
+    double eps   = 1e-11 * (1.0 + fabs(da) + fabs(db) + fabs(dstep));
+    double start_v = (vrange_mode & 2) ? (da + dstep) : da;
+    bool in_bounds = false;
+    if (dstep > 0.0) {
+        bool lo_ok = (ditem >= start_v - eps);
+        bool hi_ok = (vrange_mode & 1) ? (ditem < db - eps) : (ditem <= db + eps);
+        in_bounds  = lo_ok && hi_ok;
+    } else {
+        bool lo_ok = (ditem <= start_v + eps);
+        bool hi_ok = (vrange_mode & 1) ? (ditem > db + eps) : (ditem >= db - eps);
+        in_bounds  = lo_ok && hi_ok;
     }
-    long long k    = (long long)ritem;
-    long long step = (lo <= hi) ? 1LL : -1LL;
-    long long llo  = (long long)lo + ((vrange_mode & 2) ? step : 0LL);
-    long long lhi  = (long long)hi - ((vrange_mode & 1) ? step : 0LL);
-    bool hit = (step > 0) ? (k >= llo && k <= lhi) : (k <= llo && k >= lhi);
+    bool hit = false;
+    if (in_bounds) {
+        double q  = (ditem - start_v) / dstep;
+        double rq = floor(q + 0.5);
+        hit = (rq >= 0.0 && fabs(q - rq) <= 1e-9);
+    }
     *out_val = val_make_f64(mem, mem->fast_real_type, hit ? 1.0 : 0.0);
     return true;
 }
 
-/*code section below manages hardcoding range and collection iteration loops and vector comprehensions*/
-/*Construct (i in a...b) { ... }, i in a...b { ... }, (x in vec) { ... }, [expr for x in iter]*/
+/*code section below manages hardcoding range, stepped-range, and collection iteration loops (with optional index variable) and vector comprehensions*/
+/*Construct (i in a...b) { ... }, (i in a...b by s) { ... }, (idx, x in vec) { ... }, [expr for idx, x in iter]*/
 Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                                const AstNode *n, uint16_t frame_base, uint8_t cur_ret_type) {
     uint8_t  var_slot   = n->sub;
     uint16_t iter_ast   = n->left;
     bool     is_comp    = (n->ref & 0x8000u) != 0;
-    uint16_t raw_lbl    = (uint16_t)(n->ref & 0x7FFFu);
+    bool     has_idx    = (n->ref & 0x4000u) != 0;
+    uint8_t  idx_slot   = (uint8_t)((n->ref >> 8u) & 0x3Fu);
+    uint16_t raw_lbl    = (uint16_t)(n->ref & 0x00FFu);
     uint8_t  loop_label = (raw_lbl > 0) ? (uint8_t)(raw_lbl - 1) : 0xFFu;
 
     uint16_t body_ast = n->right;
@@ -868,33 +1211,73 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
     Value    last  = is_comp ? comp_vec : val_make_f64(mem, mem->fast_real_type, 0.0);
     uint32_t guard = 0;
 
-    /* Fast path: `(i in a...b) { ... }` or `[expr for i in a...b]` without allocating range vector */
-    int vrange_mode = 0;
-    if (is_direct_vrange_binary(mem, tab, iter_ast, &vrange_mode)) {
-        const AstNode *rn = mem_get_ast(mem, iter_ast);
+    /* Fast path: `(i in a...b [by step]) { ... }` or `[expr for i in a...b [by step]]` without allocating range vector */
+    int      vrange_mode = 0;
+    uint16_t rng_ast     = iter_ast;
+    uint16_t step_ast    = MEM_NO_IDX;
+    if (is_direct_vrange_binary(mem, tab, iter_ast, &vrange_mode) ||
+        is_stepped_vrange_binary(mem, tab, iter_ast, &rng_ast, &step_ast, &vrange_mode)) {
+        const AstNode *rn = mem_get_ast(mem, rng_ast);
         Value va = eval_ast(mem, tab, rn->left, frame_base, cur_ret_type);
         if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
         Value vb = eval_ast(mem, tab, rn->right, frame_base, cur_ret_type);
         if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+        Value vs = (step_ast != MEM_NO_IDX) ? eval_ast(mem, tab, step_ast, frame_base, cur_ret_type) : val_void();
+        if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
 
-        int lo = 0, hi = 0;
-        if (!delegate_val_to_exact_int(mem, tab, va, "range start", &lo) ||
-            !delegate_val_to_exact_int(mem, tab, vb, "range end",   &hi)) {
-            return val_void();
-        }
         uint8_t u = MEM_UNIT_NONE;
         if (!delegate_check_additive_unit_compat(mem, tab, "..", 2, va, vb, &u)) {
             return val_void();
         }
 
-        long long step = (lo <= hi) ? 1LL : -1LL;
-        long long llo  = (long long)lo + ((vrange_mode & 2) ? step : 0LL);
-        long long lhi  = (long long)hi - ((vrange_mode & 1) ? step : 0LL);
-        for (long long k = llo;
-             ((step > 0) ? (k <= lhi) : (k >= lhi)) && !mem->has_error;
-             k += step) {
+        double da   = val_get_f64(mem, va);
+        double db   = val_get_f64(mem, vb);
+        double step = (da <= db) ? 1.0 : -1.0;
+
+        if (step_ast == MEM_NO_IDX) {
+            int lo = 0, hi = 0;
+            if (!delegate_val_to_exact_int(mem, tab, va, "range start", &lo) ||
+                !delegate_val_to_exact_int(mem, tab, vb, "range end",   &hi)) {
+                return val_void();
+            }
+            da   = (double)lo;
+            db   = (double)hi;
+            step = (lo <= hi) ? 1.0 : -1.0;
+        } else {
+            uint8_t us = val_get_unit(mem, vs);
+            if (us != MEM_UNIT_NONE && us != u) {
+                mem_err(mem, "Unit mismatch in stepped range 'by'");
+                return val_void();
+            }
+            step = val_get_f64(mem, vs);
+            if (!isfinite(step) || fabs(step) <= 1e-15) {
+                mem_err(mem, "Range step cannot be zero");
+                return val_void();
+            }
+        }
+
+        double    eps       = 1e-11 * (1.0 + fabs(da) + fabs(db) + fabs(step));
+        long long start_k   = (vrange_mode & 2) ? 1LL : 0LL;
+        double    first_val = da + (double)start_k * step;
+        long long cnt_ll    = 0;
+
+        if (step > 0.0) {
+            bool ok = (vrange_mode & 1) ? (first_val < db - eps) : (first_val <= db + eps);
+            if (ok) cnt_ll = (long long)floor(((db - first_val) + ((vrange_mode & 1) ? -eps : eps)) / step) + 1LL;
+        } else {
+            bool ok = (vrange_mode & 1) ? (first_val > db + eps) : (first_val >= db - eps);
+            if (ok) cnt_ll = (long long)floor(((first_val - db) + ((vrange_mode & 1) ? -eps : eps)) / (-step)) + 1LL;
+        }
+
+        for (long long iter_i = 0; iter_i < cnt_ll && !mem->has_error; ++iter_i) {
+            double cur_v = da + (double)(start_k + iter_i) * step;
+            if (fabs(cur_v) < 1e-15) cur_v = 0.0;
+            if (has_idx) {
+                mem_set_slot(mem, frame_base, idx_slot,
+                             val_make_f64(mem, mem->fast_real_type, (double)iter_i));
+            }
             mem_set_slot(mem, frame_base, var_slot,
-                         val_make_f64_unit(mem, mem->fast_real_type, u, (double)k));
+                         val_make_f64_unit(mem, mem->fast_real_type, u, cur_v));
             if (cond_ast != MEM_NO_IDX) {
                 Value cv = eval_ast(mem, tab, cond_ast, frame_base, cur_ret_type);
                 if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
@@ -932,7 +1315,7 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
         return is_comp ? comp_vec : last;
     }
 
-    /* Collection path: `(v in vec) { ... }`, `(x in mat) { ... }`, or `[expr for v in coll]` */
+    /* Collection path: `(v in vec) { ... }`, `(x in mat) { ... }`, `(c in str) { ... }`, or `[expr for v in coll]` */
     Value coll = eval_ast(mem, tab, iter_ast, frame_base, cur_ret_type);
     if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
     uint16_t coll_tid = val_get_type(mem, coll);
@@ -956,6 +1339,10 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                 elem_tid != mem->vec_type_id && elem_tid != mem->mat_type_id &&
                 elem_tid != mem->fn_type_id) {
                 item = val_clone_comp(mem, item, stride);
+            }
+            if (has_idx) {
+                mem_set_slot(mem, frame_base, idx_slot,
+                             val_make_f64(mem, mem->fast_real_type, (double)idx));
             }
             mem_set_slot(mem, frame_base, var_slot, item);
             if (cond_ast != MEM_NO_IDX) {
@@ -1003,6 +1390,10 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
         for (uint16_t idx = 0; idx < tot_len && !mem->has_error; ++idx) {
             Value item = val_make_f64_unit(mem, mem->fast_real_type, u,
                                            mem_read_pool(mem, data_idx + idx));
+            if (has_idx) {
+                mem_set_slot(mem, frame_base, idx_slot,
+                             val_make_f64(mem, mem->fast_real_type, (double)idx));
+            }
             mem_set_slot(mem, frame_base, var_slot, item);
             if (cond_ast != MEM_NO_IDX) {
                 Value cv = eval_ast(mem, tab, cond_ast, frame_base, cur_ret_type);
@@ -1037,7 +1428,99 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
         return is_comp ? comp_vec : last;
     }
 
-    mem_err(mem, "Loop target after 'in' must be a range (a..b / a...b), vector ($vec), or matrix ($mat)");
+    if (coll_tid == mem->str_type_id && mem->str_type_id != 0) {
+        StrSlice s = val_get_str(mem, coll);
+        for (uint16_t idx = 0; idx < s.len && !mem->has_error; ++idx) {
+            char ch = mem_str_ptr(mem, s)[idx];
+            Value item = val_make_str(mem, mem->str_type_id, mem_intern_str(mem, &ch, 1));
+            if (has_idx) {
+                mem_set_slot(mem, frame_base, idx_slot,
+                             val_make_f64(mem, mem->fast_real_type, (double)idx));
+            }
+            mem_set_slot(mem, frame_base, var_slot, item);
+            if (cond_ast != MEM_NO_IDX) {
+                Value cv = eval_ast(mem, tab, cond_ast, frame_base, cur_ret_type);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cv)) <= 1e-15) continue;
+            }
+            Value item_res = eval_ast(mem, tab, body_ast, frame_base, cur_ret_type);
+            if (is_comp) {
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, comp_vec, item_res, val_void());
+            } else {
+                last = item_res;
+                if (mem->jump_active == JUMP_CONTINUE_ANON ||
+                    (mem->jump_active == JUMP_CONTINUE_TAG && mem->jump_target_id == loop_label)) {
+                    mem->jump_active = JUMP_NONE;
+                    continue;
+                }
+                if (mem->jump_active == JUMP_BREAK_ANON ||
+                    (mem->jump_active == JUMP_BREAK_TAG && mem->jump_target_id == loop_label)) {
+                    mem->jump_active = JUMP_NONE;
+                    if (val_get_type(mem, mem->jump_val) != MEM_TYPE_VOID) {
+                        last = mem->jump_val;
+                        mem->jump_val = val_void();
+                    }
+                    break;
+                }
+                if (mem->jump_active != JUMP_NONE) {
+                    break;
+                }
+            }
+        }
+        return is_comp ? comp_vec : last;
+    }
+
+    if (coll_tid == mem->map_type_id && mem->map_type_id != 0) {
+        uint16_t hdr_idx = val_get_pool_idx(coll);
+        for (uint16_t idx = 0; !mem->has_error; ++idx) {
+            uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+            uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
+            if (idx >= len) break;
+
+            StrSlice kslice = mem_map_entry_key(mem, data_idx, idx);
+            Value    kval   = val_make_str(mem, mem->str_type_id, kslice);
+            Value    vval   = mem_map_entry_val(mem, data_idx, idx);
+            if (has_idx) {
+                mem_set_slot(mem, frame_base, idx_slot, kval);
+                mem_set_slot(mem, frame_base, var_slot, vval);
+            } else {
+                mem_set_slot(mem, frame_base, var_slot, kval);
+            }
+            if (cond_ast != MEM_NO_IDX) {
+                Value cv = eval_ast(mem, tab, cond_ast, frame_base, cur_ret_type);
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                if (fabs(val_get_f64(mem, cv)) <= 1e-15) continue;
+            }
+            Value item_res = eval_ast(mem, tab, body_ast, frame_base, cur_ret_type);
+            if (is_comp) {
+                if (mem->has_error || mem->jump_active != JUMP_NONE) return val_void();
+                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, comp_vec, item_res, val_void());
+            } else {
+                last = item_res;
+                if (mem->jump_active == JUMP_CONTINUE_ANON ||
+                    (mem->jump_active == JUMP_CONTINUE_TAG && mem->jump_target_id == loop_label)) {
+                    mem->jump_active = JUMP_NONE;
+                    continue;
+                }
+                if (mem->jump_active == JUMP_BREAK_ANON ||
+                    (mem->jump_active == JUMP_BREAK_TAG && mem->jump_target_id == loop_label)) {
+                    mem->jump_active = JUMP_NONE;
+                    if (val_get_type(mem, mem->jump_val) != MEM_TYPE_VOID) {
+                        last = mem->jump_val;
+                        mem->jump_val = val_void();
+                    }
+                    break;
+                }
+                if (mem->jump_active != JUMP_NONE) {
+                    break;
+                }
+            }
+        }
+        return is_comp ? comp_vec : last;
+    }
+
+    mem_err(mem, "Loop target after 'in' must be a range (a..b / a...b), vector ($vec), matrix ($mat), map ($map), or string ($str)");
     return val_void();
 }
 
