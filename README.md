@@ -26,7 +26,7 @@ The codebase is organized by responsibility into dedicated folders for readabili
   - `linker.h` / `linker.c`: `<[dep]` dependency DAG resolution, missing/circular
     dependency detection via Kahn's topological sort, and transactional linking
     (`ext_link_units`, `ext_compile_and_link`, `ext_load_str`).
-  - `mathc_bin.h` / `mathc_bin.c`: 40-byte `MathcHeader`, FNV-1a checksum,
+  - `mathc_bin.h` / `mathc_bin.c`: 48-byte `MathcHeader` (with 32-bit FNV-1a `intr_hash` intrinsic enum fingerprint), FNV-1a checksum,
     pre-copy structural validation, and O(1) `.mathc` binary serialization/loading
     (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
   - `user_loader.h` / `user_loader.c`: host-facing in-memory user extension
@@ -43,7 +43,7 @@ The codebase is organized by responsibility into dedicated folders for readabili
     iterative snapshot reader (`eng_session_snapshot_next`), and full-history
     session restoration (`eng_session_restore`).
 - **`Core/lib/delegate/`** — every C-backed `@` intrinsic (`@add`, `@sin`,
-  `@vnew`, `@mzero`, `@mlinsolve`, `@mhadamard`, `@calc_diff`, `@calc_solve`,
+  `@vnew`, `@mdim`, `@mlinsolve`, `@sym_diff`, `@sym_integ`, `@sym_solve`,
   `@calc_ode`, `@tostr`, `@fromstr`, ...).
 - **`Core/lib/hardcode/`** — the small set of *hardcoded* grammar/ergonomic rules
   (reserved keywords, default `:real`/`-> real` fallback, implicit
@@ -139,7 +139,7 @@ Library/
   biology.math      Genetics, molecular biology, physiology, ecology
   stdlib.mathc      Compiled & linked standard library image (generated)
 Test/
-  main.c            Host demo & automated verification suite (529 tests, Sections [1]–[12])
+  main.c            Host demo & automated verification suite (555 tests, Sections [1]–[15])
   user_physics.math Sample user extension (host-backed functions)
   Math Engine Language (MEP) — Complete Reference.md
                     Canonical language specification, tutorial & complete overload reference
@@ -273,7 +273,7 @@ To support stateful multi-step workflows without losing variables between calls,
 ### The `.mathc` Binary Format (`Core/compile/mathc_bin.h`)
 
 A `.mathc` image is a compact **little-endian** binary snapshot of the engine's
-permanent tables. It begins with a 40-byte `MathcHeader` (magic `"MTHC"`,
+permanent tables. It begins with a 48-byte `MathcHeader` (with 32-bit FNV-1a `intr_hash` intrinsic enum fingerprint) (magic `"MTHC"`,
 version, type/module/symbol/constant counts, arena watermarks, module bitmask,
 and 32-bit FNV-1a checksum) followed by the serialized slices (`StrSlice`,
 `AstNode`, `double`, `TypeDef`, `UnitDimDef`, `PatElem`, `FieldDef`, `OpOverload`,
@@ -387,7 +387,7 @@ Key entry points (`math_engine.h`, `session.h`, `snapshot.h`, `user_loader.h`):
 
 The host demo (`Test/main.c`) verifies the blank-slate guarantee, auto-boots the
 stdlib, exercises the `user_loader` workflow, registers host externs, prints an
-architecture report, and runs the 529-test automated suite (stdlib + control flow +
+architecture report, and runs the 555-test automated suite (stdlib + control flow +
 booleans + multi-var + concrete & 7D SI units + array/matrix/Hadamard + calculus/RK4 +
 conversions + algebra + physics + chemistry + biology + strings + host externs +
 ergonomics + edge-case hardening), followed by type-safety & reserved-keyword

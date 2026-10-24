@@ -141,6 +141,16 @@ Java_com_mathengine_MathEngineBridge_nativeSymDiff(JNIEnv *env, jclass clazz,
                                                    jlong handle, jstring varName,
                                                    jstring expr);
 
+JNIEXPORT jstring JNICALL
+Java_com_mathengine_MathEngineBridge_nativeSymInteg(JNIEnv *env, jclass clazz,
+                                                    jlong handle, jstring varName,
+                                                    jstring expr);
+
+JNIEXPORT jstring JNICALL
+Java_com_mathengine_MathEngineBridge_nativeSymSolve(JNIEnv *env, jclass clazz,
+                                                    jlong handle, jstring varName,
+                                                    jstring eq);
+
 JNIEXPORT jint JNICALL
 Java_com_mathengine_MathEngineBridge_nativeCompactScratch(JNIEnv *env, jclass clazz, jlong handle);
 

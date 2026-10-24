@@ -2,7 +2,7 @@
  * sym_table.h — Dynamic Module, Type, Unit, Struct, Symbol, Overload & Extern Registry
  *
  * Purpose:
- *   Stores and queries extension modules (with O(1) bitmask toggling),
+ *   Stores and queries extension modules (with O(1) 64-bit bitmask toggling),
  *   consuming lexical types, physical/dimensional unit types (`distance`,
  *   `angle`, `mass`, `time`, `speed`, ...), flat C-style structs, dynamic
  *   vectors (`$vec`), multidimensional matrices (`$mat`), first-class lambdas
@@ -24,7 +24,7 @@ extern "C" {
  * 1. REGISTRY CAPACITIES & POLYMORPHIC TYPE/UNIT SENTINELS
  * ============================================================================ */
 
-#define SYM_MAX_MODULES        32
+#define SYM_MAX_MODULES        64
 #define SYM_MAX_TYPES          64
 #define SYM_MAX_UNITS          64
 #define SYM_MAX_PAT_ELEMS     256
@@ -33,11 +33,16 @@ extern "C" {
 #define SYM_MAX_OVERLOADS    2048
 #define SYM_MAX_CONSTS        128
 #define SYM_MAX_EXTERNS        32
+#define SYM_MAX_OV_PARAMS      16
 
 #define SYM_TYPE_ANY        0xFEu   /* Generic `T` / `any` entity type           */
 #define SYM_UNIT_OMITTED    0xFFu   /* Unannotated parameter/return unit         */
 #define SYM_UNIT_GENERIC    0xFEu   /* Explicit generic unit `T` / `any`         */
 #define SYM_UNIT_LOCK_NONE  0xFDu   /* Explicit concrete unitless `none`         */
+
+/* High-bit `OpOverload.meta_tag` flags for `.math` lazy bound-variable (`var_x`) functions */
+#define SYM_META_LAZY_MASK     0x80u /* Bit 7: lazy bound-variable function (`(V << 3) | E`) */
+#define SYM_META_LAZY_EQ_BIT   0x40u /* Bit 6: rewrite top-level `==` / `~` to `-` (`eq`)    */
 
 /* ============================================================================
  * 2. PRIVATE C INTRINSIC OPCODES & AST NODE KINDS
@@ -50,10 +55,13 @@ typedef enum {
     INTR_PARSE_F64_TRIM1,
     INTR_PARSE_I64,
     INTR_PARSE_STR_SLICE,
-    INTR_VEC_TYPE,  /* @vec_type (dynamic growable/shrinkable vector of any T) */
-    INTR_MAT_TYPE,  /* @mat_type (multidimensional matrix/tensor `[...]`)      */
-    INTR_FN_TYPE,   /* @fn_type  (first-class anonymous function `(x) => ...`) */
-    INTR_MAP_TYPE,  /* @map_type (dynamic key-value dictionary `map()`)        */
+    INTR_VEC_TYPE,     /* @vec_type     (dynamic growable/shrinkable vector of any T) */
+    INTR_MAT_TYPE,     /* @mat_type     (multidimensional matrix/tensor `[...]`)      */
+    INTR_FN_TYPE,      /* @fn_type      (first-class anonymous function `(x) => ...`) */
+    INTR_MAP_TYPE,     /* @map_type     (dynamic key-value dictionary `map()`)        */
+    INTR_COMPLEX_TYPE, /* @complex_type (2-slot rectangular complex struct `a + bi`)  */
+    INTR_ANY_TYPE,     /* @any_type     (generic entity/unit wildcard `$T`, `$any`)   */
+    INTR_NONE_UNIT,    /* @none_unit    (concrete unitless sentinel `$none`)          */
 
     /* Bootstrap Expression Syntax Delimiters (`"sym" => @lparen`) */
     INTR_LPAREN,    /* @lparen */
@@ -74,6 +82,7 @@ typedef enum {
     INTR_ELSE_BRANCH,   /* @else_branch(b)       */
     INTR_SWITCH_BLOCK,  /* @switch_block(v, b)   */
     INTR_CASE_BRANCH,   /* @case_branch(v, b)    */
+    INTR_FOR_KW,        /* @for_kw(expr, b)      */
     INTR_TERNARY,       /* @ternary(c, pair)     */
     INTR_COLON,         /* @colon(a, b)          */
     INTR_JUMP_TAG,      /* @jump_tag(tag)        */
@@ -86,71 +95,46 @@ typedef enum {
     INTR_CAND,          /* @cand(a, b) (`&` distributed/short-circuit AND) */
     INTR_COR,           /* @cor(a, b)  (`|` distributed/short-circuit OR)  */
     INTR_CNOT,          /* @cnot(a)    (`!` strict boolean condition NOT)  */
-    INTR_CALC_DIFF,     /* @calc_diff(x, expr, x0)       */
-    INTR_CALC_DIFF2,    /* @calc_diff2(x, expr, x0)      */
-    INTR_CALC_DIFFN,    /* @calc_diffn(x, expr, x0, n)   */
-    INTR_CALC_INTEG,    /* @calc_integ(x, expr, a, b)    */
-    INTR_CALC_LIM,      /* @calc_lim(x, expr, x0)        */
-    INTR_CALC_LIM_L,    /* @calc_lim_l(x, expr, x0)      */
-    INTR_CALC_LIM_R,    /* @calc_lim_r(x, expr, x0)      */
-    INTR_CALC_SIGMA,    /* @calc_sigma(k, expr, lo, hi)  */
-    INTR_CALC_PROD,     /* @calc_prod(k, expr, lo, hi)   */
-    INTR_CALC_SOLVE,    /* @calc_solve(x, eq, guess)     */
-    INTR_CALC_FMIN,     /* @calc_fmin(x, expr, a, b)     */
-    INTR_CALC_FMAX,     /* @calc_fmax(x, expr, a, b)     */
-    INTR_CALC_ODE,      /* @calc_ode(t, y, expr, t0, y0, t1[, steps])      */
-    INTR_CALC_ODE_VEC,  /* @calc_ode_vec(t, y, expr, t0, y0, t1[, steps])  */
-    INTR_CALC_ODE_SYS,     /* @calc_ode_sys(t, y, rhs_vec, t0, y0_vec, t1) */
-    INTR_CALC_ODE_COUPLED, /* @calc_ode_coupled(t, x, y, dx, dy, ...)      */
-    INTR_SYM_DIFF,         /* @sym_diff(x, expr[, order])                  */
-    INTR_SYM_SIMPLIFY,     /* @sym_simplify(expr)                          */
-    INTR_SYM_EVAL,         /* @sym_eval(expr_str, x, val)                  */
-    INTR_SYM_TAYLOR,       /* @sym_taylor(x, expr, x0, order)              */
+    INTR_SYM_DIFF,      /* @sym_diff(x, expr[, order])                     */
+    INTR_SYM_INTEG,     /* @sym_integ(x, expr)                             */
+    INTR_SYM_SOLVE,     /* @sym_solve(x, eq)                               */
+    INTR_SYM_SIMPLIFY,  /* @sym_simplify(expr)                             */
+    INTR_SYM_EVAL,      /* @sym_eval(expr_str, x, val)                     */
+    INTR_SYM_TAYLOR,    /* @sym_taylor(x, expr, x0, order)                 */
     INTR_FIELD,         /* @field(s, f)          */
 
-    /* Dynamic Vector, Stack, Queue & Higher-Order Functional Intrinsics (`$vec`, `$fn`) */
-    INTR_VNEW,      /* @vnew(cap)            */
-    INTR_VFILL,     /* @vfill(cnt, init)     */
-    INTR_VPUSH,     /* @vpush(v, item)       */
-    INTR_VPOP,      /* @vpop(v)              */
-    INTR_VSHIFT,    /* @vshift(v) (FIFO queue dequeue / pop_front)       */
-    INTR_VGET,      /* @vget(v, idx)         */
-    INTR_VSET,      /* @vset(v, idx, item)   */
-    INTR_VLEN,      /* @vlen(v)              */
-    INTR_VCAP,      /* @vcap(v)              */
-    INTR_VRESIZE,   /* @vresize(v, n)        */
-    INTR_VSHRINK,   /* @vshrink(v)           */
-    INTR_VCLEAR,    /* @vclear(v)            */
-    INTR_VRANGE,      /* @vrange(a, b, mode) (`a...b`, `a..<b`, `a<..b`, `a..b`) */
-    INTR_VRANGE_STEP, /* @vrange_step(v, step, 0) (`a...b by step`)              */
-    INTR_VIN,         /* @vin(item, v) (`x in v` vector membership check)        */
-    INTR_FCALL,       /* @fcall(f, a, b)       */
-    INTR_VSORT,       /* @vsort(v, desc)       */
-    INTR_MAP_NEW,     /* @map_new(cap)         */
-    INTR_MAP_SET,     /* @map_set(m, k, v)     */
-    INTR_MAP_GET,     /* @map_get(m, k, def)   */
-    INTR_MAP_HAS,     /* @map_has(m, k)        */
-    INTR_MAP_DEL,     /* @map_del(m, k)        */
-    INTR_MAP_KEYS,    /* @map_keys(m) -> $vec  */
-    INTR_MAP_VALS,    /* @map_vals(m) -> $vec  */
-    INTR_MAP_ENTRIES, /* @map_entries(m)->$vec */
+    /* Dynamic Vector, Stack, Queue & Higher-Order Functional Intrinsics (`$vec`, `$fn`, `$map`) */
+    INTR_VNEW,        /* @vnew(cap)            */
+    INTR_VFILL,       /* @vfill(cnt, init)     */
+    INTR_VPUSH,        /* @vpush(v, item)       */
+    INTR_VPOP,         /* @vpop(v)              */
+    INTR_VSHIFT,       /* @vshift(v) (FIFO queue dequeue / pop_front)       */
+    INTR_VGET,         /* @vget(v, idx)         */
+    INTR_VSET,         /* @vset(v, idx, item)   */
+    INTR_VLEN,         /* @vlen(v)              */
+    INTR_VCAP,         /* @vcap(v)              */
+    INTR_VRESIZE,      /* @vresize(v, n)        */
+    INTR_VSHRINK,      /* @vshrink(v)           */
+    INTR_VCLEAR,       /* @vclear(v)            */
+    INTR_VRANGE,       /* @vrange(a, b, mode) (`a...b`, `a..<b`, `a<..b`, `a..b`) */
+    INTR_VRANGE_STEP,  /* @vrange_step(v, step, 0) (`a...b by step`)              */
+    INTR_VIN,          /* @vin(item, v) (`x in v` vector membership check)        */
+    INTR_FCALL,        /* @fcall(f, a, b)       */
+    INTR_VSORT,        /* @vsort(v, desc)       */
+    INTR_MAP_NEW,      /* @map_new(cap)         */
+    INTR_MAP_SET,      /* @map_set(m, k, v)     */
+    INTR_MAP_GET,      /* @map_get(m, k, def)   */
+    INTR_MAP_HAS,      /* @map_has(m, k)        */
+    INTR_MAP_DEL,      /* @map_del(m, k)        */
 
     /* Multidimensional Matrix Intrinsics (`$mat`) */
-    INTR_MZERO,       /* @mzero(r, c)        */
-    INTR_MROWS,       /* @mrows(m)           */
-    INTR_MCOLS,       /* @mcols(m)           */
     INTR_MRANK,       /* @mrank(m)           */
     INTR_MLEN,        /* @mlen(m)            */
-    INTR_MSHAPE,      /* @mshape(m) -> $vec  */
-    INTR_MADD,        /* @madd(a, b)         */
-    INTR_MSUB,        /* @msub(a, b)         */
-    INTR_MSCAL,       /* @mscal(m, s)        */
+    INTR_MDIM,        /* @mdim(m, axis)      */
     INTR_MMUL,        /* @mmul(a, b)         */
-    INTR_MTRANS,      /* @mtrans(m)          */
     INTR_MDET,        /* @mdet(m)            */
     INTR_MINV,        /* @minv(m)            */
     INTR_MLINSOLVE,   /* @mlinsolve(A, b)    */
-    INTR_MHADAMARD,   /* @mhadamard(a, b, m) */
     INTR_MRESHAPE,    /* @mreshape(m, r, c)  */
     INTR_MEIGVALS,    /* @meigvals(m)        */
     INTR_MEIGVECS,    /* @meigvecs(m)        */
@@ -207,9 +191,9 @@ typedef enum {
     INTR_BSHR,
 
     /* Type & Unit Introspection / String Conversion Intrinsics */
-    INTR_RAW,
+    INTR_RAW,       /* @raw(x[, donor]) -> raw value (optionally adopting donor's unit) */
     INTR_TYPE_NAME, /* @type_name(x) -> $str */
-    INTR_UNIT_NAME, /* @unit_name(x) -> $str */
+    INTR_UNIT_NAME, /* @unit_name(x[, axis]) -> $str or SI dim exponent */
     INTR_TOSTR,     /* @tostr(x)   -> $str (postfix `_` operator) */
     INTR_FROMSTR,   /* @fromstr(s) -> T    (prefix `_` operator)  */
     INTR_STR_FMT,       /* @str_fmt(tmpl, a, b)                   */
@@ -223,6 +207,9 @@ typedef enum {
     INTR_ERR,       /* @err(msg:str) -> raises custom error       */
     INTR_COUNT
 } IntrinsicId;
+
+_Static_assert(INTR_COUNT <= 255, "IntrinsicId must fit in uint8_t");
+_Static_assert(INTR_FCALL < SYM_META_LAZY_MASK, "Meta IntrinsicIds must fit below SYM_META_LAZY_MASK (0x80)");
 
 typedef enum {
     AST_LIT = 0,
@@ -320,9 +307,9 @@ typedef struct {
     uint8_t  local_count;
     uint8_t  ret_type;
     uint8_t  ret_unit;       /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..63 */
-    uint8_t  meta_tag;       /* 1 = inlined alias, or INTR_LPAREN..INTR_FIELD                    */
-    uint8_t  param_types[8];
-    uint8_t  param_units[8]; /* SYM_UNIT_OMITTED, SYM_UNIT_GENERIC, SYM_UNIT_LOCK_NONE, or 1..63 */
+    uint8_t  meta_tag;       /* 1 = inlined alias, meta IntrinsicId, or SYM_META_LAZY_MASK       */
+    uint8_t  param_types[SYM_MAX_OV_PARAMS];
+    uint8_t  param_units[SYM_MAX_OV_PARAMS];
     uint16_t body_ast;
 } OpOverload;
 
@@ -339,7 +326,7 @@ _Static_assert(sizeof(StrSlice)   == 4,  "StrSlice must be strictly 4 bytes");
 _Static_assert(sizeof(PatElem)    == 6,  "PatElem must be strictly 6 bytes");
 _Static_assert(sizeof(FieldDef)   == 8,  "FieldDef must be strictly 8 bytes");
 _Static_assert(sizeof(TypeDef)    == 12, "TypeDef must be strictly 12 bytes");
-_Static_assert(sizeof(OpOverload) == 28, "OpOverload must be strictly 28 bytes");
+_Static_assert(sizeof(OpOverload) == 44, "OpOverload must be strictly 44 bytes");
 _Static_assert(sizeof(ConstDef)   == 8,  "ConstDef must be strictly 8 bytes");
 
 struct SymTable;

@@ -32,10 +32,14 @@
 #include "math_engine.h"
 #include "user_loader.h"
 #include "math_engine_jni.h"
+#include "delegate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if !defined(_WIN32)
+#include <pthread.h>
+#endif
 
 static Engine g_eng; /* Single static engine context */
 
@@ -309,6 +313,93 @@ static bool host_elem_mass_cb(MemArena *mem, const SymTable *tab,
     mem_err(mem, "Unknown chemical element symbol '%s'", sym);
     return false;
 }
+
+static bool host_checked_recip_cb(MemArena *mem, const SymTable *tab,
+                                  const Value *args, uint8_t argc,
+                                  void *user_ctx, Value *out_val) {
+    (void)tab;
+    int *call_counter = (int *)user_ctx;
+    if (call_counter) (*call_counter)++;
+    if (argc != 1) {
+        mem_err(mem, "@checked_recip expects 1 real argument");
+        return false;
+    }
+    double x = val_get_f64(mem, args[0]);
+    if (x == 0.0) {
+        mem_err(mem, "Host extern @checked_recip rejected zero input");
+        return false;
+    }
+    if (x < 0.0) {
+        mem_err(mem, "Host extern @checked_recip rejected negative input (%g)", x);
+        return false;
+    }
+    *out_val = val_from_f64(mem, 100.0 / x);
+    return true;
+}
+
+#if !defined(_WIN32)
+typedef struct {
+    int  thread_id;
+    bool ok;
+} MtWorkerArg;
+
+static void *mt_stress_worker(void *arg) {
+    MtWorkerArg *w = (MtWorkerArg *)arg;
+    w->ok = false;
+    Engine *eng = eng_create();
+    if (!eng) return NULL;
+
+    int ext_calls = 0;
+    if (!eng_register_extern(eng, "checked_recip", host_checked_recip_cb, &ext_calls)) {
+        eng_destroy(eng);
+        return NULL;
+    }
+    char mod_src[256];
+    snprintf(mod_src, sizeof(mod_src),
+             "[mt_mod_%d]\n<[arith]\n"
+             "\"mt_recip\"(x:real) -> real = @checked_recip(x)\n"
+             "mt_scale(x) = x * %d\n",
+             w->thread_id, w->thread_id + 2);
+    if (!user_compile_ext(eng, mod_src, NULL, NULL)) {
+        eng_destroy(eng);
+        return NULL;
+    }
+
+    int sid = eng_session_open(eng);
+    if (sid < 0) {
+        eng_destroy(eng);
+        return NULL;
+    }
+
+    bool all_ok = true;
+    Value v = 0;
+    all_ok = all_ok && eng_session_eval(eng, sid, "acc := 0 ; v := vec(1, 2, 3, 4)", &v);
+    for (int iter = 1; iter <= 20 && all_ok; ++iter) {
+        all_ok = all_ok && eng_session_eval(
+            eng, sid,
+            "acc += sigma(k, k^2, 1, 5) + mt_recip(4) + ([1, 2 ; 3, 4] + [2, 3 ; 4, 5])[0, 1]",
+            &v);
+        /* Also test symbolic integration and equation solving concurrently */
+        char sym_buf[256];
+        all_ok = all_ok && eng_sym_integ(eng, "x", "3 * x^2 + 2 * x", sym_buf, sizeof(sym_buf)) &&
+                 (strcmp(sym_buf, "x ^ 3 + x ^ 2") == 0);
+        all_ok = all_ok && eng_sym_solve(eng, "x", "x^2 - 5 * x + 6 == 0", sym_buf, sizeof(sym_buf)) &&
+                 (strcmp(sym_buf, "[2, 3]") == 0);
+    }
+    /* Expected per-iteration increment: sigma(55) + mt_recip(4)(25) + mat[0,1](5) = 85; 20 * 85 = 1700 */
+    all_ok = all_ok && (val_get_f64(&eng->mem, v) == 1700.0) && (ext_calls == 20);
+    /* Verify error-injecting @extern callback propagates error without corrupting session */
+    all_ok = all_ok && !eng_session_eval(eng, sid, "mt_recip(0)", &v) &&
+             (strstr(eng_last_error(eng), "Host extern @checked_recip rejected zero input") != NULL) &&
+             eng_session_eval(eng, sid, "acc + mt_scale(10)", &v) &&
+             (val_get_f64(&eng->mem, v) == 1700.0 + (double)(w->thread_id + 2) * 10.0);
+
+    (void)eng_session_close(eng, sid);
+    eng_destroy(eng);
+    w->ok = all_ok;
+    return NULL;
+}
+#endif
 
 static void register_all_host_externs(Engine *eng) {
     eng_register_extern(eng, "fx_rate",     host_fx_rate_cb,     (void *)&g_fx_cache);
@@ -1576,6 +1667,109 @@ static const TestCase k_tests[] = {
     { "v := vec(1, 2, 3) ; (i in 1...120) { v.push(i) } ; reclaimed := gc_compact() ; (reclaimed > 0) && (v.len() == 123) && (v[122] == 120) && (pool_used() > 0)",
       "1", "real",
       "[Exp 6] Mark-Sweep scratch pool compaction 'gc_compact()' reclaims realloc blocks while preserving live vector" },
+
+    /* 41. Security & Correctness Audit Fixes (Groups 1-4) */
+    { "sum(vec(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40))",
+      "820", "real",
+      "[Audit 2.1] Variadic vec(1,...,40) preserves all 40 arguments (sum == 820, not 528)" },
+    { "len(str_repeat(\"abcdefghij\", 80))",
+      "800", "real",
+      "[Audit 2.2] String concatenation supports >511-byte strings without truncation (len == 800)" },
+    { "inf := 1e308 * 10 ; n := 0 ^ -1 - 0 ^ -1 ; (inf == inf) * 10000 + (inf != inf) * 1000 + (n != n) * 100 + (1e-20 == 0) * 10 + (1e-13 == 2e-13)",
+      "10100", "real",
+      "[Audit 3.2] IEEE-aware == and != for inf, nan, 1e-20 == 0 (0), and 1e-13 == 2e-13 (0)" },
+    { "n := 0 ^ -1 - 0 ^ -1 ; is_nan(min(1, n)) * 1000 + is_nan(max(n, 1)) * 100 + (round(1, 400) == 1) * 10 + (round(1, -400) == 0)",
+      "1111", "real",
+      "[Audit 3.4 & 3.5] NaN-propagating min/max and overflow-safe round(1, 400) & round(1, -400)" },
+    { "f(n) := n <= 0 ? 0 : 1 + f(n - 1) ; f(128)",
+      "128", "real",
+      "[Audit 3.6] Full documented user recursion depth of 128 levels (f(128) == 128)" },
+    { "(5--3) * 100 + (.5 + .25) * 100 + len(\"say \\\"hi\\\"\")",
+      "883", "real",
+      "[Audit 4.2] Binary-minus before unary-minus (5--3 == 8), leading-dot (.5+.25), and escaped quotes" },
+
+    /* 42. Second Audit Report Fixes: Unit Preservation in Calculus (`prod`, `sigma`, `lim`, `fmin`, `fmax`, `solve`) & Pure `.math` Map/Hadamard */
+    { "p := prod(k, 2m, 1, 3) ; unit_of(p) + \":\" + (p to_m3)_",
+      "\"volume:8\"", "str",
+      "[Audit2 Bug 3] prod(k, 2m, 1, 3) preserves compound unit m * m * m -> 8 [volume] (m^3)" },
+    { "s := sigma(k, k * 2m, 1, 4) ; unit_of(s) + \":\" + (s to_m)_",
+      "\"distance:20\"", "str",
+      "[Audit2 Bug 3] sigma(k, k * 2m, 1, 4) preserves unit -> 20 [distance] (m)" },
+    { "l := lim(x, (x^2 - (4 m2)) / (x - 2m), 2m) ; unit_of(l) + \":\" + (l to_m)_",
+      "\"distance:4\"", "str",
+      "[Audit2 Bug 3] lim(x, (x^2 - 4m^2)/(x - 2m), 2m) preserves unit -> 4 [distance]" },
+    { "xm := fmin(x, (x - 3m)^2 + 5 m2, 0m, 10m) ; xM := fmax(x, -((x - 4m)^2) + 9 m2, 0m, 10m) ; unit_of(xm) + \":\" + (xm to_m)_ + \",\" + (xM to_m)_",
+      "\"distance:3,4\"", "str",
+      "[Audit2 Bug 3] fmin and fmax preserve bound-variable unit [distance] -> 3m, 4m" },
+    { "xs := solve(x, 2 * x == 10m, 1m) ; unit_of(xs) + \":\" + (xs to_m)_",
+      "\"distance:5\"", "str",
+      "[Audit2 Bug 3] solve(x, 2*x == 10m, 1m) preserves unit [distance] -> 5m" },
+    { "m := dict(\"a\", 10, \"b\", 20) ; m.keys().len() * 100 + m.vals().sum() + m.entries().len()",
+      "232", "real",
+      "[Audit2 Migration] Pure .math map keys(), vals()/values(), and entries() in vec.math -> 232" },
+
+    /* 43. Section #1 & #3: Pure `.math` Matrix Algebra, Symbolic Integration (`sym_integ`) & Symbolic Solver (`sym_solve`) */
+    { "A := [10m, 20m ; 30m, 40m] ; B := [2m, 4m ; 6m, 8m] ; C := (A + B - (-B)) / 2 ; unit_of(C) + \":\" + (C[0, 1] to_m)_",
+      "\"distance:14\"", "str",
+      "[Sec 1] Pure .math matrix +, -, unary -, and scalar / preserving SI unit 'distance' -> 14m" },
+    { "T1 := [[[1, 2], [3, 4]], [[5, 6], [7, 8]]] ; T2 := (T1 * 3 - T1) / 2 ; (T2 == T1) * 10 + mat_rank(T2)",
+      "13", "real",
+      "[Sec 1] Pure .math N-D tensor scaling & subtraction via shape-preserving @mreshape (rank 3)" },
+    { "sym_integ(x, 3 * x^2 + 4 * x + 5)",
+      "\"x ^ 3 + 2 * x ^ 2 + 5 * x\"", "str",
+      "[Sec 3] Symbolic polynomial integration 'sym_integ(x, 3*x^2 + 4*x + 5)' -> 'x ^ 3 + 2 * x ^ 2 + 5 * x'" },
+    { "sym_integ(x, cos(2 * x) + exp(x))",
+      "\"sin(2 * x) / 2 + exp(x)\"", "str",
+      "[Sec 3] Symbolic linear-substitution integration 'sym_integ(x, cos(2*x) + exp(x))' -> 'sin(2 * x) / 2 + exp(x)'" },
+    { "F := sym_integ(x, x * exp(x)) ; sym_eval(F, x, 2) ~ exp(2)",
+      "1", "real",
+      "[Sec 3] Symbolic integration by parts 'sym_integ(x, x * exp(x))' -> x*exp(x) - exp(x)" },
+    { "(_sym_solve(x, 2 * x + 5 == 17)) * 100 + (_sym_solve(x, x^2 - 5 * x + 6 == 0)).sum()",
+      "605", "real",
+      "[Sec 3] Symbolic linear 'sym_solve(x, 2*x + 5 == 17)' (6) and quadratic 'x^2 - 5*x + 6 == 0' ([2, 3])" },
+    { "sym_solve(x, a * x + b == c)",
+      "\"(c - b) / a\"", "str",
+      "[Sec 3] Symbolic linear equation solver 'sym_solve(x, a * x + b == c)' -> '(c - b) / a'" },
+    { "sym_solve(x, a * x^2 - b == 0)",
+      "\"sqrt(b / a)\"", "str",
+      "[Sec 3] Symbolic pure quadratic solver 'sym_solve(x, a * x^2 - b == 0)' -> 'sqrt(b / a)'" },
+    { "sym_solve(x, x^2 + 2 * b * x + c == 0)",
+      "\"(-(2 * b) + sqrt((2 * b) ^ 2 - 4 * c)) / 2\"", "str",
+      "[Sec 3] Symbolic general quadratic formula 'sym_solve(x, x^2 + 2*b*x + c == 0)'" },
+
+    /* 44. Section #2: Pure `.math` `mat_dim`/`mat_rows`/`mat_cols`/`mat_shape`/`mat_zeros` & 7D SI `unit_dim`/`dim_vec`/`same_dim` */
+    { "T3 := [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]] ; mat_dim(T3, 0) * 100 + mat_dim(T3, 1) * 10 + mat_dim(T3, -1)",
+      "223", "real",
+      "[Sec 2] 'mat_dim(m, axis)' with positive & negative axes on 2x2x3 3D tensor -> 223" },
+    { "T3 := [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]] ; mat_shape(T3)",
+      "[2, 2, 3]", "vec",
+      "[Sec 2] Pure .math 'mat_shape(T3)' via comprehension over @mdim -> [2, 2, 3]" },
+    { "Z := mat_zeros(2, 3) ; mat_rows(Z) * 100 + mat_cols(Z) * 10 + Z.mat_sum()",
+      "230", "real",
+      "[Sec 2] Pure .math 'mat_zeros(2, 3)', 'mat_rows(Z)', and 'mat_cols(Z)' -> 230" },
+    { "dim_vec(10 N)",
+      "[1, 1, -2, 0, 0, 0, 0]", "vec",
+      "[Sec 2] Pure .math 7D SI base dimensional exponent vector 'dim_vec(10 N)' -> [1, 1, -2, 0, 0, 0, 0]" },
+    { "unit_dim(5 J, 0) * 100 + unit_dim(5 J, 1) * 10 + (-unit_dim(5 J, 2)) + same_dim(10 N * 2 m, 5 J) * 1000",
+      "1212", "real",
+      "[Sec 2] 'unit_dim(5 J, axis)' (L=2, M=1, T=-2) and 'same_dim(10 N * 2 m, 5 J)' -> 1212" },
+
+    /* 45. SBO Arena-to-Heap Spill & Automatic Memory Management (Zero New Keywords) */
+    { "v := 1...20000 ; v.len() * 10 + (v[0] == 1) + (v[19999] == 20000)",
+      "200002", "real",
+      "[SBO/Heap] 20,000-element range vector '1...20000' transparently spills to heap (> 8,192 f64_pool)" },
+    { "v := vec(9000, 5) ; v[0] + v[8999] + v.len()",
+      "9010", "real",
+      "[SBO/Heap] 'vec(9000, 5)' succeeds via transparent heap spill -> 5 + 5 + 9000 = 9010" },
+    { "M := (1...14400).reshape(120, 120) ; M[0, 0] + M[119, 119] + mat_rows(M) + mat_cols(M)",
+      "14641", "real",
+      "[SBO/Heap] 120x120 matrix (14,400 doubles) reshaped from range vector spills to heap -> 14641" },
+    { "v := vec() ; (i in 1...100) { v.push(i) } ; v.len() * 1000 + v[0] + v[99]",
+      "100101", "real",
+      "[SBO/Heap] Dynamic vector starts in SBO f64_pool (<=64) and auto-migrates to heap on growth (>64)" },
+    { "s := 0 ; (i in 1...150) { tmp := vec(2000, i) ; s += tmp[0] + tmp[1999] } ; s",
+      "22650", "real",
+      "[SBO/Heap] 150 loop iterations each allocating a 2,000-slot heap vector auto-GC with zero leaks" },
     { NULL, NULL, NULL, NULL }
 };
 
@@ -1655,8 +1849,8 @@ static int run_cli_repl(Engine *eng) {
     printf("  MEP Interactive Session REPL (%u modules, %u overloads, %u constants)\n",
            eng_module_count(eng), eng_overload_count(eng), eng_const_count(eng));
     printf("  Commands: :help, :vars, :snaps, :compact, :modules, :enable <mod>,\n");
-    printf("            :disable <mod>, :diff <x> <expr>, :simplify <expr>,\n");
-    printf("            :load <file.math>, :reset, :quit\n");
+    printf("            :disable <mod>, :diff <x> <expr>, :integ <x> <expr>,\n");
+    printf("            :solve <x> <eq>, :simplify <expr>, :load <file.math>, :reset, :quit\n");
     printf("========================================================================\n");
     char line[2048];
     char val_buf[512], type_buf[32], unit_buf[32];
@@ -1687,6 +1881,8 @@ static int run_cli_repl(Engine *eng) {
             printf("  :enable <mod>       Enable module <mod> in O(1)\n");
             printf("  :disable <mod>      Disable module <mod> in O(1)\n");
             printf("  :diff <x> <expr>    Symbolically differentiate <expr> w.r.t. <x>\n");
+            printf("  :integ <x> <expr>   Symbolically integrate <expr> w.r.t. <x>\n");
+            printf("  :solve <x> <eq>     Symbolically solve equation <eq> for <x>\n");
             printf("  :simplify <expr>    Symbolically simplify <expr>\n");
             printf("  :load <path.math>   Compile & link a .math extension file\n");
             printf("  :reset              Clear all session variables & snapshots\n");
@@ -1750,6 +1946,42 @@ static int run_cli_repl(Engine *eng) {
                 printf("= %s\n", out_s);
             } else {
                 printf("Usage: :diff <var> <expr>\n");
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":integ ", 7) == 0) {
+            const char *p = cmd + 7;
+            while (*p == ' ') p++;
+            char vname[32];
+            size_t vi = 0;
+            while (*p != '\0' && *p != ' ' && *p != '\t' && vi + 1 < sizeof(vname)) {
+                vname[vi++] = *p++;
+            }
+            vname[vi] = '\0';
+            while (*p == ' ' || *p == '\t') p++;
+            char out_s[512];
+            if (vi > 0 && *p != '\0' && eng_sym_integ(eng, vname, p, out_s, sizeof(out_s))) {
+                printf("= %s\n", out_s);
+            } else {
+                printf("Usage: :integ <var> <expr>\n");
+            }
+            continue;
+        }
+        if (strncmp(cmd, ":solve ", 7) == 0) {
+            const char *p = cmd + 7;
+            while (*p == ' ') p++;
+            char vname[32];
+            size_t vi = 0;
+            while (*p != '\0' && *p != ' ' && *p != '\t' && vi + 1 < sizeof(vname)) {
+                vname[vi++] = *p++;
+            }
+            vname[vi] = '\0';
+            while (*p == ' ' || *p == '\t') p++;
+            char out_s[512];
+            if (vi > 0 && *p != '\0' && eng_sym_solve(eng, vname, p, out_s, sizeof(out_s))) {
+                printf("= %s\n", out_s);
+            } else {
+                printf("Usage: :solve <var> <eq>\n");
             }
             continue;
         }
@@ -2203,10 +2435,10 @@ int main(int argc, char **argv) {
            bug5_ok ? "PASS" : "FAIL", eng_last_error(&g_eng));
 
     double saved_pool0 = g_eng.mem.f64_pool[0];
-    bool bug6_exhaust = !eng_eval(&g_eng, "v := vec(9000, 5)", &v);
+    bool bug6_exhaust = !eng_eval(&g_eng, "v := vec(300000, 5)", &v);
     uint16_t fail_pool_idx = mem_alloc_pool(&g_eng.mem, 9000);
     mem_clear_err(&g_eng.mem);
-    uint16_t fail_vec_idx  = mem_vec_alloc_hdr(&g_eng.mem, 1, 9000);
+    uint16_t fail_vec_idx  = mem_vec_alloc_hdr(&g_eng.mem, 1, 300000);
     /* Force pool_top near limit to verify mem_vec_alloc_hdr and mem_mat_alloc_hdr return MEM_NO_IDX */
     uint16_t saved_top = g_eng.mem.pool_top;
     g_eng.mem.pool_top = MEM_MAX_F64_POOL - 2;
@@ -2584,7 +2816,287 @@ int main(int argc, char **argv) {
     printf("    - JNI lifecycle, eval, session restore, .mathc & symbolic API : %s\n\n",
            jni_all_ok ? "PASS" : "FAIL");
 
+    /* 13. Comprehensive Security & Correctness Audit Regression Suite (Groups 1-4) */
+    printf("[13] Security & Correctness Audit Regression Suite (Groups 1-4):\n");
+
+    /* Group 1: Stack buffer overflow & truncation guard on sym_ast_to_str (150+ terms) */
+    char sym_150_expr[4096];
+    size_t sp_off = 0;
+    for (int i = 1; i <= 155; ++i) {
+        sp_off += (size_t)snprintf(sym_150_expr + sp_off, sizeof(sym_150_expr) - sp_off,
+                                   "%sx^%d", (i > 1 ? " + " : ""), i);
+    }
+    char sym_small_buf[128];
+    char sym_large_buf[4096];
+    bool g1_small_guarded = !eng_sym_simplify(&g_eng, sym_150_expr, sym_small_buf, sizeof(sym_small_buf)) &&
+                            !eng_sym_diff(&g_eng, "x", sym_150_expr, sym_small_buf, sizeof(sym_small_buf));
+    bool g1_large_ok = eng_sym_simplify(&g_eng, sym_150_expr, sym_large_buf, sizeof(sym_large_buf)) &&
+                       (strlen(sym_large_buf) > 900) &&
+                       eng_sym_diff(&g_eng, "x", sym_150_expr, sym_large_buf, sizeof(sym_large_buf)) &&
+                       (strlen(sym_large_buf) > 1200);
+    char sym_eval_call[4200];
+    snprintf(sym_eval_call, sizeof(sym_eval_call), "sym_simplify(%s)", sym_150_expr);
+    Value v_sym150 = 0;
+    bool g1_eval_ok = eng_eval(&g_eng, sym_eval_call, &v_sym150) &&
+                      (val_get_str(&g_eng.mem, v_sym150).len > 900);
+    bool audit_g1_ok = g1_small_guarded && g1_large_ok && g1_eval_ok;
+    printf("    - [Group 1] sym_ast_to_str 155-term overflow & truncation guard : %s\n",
+           audit_g1_ok ? "PASS" : "FAIL");
+
+    /* Group 2: Silent data loss fixes (vec>32 args, >511B strings, session >70 elements, JNI >8KB snapshots) */
+    int sess_g2 = eng_session_open(&g_eng);
+    Value v_g2a = 0, v_g2b = 0, v_g2c = 0;
+    bool g2_sess_ok = (sess_g2 >= 0) &&
+                      eng_session_eval(&g_eng, sess_g2, "w := 1...80 ; len(w)", &v_g2a) &&
+                      (val_get_f64(&g_eng.mem, v_g2a) == 80.0) &&
+                      eng_session_eval(&g_eng, sess_g2, "len(w) * 10000 + sum(w)", &v_g2b) &&
+                      (val_get_f64(&g_eng.mem, v_g2b) == 803240.0) &&
+                      eng_session_eval(&g_eng, sess_g2, "1 + 1", &v_g2c) &&
+                      (val_get_f64(&g_eng.mem, v_g2c) == 2.0);
+    /* Verify session variable overflow rolls back cleanly without corrupting subsequent evaluations */
+    bool g2_overflow_guarded = !eng_session_eval(&g_eng, sess_g2, "huge_v := 1...600", &v_g2c) &&
+                               eng_session_eval(&g_eng, sess_g2, "len(w) + 1", &v_g2c) &&
+                               (val_get_f64(&g_eng.mem, v_g2c) == 81.0);
+    (void)eng_session_close(&g_eng, sess_g2);
+
+    /* Verify JNI snapshot export & restore across 30 large evaluations (>8192 bytes total) */
+    jlong jh_g2 = Java_com_mathengine_MathEngineBridge_nativeCreate(jenv, NULL);
+    jint jsid_g2 = Java_com_mathengine_MathEngineBridge_nativeSessionOpen(jenv, NULL, jh_g2);
+    bool g2_jni_ok = (jh_g2 != 0 && jsid_g2 >= 0);
+    if (g2_jni_ok) {
+        (void)Java_com_mathengine_MathEngineBridge_nativeSessionEval(
+            jenv, NULL, jh_g2, jsid_g2, "big := 1...75 ; k := 0");
+        for (int step = 1; step <= 26; ++step) {
+            (void)Java_com_mathengine_MathEngineBridge_nativeSessionEval(
+                jenv, NULL, jh_g2, jsid_g2, "k += 1");
+        }
+        jstring jexp = Java_com_mathengine_MathEngineBridge_nativeSessionExportSnapshots(
+            jenv, NULL, jh_g2, jsid_g2);
+        jint jrest = Java_com_mathengine_MathEngineBridge_nativeSessionRestore(
+            jenv, NULL, jh_g2, jexp);
+        jstring jchk = Java_com_mathengine_MathEngineBridge_nativeSessionEval(
+            jenv, NULL, jh_g2, jrest, "k * 100 + len(big)");
+        g2_jni_ok = (jrest >= 0) && (jchk != NULL) && (strcmp(jchk, "OK|real|none|2675") == 0);
+    }
+    Java_com_mathengine_MathEngineBridge_nativeDestroy(jenv, NULL, jh_g2);
+    bool audit_g2_ok = g2_sess_ok && g2_overflow_guarded && g2_jni_ok;
+    printf("    - [Group 2] Zero silent data loss (vec(40), str, session & JNI) : %s\n",
+           audit_g2_ok ? "PASS" : "FAIL");
+
+    /* Group 3: Math & session limits (1 % 0, 5 km % 0 m, (-1)!, 2.5!, recursion >128 guard, >32 session evals) */
+    bool g3_mod_zero = !eng_eval(&g_eng, "1 % 0", &v) &&
+                       !eng_eval(&g_eng, "5 km % 0 m", &v) &&
+                       !eng_eval(&g_eng, "5 km % 2 sec", &v);
+    bool g3_fact_dom = !eng_eval(&g_eng, "(-1)!", &v) &&
+                       !eng_eval(&g_eng, "2.5!", &v) &&
+                       !eng_eval(&g_eng, "171!", &v);
+    bool g3_rec_guard = !eng_eval(&g_eng, "f(n) := n <= 0 ? 0 : 1 + f(n - 1) ; f(130)", &v);
+    int sess_g3 = eng_session_open(&g_eng);
+    bool g3_sess50_ok = (sess_g3 >= 0) &&
+                        eng_session_eval(&g_eng, sess_g3, "acc := 0", &v);
+    for (int i = 1; i <= 45 && g3_sess50_ok; ++i) {
+        g3_sess50_ok = eng_session_eval(&g_eng, sess_g3, "acc += 1", &v);
+    }
+    g3_sess50_ok = g3_sess50_ok && (val_get_f64(&g_eng.mem, v) == 45.0);
+    (void)eng_session_close(&g_eng, sess_g3);
+    bool audit_g3_ok = g3_mod_zero && g3_fact_dom && g3_rec_guard && g3_sess50_ok;
+    printf("    - [Group 3] Modulo/factorial domain, 128-rec & >32 session evals: %s\n",
+           audit_g3_ok ? "PASS" : "FAIL");
+
+    /* Group 4: >128-char string & number literals, 5--3, .5, escaped quotes & UTF-8 boundary safety */
+    char long_str_expr[300];
+    long_str_expr[0] = '"';
+    memset(long_str_expr + 1, 'a', 200);
+    long_str_expr[201] = '"';
+    long_str_expr[202] = '\0';
+    char long_num_expr[220];
+    long_num_expr[0] = '1';
+    long_num_expr[1] = '.';
+    memset(long_num_expr + 2, '0', 150);
+    long_num_expr[152] = '5';
+    long_num_expr[153] = '\0';
+    Value v_lstr = 0, v_lnum = 0;
+    bool g4_lex_ok = eng_eval(&g_eng, long_str_expr, &v_lstr) &&
+                     (val_get_str(&g_eng.mem, v_lstr).len == 200) &&
+                     eng_eval(&g_eng, long_num_expr, &v_lnum) &&
+                     (val_get_f64(&g_eng.mem, v_lnum) == 1.0);
+    bool audit_g4_ok = g4_lex_ok;
+    printf("    - [Group 4] >128-char string/number literals & lexer edge cases : %s\n\n",
+           audit_g4_ok ? "PASS" : "FAIL");
+
+    /* 14. Second Audit Report Regression Suite (Bugs 1-5 & .math Calculus/Container Migration) */
+    printf("[14] Second Audit Report Regression Suite (Bugs 1-5 & Pure `.math` Migration):\n");
+
+    /* Bug 1: .mathc header intrinsic table fingerprint (`intr_hash`) rejects stale/reordered enum images */
+    bool audit2_b1_ok = false;
+    const uint8_t *b1_mathc = NULL;
+    size_t b1_len = 0;
+    if (user_compile_ext(&g_eng, "[audit2_b1_mod]\n<[arith]\nb1_id(x) = x + 1\n", &b1_mathc, &b1_len) &&
+        b1_mathc && b1_len > sizeof(MathcHeader)) {
+        uint8_t *stale_img = (uint8_t *)malloc(b1_len);
+        if (stale_img) {
+            memcpy(stale_img, b1_mathc, b1_len);
+            MathcHeader shdr;
+            memcpy(&shdr, stale_img, sizeof(MathcHeader));
+            bool hash_matches_runtime = (shdr.intr_hash == delegate_intrinsic_table_hash()) && (shdr.intr_hash != 0);
+            /* Perturb intr_hash (simulating an enum insertion/reorder) and recompute image checksum */
+            shdr.intr_hash ^= 0x01020304u;
+            shdr.checksum = ext_calc_mathc_checksum(&shdr, stale_img + sizeof(MathcHeader), shdr.payload_bytes);
+            memcpy(stale_img, &shdr, sizeof(MathcHeader));
+            bool rejected_stale_enum = !user_load_mathc(&g_eng, stale_img, b1_len) &&
+                                       (strstr(eng_last_error(&g_eng), "intrinsic table fingerprint mismatch") != NULL);
+            audit2_b1_ok = hash_matches_runtime && rejected_stale_enum;
+            free(stale_img);
+        }
+    }
+    printf("    - [Bug 1] .mathc `intr_hash` fingerprint & stale enum rejection  : %s\n",
+           audit2_b1_ok ? "PASS" : "FAIL");
+
+    /* Bug 2 & Step 3: Enum-order independence + lazy `var_x` calculus in `.math` + user-defined `var_x` function */
+    Value v_b2 = 0, v_b3 = 0;
+    bool user_lazy_fn_ok = user_compile_ext(
+        &g_eng,
+        "[user_lazy_test]\n<[calculus]\nsum_weighted(var_k:none, expr:real, lo:real, hi:real) -> real = sigma(idx, call(expr, idx) * 2, lo, hi)\n",
+        NULL, NULL) &&
+        eng_eval(&g_eng, "sum_weighted(n, n^2, 1, 4)", &v_b2) &&
+        (val_get_f64(&g_eng.mem, v_b2) == 60.0);
+    bool calc_unit_ok = eng_eval(&g_eng, "prod(k, 2m, 1, 3)", &v_b3) &&
+                        (val_get_f64(&g_eng.mem, v_b3) == 8.0) &&
+                        (strcmp(eng_unit_name(&g_eng, eng_val_unit(&g_eng, v_b3), (char[32]){0}, 32), "volume") == 0);
+    bool audit2_b2_b3_ok = user_lazy_fn_ok && calc_unit_ok;
+    printf("    - [Bug 2,3,4] Lazy `var_x` in `.math` & `prod(k, 2m, 1, 3)`==8m³ : %s\n",
+           audit2_b2_b3_ok ? "PASS" : "FAIL");
+
+    /* Bug 5: 64-bit `active_modules` mask supports >32 loaded modules cleanly */
+    Engine *eng64 = eng_create();
+    bool audit2_b5_ok = (eng64 != NULL) && (sizeof(eng64->sym.active_modules) == 8) && (SYM_MAX_MODULES == 64);
+    if (audit2_b5_ok) {
+        for (int mi = 0; mi < 18 && audit2_b5_ok; ++mi) {
+            char msrc[128];
+            snprintf(msrc, sizeof(msrc), "[dyn_mod_%d]\n<[arith]\ndyn_fn_%d(x) = x + %d\n", mi, mi, mi + 1);
+            audit2_b5_ok = user_compile_ext(eng64, msrc, NULL, NULL);
+        }
+        Value v64 = 0;
+        audit2_b5_ok = audit2_b5_ok &&
+                       (eng_module_count(eng64) >= 35) &&
+                       eng_eval(eng64, "dyn_fn_17(10)", &v64) &&
+                       (val_get_f64(&eng64->mem, v64) == 28.0) &&
+                       eng_set_module(eng64, "dyn_mod_17", false) &&
+                       !eng_eval(eng64, "dyn_fn_17(10)", &v64) &&
+                       eng_set_module(eng64, "dyn_mod_17", true) &&
+                       eng_eval(eng64, "dyn_fn_17(10)", &v64) &&
+                       (val_get_f64(&eng64->mem, v64) == 28.0);
+    }
+    eng_destroy(eng64);
+    printf("    - [Bug 5] 64-bit `active_modules` mask (>35 active modules)      : %s\n\n",
+           audit2_b5_ok ? "PASS" : "FAIL");
+
+    /* 15. Section #1 & #3 Verification: Pure `.math` Wildcards/Matrix, Symbolic Integ/Solve, Extern Errors & Multi-Threading */
+    printf("[15] Pure `.math` Wildcards/Matrix, `sym_integ`/`sym_solve`, `@extern` Errors & Multi-Thread Stress:\n");
+
+    /* 15a. Verify SymTable-driven wildcards ($T, $any, $none) and for/in symbols */
+    bool sec1_sym_ok = (sym_find_type(&g_eng.sym, &g_eng.mem, "T", 1) == SYM_TYPE_ANY) &&
+                       (sym_find_type(&g_eng.sym, &g_eng.mem, "any", 3) == SYM_TYPE_ANY) &&
+                       (sym_find_unit(&g_eng.sym, &g_eng.mem, "none", 4) == SYM_UNIT_LOCK_NONE) &&
+                       (sym_find_unit(&g_eng.sym, &g_eng.mem, "T", 1) == SYM_UNIT_GENERIC) &&
+                       (sym_find_unit(&g_eng.sym, &g_eng.mem, "any", 3) == SYM_UNIT_GENERIC);
+    printf("    - [Sec 1] SymTable-driven `$T`/`$any`/`$none` & pure `.math` mat : %s\n",
+           sec1_sym_ok ? "PASS" : "FAIL");
+
+    /* 15b. Verify C API (`eng_sym_integ`, `eng_sym_solve`) & JNI (`nativeSymInteg`, `nativeSymSolve`) */
+    char sinteg_buf[256] = {0};
+    char ssolve_buf[256] = {0};
+    bool c_sym_integ_ok = eng_sym_integ(&g_eng, "x", "6 * x^2 + 4 * x + 1 / x", sinteg_buf, sizeof(sinteg_buf)) &&
+                          (strcmp(sinteg_buf, "2 * x ^ 3 + 2 * x ^ 2 + ln(x)") == 0);
+    bool c_sym_solve_ok = eng_sym_solve(&g_eng, "x", "x^2 - 5 * x + 6 = 0", ssolve_buf, sizeof(ssolve_buf)) &&
+                          (strcmp(ssolve_buf, "[2, 3]") == 0);
+    jlong jh15 = Java_com_mathengine_MathEngineBridge_nativeCreate(jenv, NULL);
+    jstring jinteg = Java_com_mathengine_MathEngineBridge_nativeSymInteg(jenv, NULL, jh15, "x", "4 * x^3 + cos(x)");
+    jstring jsolve = Java_com_mathengine_MathEngineBridge_nativeSymSolve(jenv, NULL, jh15, "x", "x^2 - 9 == 0");
+    bool jni_sym15_ok = (jh15 != 0) &&
+                        (jinteg != NULL && strcmp(jinteg, "x ^ 4 + sin(x)") == 0) &&
+                        (jsolve != NULL && strcmp(jsolve, "[-3, 3]") == 0);
+    Java_com_mathengine_MathEngineBridge_nativeDestroy(jenv, NULL, jh15);
+    bool sec3_sym_ok = c_sym_integ_ok && c_sym_solve_ok && jni_sym15_ok;
+    printf("    - [Sec 3] Symbolic `sym_integ` & `sym_solve` (MEP, C API & JNI)  : %s\n",
+           sec3_sym_ok ? "PASS" : "FAIL");
+
+    /* 15c. Verify `@extern` callback error injection and 4-thread parallel `pthread` stress test */
+    int ext_cnt_main = 0;
+    bool ext_err_ok = eng_register_extern(&g_eng, "checked_recip", host_checked_recip_cb, &ext_cnt_main) &&
+                      user_compile_ext(&g_eng, "[ext_err_mod]\n<[arith]\n\"checked_recip\"(x:real) -> real = @checked_recip(x)\n", NULL, NULL) &&
+                      eng_eval(&g_eng, "checked_recip(4)", &v) && (val_get_f64(&g_eng.mem, v) == 25.0) &&
+                      !eng_eval(&g_eng, "checked_recip(0)", &v) &&
+                      (strstr(eng_last_error(&g_eng), "Host extern @checked_recip rejected zero input") != NULL) &&
+                      !eng_eval(&g_eng, "checked_recip(-5)", &v) &&
+                      (strstr(eng_last_error(&g_eng), "Host extern @checked_recip rejected negative input") != NULL) &&
+                      (ext_cnt_main == 3);
+
+    bool mt_stress_ok = true;
+#if !defined(_WIN32)
+    pthread_t tids[4];
+    MtWorkerArg wargs[4];
+    for (int ti = 0; ti < 4; ++ti) {
+        wargs[ti].thread_id = ti;
+        wargs[ti].ok = false;
+        if (pthread_create(&tids[ti], NULL, mt_stress_worker, &wargs[ti]) != 0) {
+            mt_stress_ok = false;
+        }
+    }
+    for (int ti = 0; ti < 4; ++ti) {
+        (void)pthread_join(tids[ti], NULL);
+        if (!wargs[ti].ok) mt_stress_ok = false;
+    }
+#endif
+    bool sec3_mt_ok = ext_err_ok && mt_stress_ok;
+    printf("    - [Sec 3] Error-injecting `@extern` & 4-thread ASan stress test  : %s\n\n",
+           sec3_mt_ok ? "PASS" : "FAIL");
+
+    /* 16. Transparent SBO Arena-to-Heap Spill & Automatic Memory Management Verification */
+    printf("[16] SBO Arena-to-Heap Spill & Automatic Memory Management:\n");
+
+    /* 16a. Verify small containers (<= 64 slots) stay in SBO f64_pool while > 64 spill to HeapBlock */
+    bool sbo_small_ok = eng_eval(&g_eng, "v_small := vec(16, 3)", &v) &&
+                        !mem_is_heap_idx((uint16_t)mem_read_pool(&g_eng.mem, (uint16_t)(val_get_pool_idx(v) + 3))) &&
+                        (g_eng.mem.heap_active_count == 0);
+    bool sbo_spill_ok = eng_eval(&g_eng, "v_big := vec(5000, 7)", &v) &&
+                        mem_is_heap_idx((uint16_t)mem_read_pool(&g_eng.mem, (uint16_t)(val_get_pool_idx(v) + 3))) &&
+                        (g_eng.mem.heap_active_count == 1) &&
+                        (g_eng.mem.heap_total_slots >= 5000u);
+    /* Next eval rewinds scratch and frees all transient heap blocks */
+    bool sbo_rewind_ok = eng_eval(&g_eng, "1 + 1", &v) &&
+                         (g_eng.mem.heap_active_count == 0) &&
+                         (g_eng.mem.heap_total_slots == 0);
+    bool sec16_routing_ok = sbo_small_ok && sbo_spill_ok && sbo_rewind_ok;
+    printf("    - [SBO Routing] <=64 in f64_pool, >64 in HeapBlock & auto-rewind : %s\n",
+           sec16_routing_ok ? "PASS" : "FAIL");
+
+    /* 16b. Verify SBO -> Heap migration on dynamic push and shrink_to_fit on heap vectors */
+    bool sec16_mig_ok = eng_eval(&g_eng,
+        "v := vec(1, 2, 3, 4) ; (i in 5...200) { v.push(i) } ; v.shrink() ; "
+        "(v.len() == 200) && (v.cap() == 200) && (v[0] == 1) && (v[199] == 200)", &v) &&
+        (val_get_f64(&g_eng.mem, v) == 1.0);
+    printf("    - [SBO -> Heap] Dynamic growth migration & heap `shrink(v)`      : %s\n",
+           sec16_mig_ok ? "PASS" : "FAIL");
+
+    /* 16c. Verify cyclic loop & function-frame heap allocation reclamation (> 300 heap blocks across 1 eval) */
+    bool sec16_gc_ok = eng_eval(&g_eng,
+        "work(k) := { a := vec(1500, k) ; b := (1...1000) ; a[1499] + b[999] } ; "
+        "tot := 0 ; (i in 1...300) { tot += work(i) } ; tot", &v) &&
+        (val_get_f64(&g_eng.mem, v) == (300.0 * 301.0 / 2.0 + 300.0 * 1000.0)) &&
+        (g_eng.mem.heap_active_count < 64u);
+    mem_rewind_scratch(&g_eng.mem);
+    sec16_gc_ok = sec16_gc_ok && (g_eng.mem.heap_active_count == 0) && (g_eng.mem.heap_total_slots == 0);
+    printf("    - [Auto Heap GC] 600 heap vectors across 300 calls reclaimed     : %s\n\n",
+           sec16_gc_ok ? "PASS" : "FAIL");
+
     return (passed == total && blank_ok && load_mathc_ok && vec_type_guard && multi_eng_ok && jni_all_ok &&
+            sec16_routing_ok && sec16_mig_ok && sec16_gc_ok &&
+            audit_g1_ok && audit_g2_ok && audit_g3_ok && audit_g4_ok &&
+            audit2_b1_ok && audit2_b2_b3_ok && audit2_b5_ok &&
+            sec1_sym_ok && sec3_sym_ok && sec3_mt_ok &&
+            audit_g1_ok && audit_g2_ok && audit_g3_ok && audit_g4_ok &&
+            audit2_b1_ok && audit2_b2_b3_ok && audit2_b5_ok &&
             introspect_ok && sess_fn_ok &&
             link_order_ok && dup_mod_guard && dup_def_guard && missing_dep_guard && cycle_dep_guard &&
             parallel_sess_ok && snap_iter_ok && restore_continue_ok && snap_guards_ok &&

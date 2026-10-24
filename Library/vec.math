@@ -18,9 +18,9 @@ vec(count:real, none, init:T) -> vec = @vfill(count, init)
 list()                  -> vec = @vnew(0)
 list(item:T)            -> vec = @vfill(1, item)
 stack()                 -> vec = @vnew(0)
-stack(item:T)           -> vec = @vfill(1, item)
+stack(item:T)            -> vec = @vfill(1, item)
 queue()                 -> vec = @vnew(0)
-queue(item:T)           -> vec = @vfill(1, item)
+queue(item:T)            -> vec = @vfill(1, item)
 len(v:vec)                     = @vlen(v)
 cap(v:vec)                     = @vcap(v)
 is_empty(v:vec)                = (len(v) == 0)
@@ -40,13 +40,13 @@ top(s:vec)              -> T   = peek(s)
 back(s:vec)             -> T   = peek(s)
 front(q:vec)            -> T   = (q.len() == 0) ? error("Cannot peek into an empty vector") : q[0]
 
-# 2. Range Operators (`...`, `..<`, `<..`, `..`), Stepped Range (`by`), Membership (`in`) & Insert (`into`)
+# 2. Range Operators (`...`, `..<`, `<..`, `..`), Stepped Range (`by`) & Insert (`into`)
+#    (Note: `(item:T) in (v:vec)` is declared in `[boot_control]`)
 (a:real, T) "..." (b:real, T) :<45 -> vec = @vrange(a, b, 0)
 (a:real, T) "..<" (b:real, T) :<45 -> vec = @vrange(a, b, 1)
 (a:real, T) "<.." (b:real, T) :<45 -> vec = @vrange(a, b, 2)
 (a:real, T) ".."  (b:real, T) :<45 -> vec = @vrange(a, b, 3)
 (r:vec)     by    (step:real) :<44 -> vec = @vrange_step(r, step, 0)
-(item:T)    in    (v:vec)     :<42        = @vin(item, v)
 (item:T)    into  (v:vec)     :>55 -> vec = @vpush(v, item)
 
 # Pure MEP `range(start, stop, step = 1)` function
@@ -315,10 +315,10 @@ has_key(m:map, k:T)                    = @map_has(m, k)
 (k:T) in (m:map) :<42                  = @map_has(m, k)
 map_del(m:map, k:T)             -> map = @map_del(m, k)
 remove(m:map, k:T)              -> map = @map_del(m, k)
-keys(m:map)                     -> vec = @map_keys(m)
-vals(m:map)                     -> vec = @map_vals(m)
-values(m:map)                   -> vec = @map_vals(m)
-entries(m:map)                  -> vec = @map_entries(m)
+keys(m:map)                     -> vec = [k for k in m]
+vals(m:map)                     -> vec = [v for k, v in m]
+values(m:map)                   -> vec = [v for k, v in m]
+entries(m:map)                  -> vec = [k + "=" + (v_) for k, v in m]
 len(m:map)                             = @vlen(m)
 is_empty(m:map)                        = @eq(@vlen(m), 0)
 clear(m:map)                    -> map = @vclear(m)
@@ -334,3 +334,7 @@ clear(m:map)                    -> map = @vclear(m)
     (i, x in a) { if (!(x ~ b[i])) { return 0 } }
     1
 }
+
+# 7. Pure MEP 7D SI Unit Dimensional Introspection (`dim_vec`, `same_dim`)
+dim_vec(x:T)         -> vec = [@unit_name(x, i) for i in 0..<7]
+same_dim(a:T, b:T)          = (dim_vec(a) == dim_vec(b))

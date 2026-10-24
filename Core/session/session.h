@@ -36,7 +36,8 @@ typedef struct Engine Engine;
 #define ENG_MAX_SESSIONS          8
 #define ENG_SESSION_MAX_EVALS    32
 #define ENG_SESSION_MAX_VARS     16
-#define ENG_SNAPSHOT_MAX_LEN    512
+#define ENG_SESSION_VAL_MAX    2048
+#define ENG_SNAPSHOT_MAX_LEN   4096
 
 typedef struct {
     char name[32];            /* Variable identifier                           */
@@ -44,7 +45,7 @@ typedef struct {
     char unit_name[32];       /* Current runtime unit group (or vec elem unit) */
     char lock_type_name[32];  /* Concrete type lock ("*" if dynamic)           */
     char lock_unit_name[32];  /* Concrete unit lock ("*" if dynamic)           */
-    char val_text[256];       /* Canonical MEP expression for current value    */
+    char val_text[ENG_SESSION_VAL_MAX]; /* Canonical MEP expression for current value */
 } EngSessionVar;
 
 typedef struct {

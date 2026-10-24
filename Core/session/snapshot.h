@@ -55,10 +55,10 @@ MATH_ENGINE_API int         eng_session_restore(Engine *eng, const char *const *
  * ============================================================================ */
 
 /* Format a runtime `Value` as a canonical, lossless MEP expression string */
-void eng_snapshot_format_canonical_val(const Engine *eng, Value val, char *buf, size_t cap);
+bool eng_snapshot_format_canonical_val(const Engine *eng, Value val, char *buf, size_t cap);
 
 /* Record a new order-tagged raw-text snapshot into `S` after a successful session eval */
-void eng_snapshot_record_eval(const Engine *eng, EngSession *S, Value res);
+bool eng_snapshot_record_eval(const Engine *eng, EngSession *S, Value res);
 
 #ifdef __cplusplus
 }

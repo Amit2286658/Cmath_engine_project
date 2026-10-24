@@ -9,6 +9,7 @@
 #include "session.h"
 #include "snapshot.h"
 #include "math_engine.h"
+#include <stdlib.h>
 #include <string.h>
 
 int eng_session_open(Engine *eng) {
@@ -58,10 +59,6 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
         return false;
     }
     EngSession *S = &eng->sessions[session_id];
-    if (S->eval_count >= ENG_SESSION_MAX_EVALS) {
-        mem_err(&eng->mem, "Session evaluation snapshot capacity (%d) exceeded", ENG_SESSION_MAX_EVALS);
-        return false;
-    }
     if (!expr) {
         mem_err(&eng->mem, "Null expression");
         return false;
@@ -205,14 +202,33 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
         return false;
     }
 
-    /* 6. Capture all active top-level variables back into `S->vars` */
+    /* 6. Capture all active top-level variables into a transactional backup first so
+     *    that if any variable value exceeds `ENG_SESSION_VAL_MAX` or the snapshot
+     *    overflows `ENG_SNAPSHOT_MAX_LEN`, the session rolls back cleanly without wedging. */
+    uint8_t saved_var_cnt = S->var_count;
+    EngSessionVar *saved_vars = (EngSessionVar *)malloc(sizeof(S->vars));
+    if (!saved_vars) {
+        if (P.local_count > 0) mem_pop_frame(&eng->mem, frame_base);
+        mem_err(&eng->mem, "Out of memory saving session state");
+        return false;
+    }
+    memcpy(saved_vars, S->vars, sizeof(S->vars));
+
     uint8_t new_var_cnt = 0;
-    for (uint8_t v = 0; v < P.vis_count && new_var_cnt < ENG_SESSION_MAX_VARS; ++v) {
+    for (uint8_t v = 0; v < P.vis_count; ++v) {
         if (P.locals[v].scope_depth != 0 || P.locals[v].is_loop_iter != 0) continue;
         uint8_t slot = P.locals[v].slot;
         Value   sval = mem_get_slot(&eng->mem, frame_base, slot);
         uint16_t stid = val_get_type(&eng->mem, sval);
         if (stid == MEM_TYPE_VOID) continue;
+        if (new_var_cnt >= ENG_SESSION_MAX_VARS) {
+            memcpy(S->vars, saved_vars, sizeof(S->vars));
+            S->var_count = saved_var_cnt;
+            free(saved_vars);
+            if (P.local_count > 0) mem_pop_frame(&eng->mem, frame_base);
+            mem_err(&eng->mem, "Session variable limit (%d) exceeded", ENG_SESSION_MAX_VARS);
+            return false;
+        }
 
         EngSessionVar *sv = &S->vars[new_var_cnt++];
         memset(sv, 0, sizeof(*sv));
@@ -249,12 +265,30 @@ bool eng_session_eval(Engine *eng, int session_id, const char *expr, Value *out_
             memcpy(sv->lock_unit_name, "*", 2);
         }
 
-        eng_snapshot_format_canonical_val(eng, sval, sv->val_text, sizeof(sv->val_text));
+        if (!eng_snapshot_format_canonical_val(eng, sval, sv->val_text, sizeof(sv->val_text))) {
+            char bad_name[32];
+            memcpy(bad_name, sv->name, sizeof(bad_name));
+            memcpy(S->vars, saved_vars, sizeof(S->vars));
+            S->var_count = saved_var_cnt;
+            free(saved_vars);
+            if (P.local_count > 0) mem_pop_frame(&eng->mem, frame_base);
+            mem_err(&eng->mem, "Session variable '%s' exceeds maximum serialized length (%d bytes)",
+                    bad_name, ENG_SESSION_VAL_MAX - 1);
+            return false;
+        }
     }
     S->var_count = new_var_cnt;
 
     /* 7. Build and record the order-tagged raw-text snapshot for this evaluation */
-    eng_snapshot_record_eval(eng, S, res);
+    if (!eng_snapshot_record_eval(eng, S, res)) {
+        memcpy(S->vars, saved_vars, sizeof(S->vars));
+        S->var_count = saved_var_cnt;
+        free(saved_vars);
+        if (P.local_count > 0) mem_pop_frame(&eng->mem, frame_base);
+        mem_err(&eng->mem, "Session snapshot exceeds maximum capacity (%d bytes)", ENG_SNAPSHOT_MAX_LEN - 1);
+        return false;
+    }
+    free(saved_vars);
 
     if (P.local_count > 0) {
         mem_pop_frame(&eng->mem, frame_base);

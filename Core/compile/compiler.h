@@ -5,7 +5,7 @@
  *   Handles Phase 1 (Compilation) of extension building in `Core/compile/`:
  *     1. `ext_build_init`: Initializes a multi-unit `ExtBuildCtx` build context.
  *     2. `ext_build_create` / `ext_build_destroy`: Heap-allocates/frees an
- *        `ExtBuildCtx` (~149 KB) so it never has to live on a thread stack.
+ *        `ExtBuildCtx` (~164 KB) so it never has to live on a thread stack.
  *     3. `ext_compile_unit`: Scans raw `.math` source text in any order, splits
  *        it into `[module]` blocks, extracts `<[dep]` dependency headers into
  *        `ExtBuildCtx`, and rejects duplicate named modules (already loaded in
@@ -29,7 +29,7 @@ extern "C" {
  * 1. COMPILATION UNIT & STAGING CONTEXT (`ExtCompiledUnit`, `ExtBuildCtx`)
  * ============================================================================ */
 
-#define EXT_MAX_BUILD_UNITS    32u
+#define EXT_MAX_BUILD_UNITS    64u
 #define EXT_MAX_UNIT_DEPS      16u
 #define EXT_STAGE_POOL_CAP 131072u          /* 128 KB self-contained staging  */
 

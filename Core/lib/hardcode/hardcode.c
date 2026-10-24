@@ -10,11 +10,11 @@
 #include <string.h>
 
 /* ============================================================================
- * 1. RESERVED KEYWORDS & BUILT-IN TYPE/UNIT WILDCARDS (`T`, `any`, `none`, `real`)
+ * 1. RESERVED KEYWORDS & BUILT-IN TYPE/UNIT WILDCARDS (`$T`, `$any`, `$none`, `real`)
  * ============================================================================ */
 
 /*code section below manages hardcoding reserved control-flow keywords that cannot be used as variable or tag names*/
-/*Construct if, or, then, else, default, switch, case, jump, run, break, continue, return*/
+/*Construct if, or, then, else, default, switch, case, for, jump, run, break, continue, return*/
 bool hardcode_is_reserved_kw(const SymTable *tab, const MemArena *mem,
                              const char *name, uint16_t len) {
     int sid = sym_find(tab, mem, name, len);
@@ -25,6 +25,7 @@ bool hardcode_is_reserved_kw(const SymTable *tab, const MemArena *mem,
             m == INTR_ELSE_BRANCH   ||
             m == INTR_SWITCH_BLOCK  ||
             m == INTR_CASE_BRANCH   ||
+            m == INTR_FOR_KW        ||
             m == INTR_JUMP_TAG      ||
             m == INTR_RUN_TAG       ||
             m == INTR_BREAK_LOOP    ||
@@ -33,20 +34,32 @@ bool hardcode_is_reserved_kw(const SymTable *tab, const MemArena *mem,
 }
 
 /*code section below manages hardcoding generic entity/unit wildcards and default real type fallback*/
-/*Construct T, any, none, default :real*/
-uint16_t hardcode_resolve_wildcard_type(const char *name, uint16_t len) {
-    if ((len == 1 && name[0] == 'T') || (len == 3 && memcmp(name, "any", 3) == 0)) {
-        return SYM_TYPE_ANY;
+/*Construct $T, $any, $none, default :real*/
+uint16_t hardcode_resolve_wildcard_type(const SymTable *tab, const MemArena *mem,
+                                        const char *name, uint16_t len) {
+    if (!tab || !mem) return MEM_TYPE_VOID;
+    for (uint16_t i = 1; i < tab->type_count; ++i) {
+        if (!sym_mod_enabled(tab, tab->types[i].mod_id)) continue;
+        if (tab->types[i].parser_intr == INTR_ANY_TYPE) {
+            StrSlice s = tab->types[i].name;
+            if (s.len == len && memcmp(mem_str_ptr(mem, s), name, len) == 0) {
+                return SYM_TYPE_ANY;
+            }
+        }
     }
     return MEM_TYPE_VOID;
 }
 
-uint8_t hardcode_resolve_wildcard_unit(const char *name, uint16_t len) {
-    if ((len == 1 && name[0] == 'T') || (len == 3 && memcmp(name, "any", 3) == 0)) {
-        return SYM_UNIT_GENERIC;
-    }
-    if (len == 4 && memcmp(name, "none", 4) == 0) {
-        return SYM_UNIT_LOCK_NONE;
+uint8_t hardcode_resolve_wildcard_unit(const SymTable *tab, const MemArena *mem,
+                                       const char *name, uint16_t len) {
+    if (!tab || !mem) return MEM_UNIT_NONE;
+    for (uint16_t i = 1; i < tab->type_count; ++i) {
+        if (!sym_mod_enabled(tab, tab->types[i].mod_id)) continue;
+        StrSlice s = tab->types[i].name;
+        if (s.len == len && memcmp(mem_str_ptr(mem, s), name, len) == 0) {
+            if (tab->types[i].parser_intr == INTR_ANY_TYPE)  return SYM_UNIT_GENERIC;
+            if (tab->types[i].parser_intr == INTR_NONE_UNIT) return SYM_UNIT_LOCK_NONE;
+        }
     }
     return MEM_UNIT_NONE;
 }
@@ -91,7 +104,7 @@ void hardcode_synthesize_default_overloads(MemArena *mem, SymTable *tab,
     OpOverload *base_ov  = &tab->overloads[base_ov_idx];
     uint16_t full_body   = base_ov->body_ast;
     uint8_t  full_locals = base_ov->local_count;
-    uint16_t def_asts[8];
+    uint16_t def_asts[SYM_MAX_OV_PARAMS];
     memset(def_asts, 0xFF, sizeof(def_asts));
 
     for (uint8_t k = req_count; k < pcount; ++k) {
@@ -139,6 +152,7 @@ void hardcode_synthesize_default_overloads(MemArena *mem, SymTable *tab,
         dov->local_count = full_locals;
         dov->ret_type    = (uint8_t)rtid;
         dov->ret_unit    = ruid;
+        dov->meta_tag    = base_ov->meta_tag;
         for (uint8_t i = 0; i < m; ++i) {
             dov->param_types[i] = (uint8_t)ptypes[i];
             dov->param_units[i] = punits[i];
@@ -238,8 +252,16 @@ bool hardcode_sym_is_postfix_unit(const SymTable *tab, uint16_t sym_id) {
     return false;
 }
 
-/*code section below manages hardcoding the detection of the 'in' operator symbol*/
-/*Construct <lhs> in <rhs>*/
+/*code section below manages hardcoding the detection of the 'for' and 'in' operator/keyword symbols*/
+/*Construct [expr for x in iter] and <lhs> in <rhs>*/
+bool hardcode_is_for_kw(const MemArena *mem, const SymTable *tab,
+                        const char *name, uint16_t len) {
+    if (!mem || !tab || !name || len == 0) return false;
+    int sid = sym_find(tab, mem, name, len);
+    if (sid < 0) return false;
+    return sym_active_meta_tag(tab, (uint16_t)sid, FIX_FUNC) == INTR_FOR_KW;
+}
+
 bool hardcode_is_in_op_sym(const MemArena *mem, const SymTable *tab, uint16_t sym_id) {
     if (!mem || !tab || sym_id >= tab->sym_count) return false;
     for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
@@ -252,8 +274,15 @@ bool hardcode_is_in_op_sym(const MemArena *mem, const SymTable *tab, uint16_t sy
             }
         }
     }
-    StrSlice s = tab->syms[sym_id];
-    return (s.len == 2 && memcmp(mem_str_ptr(mem, s), "in", 2) == 0);
+    return false;
+}
+
+bool hardcode_is_in_kw(const MemArena *mem, const SymTable *tab,
+                       const char *name, uint16_t len) {
+    if (!mem || !tab || !name || len == 0) return false;
+    int sid = sym_find(tab, mem, name, len);
+    if (sid < 0) return false;
+    return hardcode_is_in_op_sym(mem, tab, (uint16_t)sid);
 }
 
 /*code section below manages hardcoding the detection of bare unit conversion RHS on 'in' ("25km in m")*/
@@ -465,14 +494,24 @@ bool hardcode_rhs_starts_lambda(const Parser *P) {
 
 /*code section below manages hardcoding lookahead for vector comprehensions inside '[ ... ]'*/
 /*Construct [expr for var in iterable (if cond)], [expr for idx, var in iterable (if cond)]*/
+static bool hc_match_in_kw_at(const MemArena *mem, const SymTable *tab,
+                              const char *src, uint16_t p, uint16_t len) {
+    if (p >= len || !lex_is_ident_start((unsigned char)src[p])) return false;
+    uint16_t istart = p;
+    while (p < len && lex_is_ident_cont((unsigned char)src[p])) p++;
+    return hardcode_is_in_kw(mem, tab, src + istart, (uint16_t)(p - istart));
+}
+
 bool hardcode_scan_comprehension_var(const Parser *P,
                                      const char **out_idx_name, uint16_t *out_idx_len,
                                      const char **out_vname, uint16_t *out_vlen) {
     if (out_idx_name) *out_idx_name = NULL;
     if (out_idx_len)  *out_idx_len  = 0;
-    const char *src = P->lex.src;
-    uint16_t    len = P->lex.len;
-    uint16_t    p   = P->lex.cur.off;
+    const MemArena *mem = P->lex.mem;
+    const SymTable *tab = P->lex.tab;
+    const char     *src = P->lex.src;
+    uint16_t        len = P->lex.len;
+    uint16_t        p   = P->lex.cur.off;
     int depth = 0;
 
     while (p < len) {
@@ -507,29 +546,27 @@ bool hardcode_scan_comprehension_var(const Parser *P,
         if (depth == 0 && lex_is_ident_start((unsigned char)c)) {
             uint16_t id_start = p;
             while (p < len && lex_is_ident_cont((unsigned char)src[p])) p++;
-            uint16_t id_len = p - id_start;
-            if (id_len == 3 && memcmp(src + id_start, "for", 3) == 0) {
+            uint16_t id_len = (uint16_t)(p - id_start);
+            if (hardcode_is_for_kw(mem, tab, src + id_start, id_len)) {
                 uint16_t q = skip_raw_ws_hc(src, p, len);
                 if (q < len && lex_is_ident_start((unsigned char)src[q])) {
                     uint16_t vstart = q;
                     while (q < len && lex_is_ident_cont((unsigned char)src[q])) q++;
-                    uint16_t vlen = q - vstart;
+                    uint16_t vlen = (uint16_t)(q - vstart);
                     q = skip_raw_ws_hc(src, q, len);
-                    if (q + 2 <= len && src[q] == 'i' && src[q + 1] == 'n' &&
-                        (q + 2 == len || !lex_is_ident_cont((unsigned char)src[q + 2]))) {
+                    if (hc_match_in_kw_at(mem, tab, src, q, len)) {
                         if (out_vname) *out_vname = src + vstart;
                         if (out_vlen)  *out_vlen  = vlen;
                         return true;
                     }
                     if (q < len && src[q] == ',') {
-                        uint16_t r = skip_raw_ws_hc(src, q + 1, len);
+                        uint16_t r = skip_raw_ws_hc(src, (uint16_t)(q + 1), len);
                         if (r < len && lex_is_ident_start((unsigned char)src[r])) {
                             uint16_t v2start = r;
                             while (r < len && lex_is_ident_cont((unsigned char)src[r])) r++;
-                            uint16_t v2len = r - v2start;
+                            uint16_t v2len = (uint16_t)(r - v2start);
                             r = skip_raw_ws_hc(src, r, len);
-                            if (r + 2 <= len && src[r] == 'i' && src[r + 1] == 'n' &&
-                                (r + 2 == len || !lex_is_ident_cont((unsigned char)src[r + 2]))) {
+                            if (hc_match_in_kw_at(mem, tab, src, r, len)) {
                                 if (out_idx_name) *out_idx_name = src + vstart;
                                 if (out_idx_len)  *out_idx_len  = vlen;
                                 if (out_vname)    *out_vname    = src + v2start;
@@ -560,11 +597,8 @@ bool hardcode_can_start_implicit_mul_rhs(const Parser *P) {
         return !hardcode_is_paren_lambda(P);
     }
     if (t.kind == TOK_IDENT) {
-        if (t.len == 3 && memcmp(P->lex.src + t.off, "for", 3) == 0) {
-            return false;
-        }
         uint8_t kw = token_func_meta_hc(P, t);
-        if (kw != 0 && (kw < INTR_CALC_DIFF || kw > INTR_SYM_TAYLOR)) {
+        if (kw != 0 && (kw & SYM_META_LAZY_MASK) == 0 && !delegate_is_sym_meta(kw)) {
             return false;
         }
         /* Do not treat missing semicolon before `y := ...`, `f(x) := ...`, `Tag : ...`, `i in ...`, or `x => ...` as implicit mul */
@@ -581,8 +615,7 @@ bool hardcode_can_start_implicit_mul_rhs(const Parser *P) {
              P->lex.src[p] == '/' || P->lex.src[p] == '%' || P->lex.src[p] == '^')) {
             return false;
         }
-        if (p + 2 <= P->lex.len && P->lex.src[p] == 'i' && P->lex.src[p + 1] == 'n' &&
-            (p + 2 == P->lex.len || !lex_is_ident_cont((unsigned char)P->lex.src[p + 2]))) {
+        if (hc_match_in_kw_at(P->lex.mem, tab, P->lex.src, p, P->lex.len)) {
             return false;
         }
         return true;
@@ -615,23 +648,28 @@ bool hardcode_is_plain_store_sym(const MemArena *mem, const SymTable *tab,
 
 /*code section below manages hardcoding relational comparison operator detection for distributed '&' and '|' comparisons*/
 /*Construct (x & y == 1 | 2), case > 10:*/
+static bool sym_has_direct_intr_hc(const MemArena *mem, const SymTable *tab,
+                                   uint16_t sym_id, bool want_rel) {
+    if (sym_id >= tab->sym_count) return false;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->param_count != 2 || !sym_mod_enabled(tab, ov->mod_id) ||
+            ov->body_ast == MEM_NO_IDX) continue;
+        const AstNode *root = mem_get_ast(mem, ov->body_ast);
+        if (root->kind == AST_INTRINSIC) {
+            if (want_rel && delegate_is_rel_intrinsic((IntrinsicId)root->sub)) return true;
+            if (!want_rel && ov->fixity == FIX_INFIX_LEFT &&
+                (root->sub == INTR_ADD || root->sub == INTR_SUB)) return true;
+        }
+    }
+    return false;
+}
+
 bool hardcode_is_rel_comparison_op(const MemArena *mem, const SymTable *tab,
                                    uint16_t sym_id) {
     bool is_rel = false;
     (void)hardcode_is_additive_or_rel_sym(mem, tab, sym_id, FIX_INFIX_LEFT, &is_rel);
-    if (is_rel) return true;
-    for (uint16_t i = 0; i < tab->overload_count; ++i) {
-        const OpOverload *ov = &tab->overloads[i];
-        if (ov->sym_id == sym_id && ov->param_count == 2 &&
-            sym_mod_enabled(tab, ov->mod_id) && ov->body_ast != MEM_NO_IDX) {
-            const AstNode *root = mem_get_ast(mem, ov->body_ast);
-            if (root->kind == AST_INTRINSIC &&
-                root->sub >= INTR_EQ && root->sub <= INTR_GE) {
-                return true;
-            }
-        }
-    }
-    return false;
+    return is_rel;
 }
 
 /*code section below manages hardcoding additive and relational unit compatibility checks*/
@@ -640,18 +678,34 @@ bool hardcode_is_additive_or_rel_sym(const MemArena *mem, const SymTable *tab,
                                      uint16_t sym_id, OpFixity fixity, bool *out_is_rel) {
     if (out_is_rel) *out_is_rel = false;
     if (fixity != FIX_INFIX_LEFT && fixity != FIX_INFIX_RIGHT) return false;
-    StrSlice s = tab->syms[sym_id];
-    const char *p = mem_str_ptr(mem, s);
-    if ((s.len == 1 && (p[0] == '+' || p[0] == '-')) ||
-        (s.len == 4 && memcmp(p, "plus", 4) == 0) ||
-        (s.len == 5 && memcmp(p, "minus", 5) == 0)) {
-        return true;
+    if (sym_id >= tab->sym_count) return false;
+
+    if (sym_has_direct_intr_hc(mem, tab, sym_id, false)) {
+        return (fixity == FIX_INFIX_LEFT);
     }
-    if ((s.len == 1 && (p[0] == '<' || p[0] == '>' || p[0] == '~')) ||
-        (s.len == 2 && (memcmp(p, "==", 2) == 0 || memcmp(p, "!=", 2) == 0 ||
-                        memcmp(p, "<=", 2) == 0 || memcmp(p, ">=", 2) == 0))) {
+    if (sym_has_direct_intr_hc(mem, tab, sym_id, true)) {
         if (out_is_rel) *out_is_rel = true;
         return true;
+    }
+
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->fixity != (uint8_t)fixity || ov->param_count != 2 ||
+            !sym_mod_enabled(tab, ov->mod_id) || ov->body_ast == MEM_NO_IDX) continue;
+        const AstNode *root = mem_get_ast(mem, ov->body_ast);
+        if (root->kind == AST_BINARY && root->ref != sym_id) {
+            const AstNode *ln = mem_get_ast(mem, root->left);
+            const AstNode *rn = mem_get_ast(mem, root->right);
+            if (ln->kind == AST_SLOT_LOAD && rn->kind == AST_SLOT_LOAD &&
+                sym_has_direct_intr_hc(mem, tab, root->ref, false)) {
+                return true;
+            }
+            if (ln->kind == AST_INTRINSIC && ln->sub == INTR_ABS &&
+                sym_has_direct_intr_hc(mem, tab, root->ref, true)) {
+                if (out_is_rel) *out_is_rel = true;
+                return true;
+            }
+        }
     }
     return false;
 }
@@ -663,20 +717,53 @@ bool hardcode_is_additive_or_rel_sym(const MemArena *mem, const SymTable *tab,
 
 /*code section below manages hardcoding parameterized container type syntax and variadic constructors*/
 /*Construct vec<T>(...), list<T>(...), stack<T>(...), queue<T>(...), vec(...), list(...), stack(...), queue(...)*/
-static int container_kind_from_name_hc(const char *name, uint16_t len) {
-    if (len == 3 && memcmp(name, "vec", 3) == 0)   return 0;
-    if (len == 4 && memcmp(name, "list", 4) == 0)  return 1;
-    if (len == 5 && memcmp(name, "stack", 5) == 0) return 2;
-    if (len == 5 && memcmp(name, "queue", 5) == 0) return 3;
-    if (len == 3 && memcmp(name, "map", 3) == 0)   return 4;
-    if (len == 4 && memcmp(name, "dict", 4) == 0)  return 5;
+static int container_kind_from_sym_hc(const MemArena *mem, const SymTable *tab, uint16_t sym_id) {
+    if (sym_id >= tab->sym_count) return -1;
+    bool has_vnew    = false;
+    bool has_vfill2  = false;
+    bool has_map_new = false;
+    bool has_hof_map = false;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->fixity != FIX_FUNC || !sym_mod_enabled(tab, ov->mod_id) ||
+            ov->body_ast == MEM_NO_IDX) continue;
+        const AstNode *root = mem_get_ast(mem, ov->body_ast);
+        if (root->kind == AST_INTRINSIC) {
+            if (root->sub == INTR_VNEW) has_vnew = true;
+            else if (root->sub == INTR_VFILL && ov->param_count == 2) has_vfill2 = true;
+            else if (root->sub == INTR_MAP_NEW) has_map_new = true;
+        }
+        if (ov->param_count == 2 && mem->fn_type_id != 0 &&
+            ov->param_types[1] == mem->fn_type_id) {
+            has_hof_map = true;
+        }
+    }
+    if (has_map_new) return has_hof_map ? 4 : 5;
+    if (has_vnew)    return has_vfill2 ? 0 : 1;
     return -1;
+}
+
+static int container_kind_from_name_hc(const MemArena *mem, const SymTable *tab,
+                                       const char *name, uint16_t len) {
+    int sid = sym_find(tab, mem, name, len);
+    if (sid < 0) return -1;
+    return container_kind_from_sym_hc(mem, tab, (uint16_t)sid);
+}
+
+bool hardcode_is_vec_ctor_sym(const MemArena *mem, const SymTable *tab, uint16_t sym_id) {
+    int ck = container_kind_from_sym_hc(mem, tab, sym_id);
+    return (ck == 0 || ck == 1);
+}
+
+bool hardcode_is_map_ctor_sym(const MemArena *mem, const SymTable *tab, uint16_t sym_id) {
+    int ck = container_kind_from_sym_hc(mem, tab, sym_id);
+    return (ck == 4 || ck == 5);
 }
 
 static uint16_t resolve_container_elem_type_hc(const SymTable *tab, const MemArena *mem,
                                                const char *name, uint16_t len) {
-    int ck = container_kind_from_name_hc(name, len);
-    if (ck >= 0 && ck <= 3 && mem->vec_type_id != 0) {
+    int ck = container_kind_from_name_hc(mem, tab, name, len);
+    if ((ck == 0 || ck == 1) && mem->vec_type_id != 0) {
         return mem->vec_type_id;
     }
     if ((ck == 4 || ck == 5) && mem->map_type_id != 0) {
@@ -688,7 +775,7 @@ static uint16_t resolve_container_elem_type_hc(const SymTable *tab, const MemAre
 bool hardcode_try_parse_container_type_arg(Parser *P, const char *id_str, uint16_t id_len,
                                            uint16_t *out_spec) {
     if (out_spec) *out_spec = 0;
-    int kind_code = container_kind_from_name_hc(id_str, id_len);
+    int kind_code = container_kind_from_name_hc(P->lex.mem, P->lex.tab, id_str, id_len);
     if (kind_code < 0) return false;
 
     MemArena       *mem = P->lex.mem;
@@ -778,8 +865,7 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
                                     const AstNode *n, uint16_t frame_base,
                                     uint8_t cur_ret_type, Value *out_val) {
     if (n->ref >= tab->sym_count || mem->vec_type_id == 0) return false;
-    StrSlice fn_s = tab->syms[n->ref];
-    int kind_code = container_kind_from_name_hc(mem_str_ptr(mem, fn_s), fn_s.len);
+    int kind_code = container_kind_from_sym_hc(mem, tab, n->ref);
     if (kind_code < 0) return false;
 
     bool is_vec_call = (kind_code == 0);
@@ -787,7 +873,7 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
     bool has_spec    = (n->right != 0 && n->right != MEM_NO_IDX && (n->right & 0x8000u) != 0);
 
     if (is_map_call) {
-        if (mem->map_type_id == 0 || !sym_is_module_active(tab, mem, "vec")) return false;
+        if (mem->map_type_id == 0) return false;
         /* Distinguish 2-arg HOF `map(coll, fn)` from `map(k1, v1, ...)` */
         if (kind_code == 4 && !has_spec && n->sub == 2) {
             const AstNode *l1 = mem_get_ast(mem, n->left);
@@ -870,80 +956,114 @@ bool hardcode_try_eval_variadic_vec(MemArena *mem, SymTable *tab,
     uint8_t  locked_uid = has_spec ? (uint8_t)((n->right >> 6u) & 0x3Fu) : 0;
     uint16_t hdr0       = (uint16_t)(((uint32_t)locked_uid << 8u) | (uint32_t)locked_tid);
 
-    Value   items[32];
-    uint8_t argc = 0;
-    uint16_t cur = n->left;
-    while (cur != MEM_NO_IDX && argc < 32 && !mem->has_error) {
-        const AstNode *link = mem_get_ast(mem, cur);
-        items[argc] = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
-        if (mem->has_error || mem->jump_active != JUMP_NONE) {
+    uint16_t total_args = 0;
+    for (uint16_t c = n->left; c != MEM_NO_IDX; c = mem_get_ast(mem, c)->right) {
+        total_args++;
+        if (total_args > MEM_MAX_F64_POOL) {
+            mem_err(mem, "Container constructor argument count exceeds pool capacity");
             *out_val = val_void();
             return true;
         }
-        argc++;
-        cur = link->right;
     }
 
-    /* Special `vec<T>()` / `vec(cap)` / `vec(count, init)` variations when first arg is unitless real */
-    if (is_vec_call) {
-        if (argc == 0) {
+    /* Special `vec<T>()` / `vec(cap)` / `vec(count, init)` variations when total_args <= 2 and first arg is unitless real */
+    if (is_vec_call && total_args <= 2) {
+        if (total_args == 0) {
             uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, 0);
             *out_val = mem->has_error ? val_void()
                                       : val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
             return true;
         }
-        if (argc == 1 && val_get_type(mem, items[0]) == mem->fast_real_type &&
-            val_get_unit(mem, items[0]) == MEM_UNIT_NONE) {
+        const AstNode *l0 = mem_get_ast(mem, n->left);
+        Value a0 = eval_ast(mem, tab, l0->left, frame_base, cur_ret_type);
+        if (mem->has_error || mem->jump_active != JUMP_NONE) {
+            *out_val = val_void();
+            return true;
+        }
+        if (total_args == 1 && val_get_type(mem, a0) == mem->fast_real_type &&
+            val_get_unit(mem, a0) == MEM_UNIT_NONE) {
             int cap_in = 0;
-            if (!delegate_val_to_exact_int(mem, tab, items[0], "vector capacity", &cap_in)) {
+            if (!delegate_val_to_exact_int(mem, tab, a0, "vector capacity", &cap_in)) {
                 *out_val = val_void();
                 return true;
             }
-            if (cap_in < 0 || cap_in > MEM_MAX_F64_POOL) {
+            if (cap_in < 0 || (uint32_t)cap_in > MEM_MAX_HEAP_SLOTS) {
                 mem_err(mem, "Vector capacity out of range (%d)", cap_in);
                 *out_val = val_void();
                 return true;
             }
-            uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, (uint16_t)cap_in);
+            uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, (uint32_t)cap_in);
             *out_val = mem->has_error ? val_void()
                                       : val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
             return true;
         }
-        if (argc == 2 && val_get_type(mem, items[0]) == mem->fast_real_type &&
-            val_get_unit(mem, items[0]) == MEM_UNIT_NONE) {
-            int count = 0;
-            if (!delegate_val_to_exact_int(mem, tab, items[0], "vector fill count", &count)) {
+        Value a1 = val_void();
+        if (total_args == 2) {
+            const AstNode *l1 = mem_get_ast(mem, l0->right);
+            a1 = eval_ast(mem, tab, l1->left, frame_base, cur_ret_type);
+            if (mem->has_error || mem->jump_active != JUMP_NONE) {
                 *out_val = val_void();
                 return true;
             }
-            if (count < 0 || count > MEM_MAX_F64_POOL) {
-                mem_err(mem, "Vector fill count out of range (%d)", count);
-                *out_val = val_void();
+            if (val_get_type(mem, a0) == mem->fast_real_type &&
+                val_get_unit(mem, a0) == MEM_UNIT_NONE) {
+                int count = 0;
+                if (!delegate_val_to_exact_int(mem, tab, a0, "vector fill count", &count)) {
+                    *out_val = val_void();
+                    return true;
+                }
+                if (count < 0 || (uint32_t)count > MEM_MAX_HEAP_SLOTS) {
+                    mem_err(mem, "Vector fill count out of range (%d)", count);
+                    *out_val = val_void();
+                    return true;
+                }
+                uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, (uint32_t)count);
+                if (mem->has_error) {
+                    *out_val = val_void();
+                    return true;
+                }
+                Value vhandle = val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+                for (int i = 0; i < count && !mem->has_error; ++i) {
+                    (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, a1, val_void());
+                }
+                *out_val = mem->has_error ? val_void() : vhandle;
                 return true;
             }
-            uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, (uint16_t)count);
-            if (mem->has_error) {
-                *out_val = val_void();
-                return true;
-            }
-            Value vhandle = val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
-            for (int i = 0; i < count && !mem->has_error; ++i) {
-                (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, items[1], val_void());
-            }
-            *out_val = mem->has_error ? val_void() : vhandle;
+        }
+        uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, total_args);
+        if (mem->has_error) {
+            *out_val = val_void();
             return true;
         }
+        Value vhandle = val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
+        (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, a0, val_void());
+        if (total_args == 2 && !mem->has_error) {
+            (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, a1, val_void());
+        }
+        *out_val = mem->has_error ? val_void() : vhandle;
+        return true;
     }
 
-    uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, argc);
+    uint16_t hdr_idx = mem_vec_alloc_hdr(mem, hdr0, total_args);
     if (mem->has_error) {
         *out_val = val_void();
         return true;
     }
     Value vhandle = val_make_comp(mem, mem->vec_type_id, hdr_idx, MEM_VEC_HDR_SLOTS);
-    for (uint8_t i = 0; i < argc && !mem->has_error; ++i) {
-        (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, items[i], val_void());
+    uint16_t root_mark = mem_push_temp_root(mem, &vhandle);
+    uint16_t cur = n->left;
+    while (cur != MEM_NO_IDX && !mem->has_error) {
+        const AstNode *link = mem_get_ast(mem, cur);
+        Value item = eval_ast(mem, tab, link->left, frame_base, cur_ret_type);
+        if (mem->has_error || mem->jump_active != JUMP_NONE) {
+            mem_pop_temp_roots(mem, root_mark);
+            *out_val = val_void();
+            return true;
+        }
+        (void)delegate_eval_vec_intrinsic(mem, tab, INTR_VPUSH, vhandle, item, val_void());
+        cur = link->right;
     }
+    mem_pop_temp_roots(mem, root_mark);
     *out_val = mem->has_error ? val_void() : vhandle;
     return true;
 }
@@ -1009,20 +1129,19 @@ static bool is_stepped_vrange_binary(const MemArena *mem, const SymTable *tab,
     return true;
 }
 
-/*code section below manages hardcoding lazy variable parameter positions for calculus/ODE constructs and pipe operator AST rewriting*/
-/*Construct diff(x, ...), ode_rk4(t, y, ...), and x |> f / x |> f(a, b) / x |> (a => ...)*/
-bool hardcode_is_calc_var_param(uint8_t fn_meta, uint8_t argc) {
-    if (fn_meta == INTR_CALC_ODE_COUPLED) {
-        return (argc <= 2);
-    }
-    if (fn_meta == INTR_SYM_DIFF || fn_meta == INTR_SYM_TAYLOR) {
+/*code section below manages hardcoding lazy variable parameter positions for symbolic constructs and pipe operator AST rewriting*/
+/*Construct sym_diff(x, ...), sym_integ(x, ...), sym_solve(x, ...), and x |> f / x |> f(a, b) / x |> (a => ...)*/
+bool hardcode_is_sym_var_param(uint8_t fn_meta, uint8_t argc) {
+    if (fn_meta == INTR_SYM_DIFF   ||
+        fn_meta == INTR_SYM_INTEG  ||
+        fn_meta == INTR_SYM_SOLVE  ||
+        fn_meta == INTR_SYM_TAYLOR) {
         return (argc == 0);
     }
     if (fn_meta == INTR_SYM_EVAL) {
         return (argc == 1);
     }
-    return (argc == 0 && fn_meta >= INTR_CALC_DIFF && fn_meta <= INTR_CALC_ODE_SYS) ||
-           (argc == 1 && (fn_meta == INTR_CALC_ODE || fn_meta == INTR_CALC_ODE_VEC || fn_meta == INTR_CALC_ODE_SYS));
+    return false;
 }
 
 static bool hc_peek_is_lparen(const Lexer *lex) {
@@ -1307,6 +1426,13 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                     break;
                 }
             }
+            if (mem->pool_top > (uint16_t)(MEM_MAX_F64_POOL - 1024u) ||
+                mem->heap_active_count >= 64u) {
+                Value roots[2] = { last, comp_vec };
+                (void)mem_compact_scratch(mem, roots, 2);
+                last     = roots[0];
+                comp_vec = roots[1];
+            }
             if (++guard > 1000000u) {
                 mem_err(mem, "Loop iteration limit exceeded");
                 break;
@@ -1321,19 +1447,19 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
     uint16_t coll_tid = val_get_type(mem, coll);
 
     if (coll_tid == mem->vec_type_id && mem->vec_type_id != 0) {
-        uint16_t hdr_idx = val_get_pool_idx(coll);
-        for (uint16_t idx = 0; !mem->has_error; ++idx) {
+        for (uint32_t idx = 0; !mem->has_error; ++idx) {
+            uint16_t hdr_idx  = val_get_pool_idx(coll);
             uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
             uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
             uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8) & 0xFFu);
-            uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+            uint32_t len      = (uint32_t)mem_read_pool(mem, hdr_idx + 1);
             uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
             uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
                                 ? tab->types[elem_tid].flat_size : 1;
             if (idx >= len) break;
 
             Value item = delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
-                                                (uint16_t)(data_idx + idx * stride));
+                                                data_idx, idx * (uint32_t)stride);
             if (elem_tid != 0 && elem_tid < tab->type_count &&
                 !tab->types[elem_tid].is_consuming &&
                 elem_tid != mem->vec_type_id && elem_tid != mem->mat_type_id &&
@@ -1374,6 +1500,14 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
                     break;
                 }
             }
+            if (mem->pool_top > (uint16_t)(MEM_MAX_F64_POOL - 1024u) ||
+                mem->heap_active_count >= 64u) {
+                Value roots[3] = { coll, last, comp_vec };
+                (void)mem_compact_scratch(mem, roots, 3);
+                coll     = roots[0];
+                last     = roots[1];
+                comp_vec = roots[2];
+            }
             if (++guard > 1000000u) {
                 mem_err(mem, "Loop iteration limit exceeded");
                 break;
@@ -1389,7 +1523,7 @@ Value hardcode_eval_for_in_ast(MemArena *mem, SymTable *tab,
         uint8_t u = val_get_unit(mem, coll);
         for (uint16_t idx = 0; idx < tot_len && !mem->has_error; ++idx) {
             Value item = val_make_f64_unit(mem, mem->fast_real_type, u,
-                                           mem_read_pool(mem, data_idx + idx));
+                                           mem_data_read(mem, data_idx, idx));
             if (has_idx) {
                 mem_set_slot(mem, frame_base, idx_slot,
                              val_make_f64(mem, mem->fast_real_type, (double)idx));
@@ -1548,7 +1682,7 @@ Value hardcode_eval_unpack_elem_ast(MemArena *mem, const SymTable *tab,
         uint16_t raw_hdr0 = (uint16_t)mem_read_pool(mem, hdr_idx + 0);
         uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
         uint8_t  elem_uid = (uint8_t)((raw_hdr0 >> 8) & 0xFFu);
-        uint16_t len      = (uint16_t)mem_read_pool(mem, hdr_idx + 1);
+        uint32_t len      = (uint32_t)mem_read_pool(mem, hdr_idx + 1);
         uint16_t data_idx = (uint16_t)mem_read_pool(mem, hdr_idx + 3);
         uint16_t stride   = (elem_tid > 0 && elem_tid < tab->type_count)
                             ? tab->types[elem_tid].flat_size : 1;
@@ -1558,7 +1692,7 @@ Value hardcode_eval_unpack_elem_ast(MemArena *mem, const SymTable *tab,
             return val_void();
         }
         return delegate_vec_read_elem(mem, tab, elem_tid, elem_uid,
-                                      (uint16_t)(data_idx + elem_idx * stride));
+                                      data_idx, (uint32_t)elem_idx * (uint32_t)stride);
     }
 
     /* 3. Matrix (`$mat`): destructure element `elem_idx` (`a, b, c := [10, 20, 30]`) */
@@ -1572,7 +1706,7 @@ Value hardcode_eval_unpack_elem_ast(MemArena *mem, const SymTable *tab,
             return val_void();
         }
         return val_make_f64_unit(mem, mem->fast_real_type, uid,
-                                 mem_read_pool(mem, data_idx + elem_idx));
+                                 mem_data_read(mem, data_idx, elem_idx));
     }
 
     /* 4. Flat C-style struct (`$vec2`, `$vec3`, `$complex`, `$circle`): destructure field `elem_idx` */

@@ -3,184 +3,255 @@
  *
  * Implements:
  *   - `eng_snapshot_format_canonical_val`: Lossless MEP expression serializer
- *     for scalars, strings, structs, vectors, matrices, and lambda closures.
+ *     for scalars, strings, structs, vectors, matrices, maps, and lambda closures
+ *     with strict truncation detection (`bool` return).
  *   - `eng_snapshot_record_eval`: Order-tagged (`seq:1..N`), 32-bit FNV-1a
- *     integrity hash-chained (`prev`/`hash`) raw-text snapshot builder.
+ *     integrity hash-chained (`prev`/`hash`) raw-text snapshot builder with
+ *     sliding window continuation when `eval_count` reaches `ENG_SESSION_MAX_EVALS`.
  *   - `eng_session_snapshot_count`, `eng_session_snapshot_rewind`,
  *     `eng_session_snapshot_next`, `eng_session_snapshot_at`: Iterative and
  *     indexed snapshot accessors.
  *   - `eng_session_restore`: Verifies full, contiguous, uncorrupted snapshot
- *     history (even if supplied out of order) and reconstructs an active
- *     in-memory session ready to continue evaluation with minimal stack usage.
+ *     history (even if supplied out of order), validates that every restored
+ *     variable expression parses cleanly, and reconstructs an active in-memory
+ *     session ready to continue evaluation.
  */
 
 #include "snapshot.h"
 #include "math_engine.h"
+#include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static void format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
+static bool snap_buf_append(char *buf, size_t cap, size_t *used, const char *fmt, ...) {
+    if (!buf || cap == 0 || *used + 1 >= cap) return false;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *used, cap - *used, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= cap - *used) {
+        *used = cap - 1;
+        buf[cap - 1] = '\0';
+        return false;
+    }
+    *used += (size_t)n;
+    return true;
+}
+
+static bool format_canonical_f64(double dv, char *buf, size_t cap, bool is_iota) {
+    if (isnan(dv)) {
+        int n = snprintf(buf, cap, is_iota ? "(nan)i" : "nan");
+        return n >= 0 && (size_t)n < cap;
+    }
+    if (isinf(dv)) {
+        if (dv < 0.0) {
+            int n = snprintf(buf, cap, is_iota ? "(-inf)i" : "(-inf)");
+            return n >= 0 && (size_t)n < cap;
+        }
+        int n = snprintf(buf, cap, is_iota ? "(inf)i" : "inf");
+        return n >= 0 && (size_t)n < cap;
+    }
+    if (dv == 0.0) dv = 0.0;
+    int n = snprintf(buf, cap, is_iota ? "(%.17g)i" : "%.17g", dv);
+    return n >= 0 && (size_t)n < cap;
+}
+
+static bool format_canonical_str_escaped(const char *raw, uint16_t raw_len, char *buf, size_t cap) {
+    size_t w = 0;
+    if (cap < 3) return false;
+    buf[w++] = '"';
+    for (uint16_t i = 0; i < raw_len; ++i) {
+        char c = raw[i];
+        const char *esc = NULL;
+        if (c == '\\')      esc = "\\\\";
+        else if (c == '"')  esc = "\\\"";
+        else if (c == '\n') esc = "\\n";
+        else if (c == '\t') esc = "\\t";
+        else if (c == '\r') esc = "\\r";
+        if (esc) {
+            if (w + 3 >= cap) { buf[w] = '\0'; return false; }
+            buf[w++] = esc[0];
+            buf[w++] = esc[1];
+        } else {
+            if (w + 2 >= cap) { buf[w] = '\0'; return false; }
+            buf[w++] = c;
+        }
+    }
+    buf[w++] = '"';
+    buf[w] = '\0';
+    return true;
+}
+
+static bool format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                                        uint8_t depth, char *buf, size_t cap);
 
-static void format_canonical_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
+static bool format_canonical_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
                                     char *buf, size_t cap) {
-    if (depth > 8 || cap == 0) {
-        snprintf(buf, cap, "vec()");
-        return;
-    }
+    if (depth > 8 || cap == 0) return false;
     uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
+    uint32_t len      = (uint32_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
     uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 3));
     uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)
                         ? eng->sym.types[elem_tid].flat_size : 1;
 
     if (elem_tid == 0 || elem_tid >= eng->sym.type_count) {
-        snprintf(buf, cap, "vec()");
-        return;
+        int n = snprintf(buf, cap, "vec()");
+        return n >= 0 && (size_t)n < cap;
     }
 
     char etname[32];
     eng_type_name(eng, elem_tid, etname, sizeof(etname));
-    size_t used = (size_t)snprintf(buf, cap, "list<%s>(", etname);
+    size_t used = 0;
+    buf[0] = '\0';
+    if (!snap_buf_append(buf, cap, &used, "list<%s>(", etname)) return false;
 
-    for (uint16_t i = 0; i < len && used < cap; ++i) {
-        uint16_t elem_pidx = (uint16_t)(data_idx + i * stride);
-        char elem_str[128];
+    for (uint32_t i = 0; i < len; ++i) {
+        uint32_t off = i * (uint32_t)stride;
+        char elem_str[512];
+        bool ok = false;
         if (elem_tid == eng->mem.str_type_id && elem_tid != 0) {
-            uint32_t packed = (uint32_t)mem_read_pool(&eng->mem, elem_pidx);
+            uint32_t packed = (uint32_t)mem_data_read(&eng->mem, data_idx, off);
             StrSlice s = { (uint16_t)(packed >> 16), (uint16_t)(packed & 0xFFFFu) };
-            snprintf(elem_str, sizeof(elem_str), "\"%.*s\"",
-                     (int)s.len, mem_str_ptr(&eng->mem, s));
+            ok = format_canonical_str_escaped(mem_str_ptr(&eng->mem, s), s.len, elem_str, sizeof(elem_str));
         } else if (elem_tid == eng->mem.vec_type_id && elem_tid != 0) {
-            format_canonical_vec_at(eng, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+            ok = format_canonical_vec_at(eng, (uint16_t)(data_idx + off), (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else if (!eng->sym.types[elem_tid].is_consuming) {
-            format_canonical_struct_at(eng, elem_tid, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+            ok = format_canonical_struct_at(eng, elem_tid, (uint16_t)(data_idx + off), (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else if (eng->sym.types[elem_tid].parser_intr == INTR_PARSE_F64_TRIM1) {
-            double dv = mem_read_pool(&eng->mem, elem_pidx);
-            if (dv == 0.0) dv = 0.0;
-            snprintf(elem_str, sizeof(elem_str), "(%.17g)i", dv);
+            ok = format_canonical_f64(mem_data_read(&eng->mem, data_idx, off), elem_str, sizeof(elem_str), true);
         } else {
-            double dv = mem_read_pool(&eng->mem, elem_pidx);
-            if (dv == 0.0) dv = 0.0;
-            snprintf(elem_str, sizeof(elem_str), "%.17g", dv);
+            ok = format_canonical_f64(mem_data_read(&eng->mem, data_idx, off), elem_str, sizeof(elem_str), false);
         }
-        used += (size_t)snprintf(buf + used, cap - used, "%s%s",
-                                 (i > 0 ? ", " : ""), elem_str);
+        if (!ok) return false;
+        if (!snap_buf_append(buf, cap, &used, "%s%s", (i > 0 ? ", " : ""), elem_str)) return false;
     }
-    if (used < cap) snprintf(buf + used, cap - used, ")");
+    return snap_buf_append(buf, cap, &used, ")");
 }
 
-static void format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
+static bool format_canonical_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                                        uint8_t depth, char *buf, size_t cap) {
-    if (depth > 8 || cap == 0) {
-        snprintf(buf, cap, "0");
-        return;
-    }
+    if (depth > 8 || cap == 0) return false;
     if (type_id == eng->mem.vec_type_id && type_id != 0) {
-        format_canonical_vec_at(eng, pool_idx, depth, buf, cap);
-        return;
+        return format_canonical_vec_at(eng, pool_idx, depth, buf, cap);
     }
     if (type_id == eng->mem.mat_type_id && type_id != 0) {
         eng_format_mat_at(eng, pool_idx, true, buf, cap);
-        return;
+        return strlen(buf) + 1 < cap;
     }
     if (type_id == eng->mem.fn_type_id && type_id != 0) {
         uint16_t body_ast = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 0));
         for (uint8_t i = 0; i < eng->mem.fn_src_count; ++i) {
             if (eng->mem.fn_body_ast[i] == body_ast) {
                 StrSlice s = eng->mem.fn_src_slice[i];
-                snprintf(buf, cap, "%.*s", (int)s.len, mem_str_ptr(&eng->mem, s));
-                return;
+                if ((size_t)s.len + 1u > cap) return false;
+                memcpy(buf, mem_str_ptr(&eng->mem, s), s.len);
+                buf[s.len] = '\0';
+                return true;
             }
         }
-        snprintf(buf, cap, "() => 0");
-        return;
+        int n = snprintf(buf, cap, "() => 0");
+        return n >= 0 && (size_t)n < cap;
     }
     if (type_id == eng->mem.map_type_id && type_id != 0) {
         uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
         uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 3));
-        size_t used = (size_t)snprintf(buf, cap, "dict(");
-        for (uint16_t i = 0; i < len && used < cap; ++i) {
+        size_t used = 0;
+        buf[0] = '\0';
+        if (!snap_buf_append(buf, cap, &used, "dict(")) return false;
+        for (uint16_t i = 0; i < len; ++i) {
             StrSlice kslice = mem_map_entry_key(&eng->mem, data_idx, i);
             Value    vval   = mem_map_entry_val(&eng->mem, data_idx, i);
-            char vstr[128];
-            eng_snapshot_format_canonical_val(eng, vval, vstr, sizeof(vstr));
-            used += (size_t)snprintf(buf + used, cap - used, "%s\"%.*s\", %s",
-                                     (i > 0 ? ", " : ""),
-                                     (int)kslice.len, mem_str_ptr(&eng->mem, kslice),
-                                     vstr);
+            char kstr[256], vstr[512];
+            if (!format_canonical_str_escaped(mem_str_ptr(&eng->mem, kslice), kslice.len, kstr, sizeof(kstr))) {
+                return false;
+            }
+            if (!eng_snapshot_format_canonical_val(eng, vval, vstr, sizeof(vstr))) {
+                return false;
+            }
+            if (!snap_buf_append(buf, cap, &used, "%s%s, %s", (i > 0 ? ", " : ""), kstr, vstr)) {
+                return false;
+            }
         }
-        if (used < cap) snprintf(buf + used, cap - used, ")");
-        return;
+        return snap_buf_append(buf, cap, &used, ")");
     }
 
     const TypeDef *td = &eng->sym.types[type_id];
     char tname[32];
     eng_type_name(eng, type_id, tname, sizeof(tname));
 
-    size_t used = (size_t)snprintf(buf, cap, "%s(", tname);
-    for (uint8_t i = 0; i < td->field_count && used < cap; ++i) {
+    size_t used = 0;
+    buf[0] = '\0';
+    if (!snap_buf_append(buf, cap, &used, "%s(", tname)) return false;
+    for (uint8_t i = 0; i < td->field_count; ++i) {
         const FieldDef *fd = &eng->sym.fields[td->start_idx + i];
-        char f_str[96];
+        char f_str[256];
+        bool ok = false;
         if (!eng->sym.types[fd->type_id].is_consuming) {
-            format_canonical_struct_at(eng, fd->type_id, (uint16_t)(pool_idx + fd->flat_offset),
-                                       (uint8_t)(depth + 1), f_str, sizeof(f_str));
+            ok = format_canonical_struct_at(eng, fd->type_id, (uint16_t)(pool_idx + fd->flat_offset),
+                                            (uint8_t)(depth + 1), f_str, sizeof(f_str));
         } else {
-            double dv = mem_read_pool(&eng->mem, (uint16_t)(pool_idx + fd->flat_offset));
-            if (dv == 0.0) dv = 0.0;
-            snprintf(f_str, sizeof(f_str), "%.17g", dv);
+            ok = format_canonical_f64(mem_read_pool(&eng->mem, (uint16_t)(pool_idx + fd->flat_offset)),
+                                      f_str, sizeof(f_str), false);
         }
-        used += (size_t)snprintf(buf + used, cap - used, "%s%s",
-                                  (i > 0 ? ", " : ""), f_str);
+        if (!ok) return false;
+        if (!snap_buf_append(buf, cap, &used, "%s%s", (i > 0 ? ", " : ""), f_str)) return false;
     }
-    if (used < cap) snprintf(buf + used, cap - used, ")");
+    return snap_buf_append(buf, cap, &used, ")");
 }
 
-void eng_snapshot_format_canonical_val(const Engine *eng, Value val, char *buf, size_t cap) {
-    if (!eng || !buf || cap == 0) return;
+bool eng_snapshot_format_canonical_val(const Engine *eng, Value val, char *buf, size_t cap) {
+    if (!eng || !buf || cap == 0) return false;
     uint16_t tid = eng_val_type(eng, val);
     if (tid == 0 || tid >= eng->sym.type_count) {
-        snprintf(buf, cap, "0");
-        return;
+        int n = snprintf(buf, cap, "0");
+        return n >= 0 && (size_t)n < cap;
     }
     const TypeDef *td = &eng->sym.types[tid];
     if (td->is_consuming) {
         if (td->parser_intr == INTR_PARSE_STR_SLICE) {
             StrSlice s = val_get_str(&eng->mem, val);
-            snprintf(buf, cap, "\"%.*s\"", (int)s.len, mem_str_ptr(&eng->mem, s));
+            return format_canonical_str_escaped(mem_str_ptr(&eng->mem, s), s.len, buf, cap);
         } else if (td->parser_intr == INTR_PARSE_F64_TRIM1) {
-            double dv = val_get_f64(&eng->mem, val);
-            if (dv == 0.0) dv = 0.0;
-            snprintf(buf, cap, "(%.17g)i", dv);
+            return format_canonical_f64(val_get_f64(&eng->mem, val), buf, cap, true);
         } else {
-            double dv = val_get_f64(&eng->mem, val);
-            if (dv == 0.0) dv = 0.0;
-            snprintf(buf, cap, "%.17g", dv);
+            return format_canonical_f64(val_get_f64(&eng->mem, val), buf, cap, false);
         }
     } else {
-        format_canonical_struct_at(eng, tid, val_get_pool_idx(val), 0, buf, cap);
+        return format_canonical_struct_at(eng, tid, val_get_pool_idx(val), 0, buf, cap);
     }
 }
 
-static void escape_snap_field(const char *in, char *out, size_t out_cap) {
+static bool escape_snap_field(const char *in, char *out, size_t out_cap) {
     size_t w = 0;
-    for (size_t i = 0; in[i] != '\0' && w + 2 < out_cap; ++i) {
+    for (size_t i = 0; in[i] != '\0'; ++i) {
         char c = in[i];
-        if (c == '\\')      { out[w++] = '\\'; out[w++] = '\\'; }
-        else if (c == '|')  { out[w++] = '\\'; out[w++] = 'p';  }
-        else if (c == ';')  { out[w++] = '\\'; out[w++] = 's';  }
-        else if (c == '\n') { out[w++] = '\\'; out[w++] = 'n';  }
-        else if (c == '\r') { out[w++] = '\\'; out[w++] = 'r';  }
-        else                { out[w++] = c; }
+        if (c == '\\' || c == '|' || c == ';' || c == '\n' || c == '\r') {
+            if (w + 2 >= out_cap) { out[w] = '\0'; return false; }
+            out[w++] = '\\';
+            if (c == '\\')      out[w++] = '\\';
+            else if (c == '|')  out[w++] = 'p';
+            else if (c == ';')  out[w++] = 's';
+            else if (c == '\n') out[w++] = 'n';
+            else                out[w++] = 'r';
+        } else {
+            if (w + 1 >= out_cap) { out[w] = '\0'; return false; }
+            out[w++] = c;
+        }
     }
     out[w] = '\0';
+    return true;
 }
 
-static void unescape_snap_field(const char *in, size_t in_len, char *out, size_t out_cap) {
+static bool unescape_snap_field(const char *in, size_t in_len, char *out, size_t out_cap) {
     size_t w = 0;
-    for (size_t i = 0; i < in_len && w + 1 < out_cap; ++i) {
+    for (size_t i = 0; i < in_len; ++i) {
+        if (w + 1 >= out_cap) {
+            out[w] = '\0';
+            return false;
+        }
         if (in[i] == '\\' && i + 1 < in_len) {
             char nxt = in[++i];
             if (nxt == 'p')       out[w++] = '|';
@@ -193,13 +264,9 @@ static void unescape_snap_field(const char *in, size_t in_len, char *out, size_t
         }
     }
     out[w] = '\0';
+    return true;
 }
 
-/*
- * 32-bit FNV-1a integrity hash over the 32-bit sequence number, previous hash,
- * and snapshot payload string (detects accidental corruption, truncation, or
- * out-of-sequence snapshots).
- */
 static uint32_t calc_snapshot_hash(uint32_t seq, uint32_t prev_hash, const char *payload) {
     uint32_t h = 2166136261u;
     for (int b = 0; b < 4; ++b) {
@@ -219,46 +286,98 @@ static uint32_t calc_snapshot_hash(uint32_t seq, uint32_t prev_hash, const char 
     return (h == 0) ? 1u : h;
 }
 
-void eng_snapshot_record_eval(const Engine *eng, EngSession *S, Value res) {
-    if (!eng || !S || S->eval_count >= ENG_SESSION_MAX_EVALS) return;
+/* When a session exceeds `ENG_SESSION_MAX_EVALS`, slide the snapshot history window
+ * by 1 and re-chain `seq:1..ENG_SESSION_MAX_EVALS-1` so the session can continue
+ * indefinitely while keeping its latest `ENG_SESSION_MAX_EVALS` snapshots restorable. */
+static void slide_snapshot_window(EngSession *S) {
+    uint32_t prev_h = 0;
+    for (uint16_t i = 0; i + 1 < ENG_SESSION_MAX_EVALS; ++i) {
+        const char *src = S->snapshots[i + 1];
+        const char *p_vars = strstr(src, "|vars:");
+        const char *payload = p_vars ? (p_vars + 1) : "";
+        uint16_t seq = (uint16_t)(i + 1);
+        uint32_t cur_h = calc_snapshot_hash((uint32_t)seq, prev_h, payload);
+        char rebuilt[ENG_SNAPSHOT_MAX_LEN];
+        snprintf(rebuilt, sizeof(rebuilt),
+                 "MSP1|seq:%u|prev:%08X|hash:%08X|%s",
+                 (unsigned)seq, (unsigned)prev_h, (unsigned)cur_h, payload);
+        memcpy(S->snapshots[i], rebuilt, sizeof(rebuilt));
+        prev_h = cur_h;
+    }
+    S->eval_count = (uint16_t)(ENG_SESSION_MAX_EVALS - 1);
+    S->chain_hash = prev_h;
+}
 
-    char payload[ENG_SNAPSHOT_MAX_LEN - 48];
-    size_t p_used = (size_t)snprintf(payload, sizeof(payload), "vars:%u|", (unsigned)S->var_count);
-    for (uint8_t i = 0; i < S->var_count && p_used < sizeof(payload); ++i) {
-        char esc_val[256];
-        escape_snap_field(S->vars[i].val_text, esc_val, sizeof(esc_val));
-        p_used += (size_t)snprintf(payload + p_used, sizeof(payload) - p_used,
-                                   "%s%s:%s:%s:%s:%s=%s",
-                                   (i > 0 ? ";" : ""),
-                                   S->vars[i].name,
-                                   S->vars[i].type_name,
-                                   S->vars[i].unit_name,
-                                   S->vars[i].lock_type_name,
-                                   S->vars[i].lock_unit_name,
-                                   esc_val);
+bool eng_snapshot_record_eval(const Engine *eng, EngSession *S, Value res) {
+    if (!eng || !S) return false;
+
+    size_t pay_cap = ENG_SNAPSHOT_MAX_LEN - 48u;
+    char *payload = (char *)malloc(pay_cap);
+    char *esc_val = (char *)malloc(ENG_SESSION_VAL_MAX * 2u);
+    if (!payload || !esc_val) {
+        free(payload);
+        free(esc_val);
+        return false;
     }
 
-    char res_type[32], res_unit[32], res_raw[128], res_esc[160];
-    eng_type_name(eng, val_get_type(&eng->mem, res), res_type, sizeof(res_type));
-    eng_unit_name(eng, val_get_unit(&eng->mem, res), res_unit, sizeof(res_unit));
-    eng_format_value(eng, res, res_raw, sizeof(res_raw));
-    escape_snap_field(res_raw, res_esc, sizeof(res_esc));
-    if (p_used < sizeof(payload)) {
-        snprintf(payload + p_used, sizeof(payload) - p_used,
-                 "|res:%s:%s=%s", res_type, res_unit, res_esc);
+    size_t p_used = 0;
+    payload[0] = '\0';
+    bool ok = snap_buf_append(payload, pay_cap, &p_used, "vars:%u|", (unsigned)S->var_count);
+    for (uint8_t i = 0; ok && i < S->var_count; ++i) {
+        if (!escape_snap_field(S->vars[i].val_text, esc_val, ENG_SESSION_VAL_MAX * 2u)) {
+            ok = false;
+            break;
+        }
+        ok = snap_buf_append(payload, pay_cap, &p_used,
+                             "%s%s:%s:%s:%s:%s=%s",
+                             (i > 0 ? ";" : ""),
+                             S->vars[i].name,
+                             S->vars[i].type_name,
+                             S->vars[i].unit_name,
+                             S->vars[i].lock_type_name,
+                             S->vars[i].lock_unit_name,
+                             esc_val);
+    }
+
+    char res_type[32], res_unit[32], res_raw[256], res_esc[512];
+    if (ok) {
+        eng_type_name(eng, val_get_type(&eng->mem, res), res_type, sizeof(res_type));
+        eng_unit_name(eng, val_get_unit(&eng->mem, res), res_unit, sizeof(res_unit));
+        eng_format_value(eng, res, res_raw, sizeof(res_raw));
+        if (!escape_snap_field(res_raw, res_esc, sizeof(res_esc))) {
+            ok = false;
+        } else {
+            ok = snap_buf_append(payload, pay_cap, &p_used,
+                                 "|res:%s:%s=%s", res_type, res_unit, res_esc);
+        }
+    }
+
+    free(esc_val);
+    if (!ok) {
+        free(payload);
+        return false;
+    }
+
+    if (S->eval_count >= ENG_SESSION_MAX_EVALS) {
+        slide_snapshot_window(S);
     }
 
     uint16_t seq       = (uint16_t)(S->eval_count + 1);
     uint32_t prev_hash = S->chain_hash;
     uint32_t cur_hash  = calc_snapshot_hash((uint32_t)seq, prev_hash, payload);
 
-    snprintf(S->snapshots[S->eval_count], ENG_SNAPSHOT_MAX_LEN,
-             "MSP1|seq:%u|prev:%08X|hash:%08X|%s",
-             (unsigned)seq, (unsigned)prev_hash, (unsigned)cur_hash, payload);
+    int written = snprintf(S->snapshots[S->eval_count], ENG_SNAPSHOT_MAX_LEN,
+                           "MSP1|seq:%u|prev:%08X|hash:%08X|%s",
+                           (unsigned)seq, (unsigned)prev_hash, (unsigned)cur_hash, payload);
+    free(payload);
+    if (written < 0 || (size_t)written >= ENG_SNAPSHOT_MAX_LEN) {
+        return false;
+    }
 
     S->eval_count       = seq;
     S->chain_hash       = cur_hash;
     S->snap_iter_cursor = 0;
+    return true;
 }
 
 uint16_t eng_session_snapshot_count(const Engine *eng, int session_id) {
@@ -368,7 +487,6 @@ static bool parse_snapshot_vars(MemArena *mem, const char *payload,
     }
     p = endp + 1;
 
-    /* Find the unescaped `|res:` boundary */
     const char *vars_end = NULL;
     for (const char *scan = p; *scan != '\0'; ++scan) {
         if (*scan == '\\' && scan[1] != '\0') {
@@ -396,7 +514,6 @@ static bool parse_snapshot_vars(MemArena *mem, const char *payload,
     uint8_t parsed_cnt = 0;
     const char *cur = p;
     while (cur < vars_end && parsed_cnt < (uint8_t)vcnt_ul) {
-        /* Find end of this variable entry (next unescaped `;` or `vars_end`) */
         const char *entry_end = vars_end;
         for (const char *scan = cur; scan < vars_end; ++scan) {
             if (*scan == '\\' && scan + 1 < vars_end) {
@@ -409,7 +526,6 @@ static bool parse_snapshot_vars(MemArena *mem, const char *payload,
             }
         }
 
-        /* Parse 5 colon-separated fields before '=': name:type:unit:lock_type:lock_unit=val */
         const char *fields[5];
         size_t      flens[5];
         const char *fcur = cur;
@@ -433,9 +549,9 @@ static bool parse_snapshot_vars(MemArena *mem, const char *payload,
         memcpy(sv->lock_type_name, fields[3], flens[3]); sv->lock_type_name[flens[3]] = '\0';
         memcpy(sv->lock_unit_name, fields[4], flens[4]); sv->lock_unit_name[flens[4]] = '\0';
 
-        unescape_snap_field(fcur, (size_t)(entry_end - fcur), sv->val_text, sizeof(sv->val_text));
-        if (sv->val_text[0] == '\0') {
-            mem_err(mem, "Empty variable value expression in session snapshot");
+        if (!unescape_snap_field(fcur, (size_t)(entry_end - fcur), sv->val_text, sizeof(sv->val_text)) ||
+            sv->val_text[0] == '\0') {
+            mem_err(mem, "Invalid or truncated variable value expression in session snapshot");
             return false;
         }
 
@@ -447,6 +563,42 @@ static bool parse_snapshot_vars(MemArena *mem, const char *payload,
         return false;
     }
     *out_var_count = parsed_cnt;
+    return true;
+}
+
+static bool validate_restored_session_vars(Engine *eng, const EngSession *S) {
+    mem_clear_err(&eng->mem);
+    mem_rewind_scratch(&eng->mem);
+
+    Parser P;
+    parser_init(&P, &eng->mem, &eng->sym, "", 0, 0, false, false);
+    for (uint8_t i = 0; i < S->var_count; ++i) {
+        uint16_t tid = sym_find_type(&eng->sym, &eng->mem,
+                                     S->vars[i].type_name,
+                                     (uint16_t)strlen(S->vars[i].type_name));
+        if (tid == MEM_TYPE_VOID) tid = eng->mem.fast_real_type;
+        (void)parser_add_local(&P, S->vars[i].name, (uint16_t)strlen(S->vars[i].name), tid);
+        if (eng->mem.has_error) return false;
+    }
+    for (uint8_t i = 0; i < S->var_count; ++i) {
+        Parser VP;
+        uint16_t vlen = (uint16_t)strlen(S->vars[i].val_text);
+        parser_init(&VP, &eng->mem, &eng->sym, S->vars[i].val_text, vlen, 0, false, false);
+        memcpy(VP.locals, P.locals, sizeof(P.locals));
+        memcpy(VP.slot_types, P.slot_types, sizeof(P.slot_types));
+        VP.vis_count   = P.vis_count;
+        VP.local_count = P.local_count;
+        lex_next(&VP.lex);
+        uint16_t r = parser_parse_expr(&VP, 0);
+        if (eng->mem.has_error || r == MEM_NO_IDX || VP.lex.cur.kind != TOK_EOF) {
+            if (!eng->mem.has_error) {
+                mem_err(&eng->mem, "Corrupted variable expression '%s' in restored session", S->vars[i].name);
+            }
+            return false;
+        }
+        P.local_count = VP.local_count;
+        memcpy(P.slot_types, VP.slot_types, sizeof(P.slot_types));
+    }
     return true;
 }
 
@@ -471,7 +623,6 @@ int eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapsh
         ordered_payload[i] = NULL;
     }
 
-    /* 1. Parse each snapshot, verify its individual hash, and place it by its order tag (`seq`) */
     for (size_t i = 0; i < snapshot_count; ++i) {
         if (!snapshots[i] || strlen(snapshots[i]) >= ENG_SNAPSHOT_MAX_LEN) {
             mem_err(&eng->mem, "Null or oversized snapshot at index %zu", i);
@@ -501,7 +652,6 @@ int eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapsh
         ordered_payload[seq - 1] = payload;
     }
 
-    /* 2. Verify full contiguous chain (seq:1 .. snapshot_count) and hash linkage */
     uint32_t expected_prev = 0;
     for (size_t k = 0; k < snapshot_count; ++k) {
         if (ordered_idx[k] < 0) {
@@ -517,8 +667,6 @@ int eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapsh
         expected_prev = ordered_hash[k];
     }
 
-    /* 3. Allocate a new in-memory session and parse variables directly into `S->vars`
-     *    (avoiding a 6 KB stack buffer in `eng_session_restore`). */
     int sid = eng_session_open(eng);
     if (sid < 0) return -1;
 
@@ -535,6 +683,11 @@ int eng_session_restore(Engine *eng, const char *const *snapshots, size_t snapsh
     S->snap_iter_cursor = 0;
     S->chain_hash       = expected_prev;
     S->var_count        = final_var_cnt;
+
+    if (!validate_restored_session_vars(eng, S)) {
+        memset(S, 0, sizeof(*S));
+        return -1;
+    }
 
     for (size_t k = 0; k < snapshot_count; ++k) {
         snprintf(S->snapshots[k], ENG_SNAPSHOT_MAX_LEN, "%s", snapshots[ordered_idx[k]]);

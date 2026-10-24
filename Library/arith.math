@@ -60,7 +60,9 @@ not(x) :25 = @lnot(x)
 (x) "---" :90 = x - 2
 
 # 7. Postfix Factorial (`(n) "!" :90`)
-(n) "!" :90 = {
+(n:real, none) "!" :90 = {
+    if (n != n || n < 0 || n != @floor(n)) { error("Factorial '!' requires a non-negative integer") }
+    if (n > 170) { error("Factorial overflow (max 170!)") }
     acc := 1
     k   := n
     (k > 1) ?? {
@@ -75,14 +77,23 @@ abs(x)   = @abs(x)
 floor(x) = @floor(x)
 ceil(x)  = @ceil(x)
 round(x, digits = 0) = {
-    s := 10 ^ digits
-    ((x >= 0) ? @floor(x * s + 0.5) : @ceil(x * s - 0.5)) / s
+    if (digits != digits || digits != @floor(digits)) { error("round() digits must be an integer") }
+    if (digits > 300 || x == 0 || x != x) { return x }
+    if (digits < -308) { return 0 }
+    if (digits >= 0) {
+        s := 10 ^ digits
+        ((x >= 0) ? @floor(x * s + 0.5) : @ceil(x * s - 0.5)) / s
+    } else {
+        s := 10 ^ (-digits)
+        ((x >= 0) ? @floor(x / s + 0.5) : @ceil(x / s - 0.5)) * s
+    }
 }
 trunc(x) = (x >= 0) ? @floor(x) : @ceil(x)
 fract(x) = x - @floor(x)
-sign(x)  = (x > 0) ? 1 : (x < 0) ? -1 : 0
-min(a, b) = (a < b) ? a : b
-max(a, b) = (a > b) ? a : b
+sign(x)  = (x != x) ? x : ((x > 0) ? 1 : (x < 0) ? -1 : 0)
+is_nan(x) = (x != x)
+min(a, b) = (a != a) ? a : ((b != b) ? b : ((a < b) ? a : b))
+max(a, b) = (a != a) ? a : ((b != b) ? b : ((a > b) ? a : b))
 clamp(x, lo, hi) = min(max(x, lo), hi)
 abs_diff(a, b)   = (a < b) ? (b - a) : (a - b)
 is_even(n) = (n % 2 == 0)
@@ -256,3 +267,6 @@ e   = 2.718281828459045
 phi = 1.618033988749895
 φ   = 1.618033988749895
 ϕ   = 1.618033988749895
+inf = 1e300 * 1e300
+nan = (-1) ^ 0.5
+is_inf(x) = (@abs(x) == inf)

@@ -4,6 +4,7 @@
 
 #include "mathc_bin.h"
 #include "parser.h"
+#include "../lib/delegate/delegate.h"
 #include <string.h>
 
 static uint32_t calc_mathc_payload_bytes(const MathcHeader *h) {
@@ -39,9 +40,10 @@ static void fill_mathc_header(const MemArena *mem, const SymTable *tab, MathcHea
     hdr->pat_elem_count = tab->pat_elem_count;
     hdr->field_count    = tab->field_count;
     hdr->overload_count = tab->overload_count;
-    hdr->active_modules = (uint32_t)(tab->active_modules & 0xFFFFFFFFu);
     hdr->payload_bytes  = calc_mathc_payload_bytes(hdr);
+    hdr->intr_hash      = delegate_intrinsic_table_hash();
     hdr->checksum       = 0;
+    hdr->active_modules = tab->active_modules;
 }
 
 uint32_t ext_calc_mathc_checksum(const MathcHeader *hdr,
@@ -158,7 +160,7 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
         if (td.parser_intr >= INTR_COUNT) return false;
         if (td.is_consuming) {
             if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->pat_elem_count) return false;
-        } else if (td.parser_intr == INTR_NONE) {
+        } else if (td.parser_intr == INTR_NONE || td.parser_intr == INTR_COMPLEX_TYPE) {
             if ((uint32_t)td.start_idx + (uint32_t)td.field_count > hdr->field_count) return false;
             if (td.flat_size == 0 || td.flat_size > 256u) return false;
         }
@@ -194,7 +196,7 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
     for (uint16_t i = 1; i < hdr->type_count; ++i) {
         TypeDef td;
         memcpy(&td, types_ptr + (size_t)i * sizeof(TypeDef), sizeof(TypeDef));
-        if (!td.is_consuming && td.parser_intr == INTR_NONE) {
+        if (!td.is_consuming && (td.parser_intr == INTR_NONE || td.parser_intr == INTR_COMPLEX_TYPE)) {
             for (uint8_t f = 0; f < td.field_count; ++f) {
                 FieldDef fd;
                 memcpy(&fd, fields_ptr + (size_t)(td.start_idx + f) * sizeof(FieldDef), sizeof(FieldDef));
@@ -222,8 +224,9 @@ static bool validate_mathc_payload(const uint8_t *payload, const MathcHeader *hd
         if (ov.sym_id >= hdr->sym_count) return false;
         if (ov.mod_id >= hdr->mod_count) return false;
         if (ov.fixity > FIX_SYNTAX) return false;
-        if (ov.param_count > 8u || ov.local_count > PARSER_MAX_LOCALS) return false;
+        if (ov.param_count > SYM_MAX_OV_PARAMS || ov.local_count > PARSER_MAX_LOCALS) return false;
         if (ov.local_count < ov.param_count) return false;
+        if ((ov.meta_tag & SYM_META_LAZY_MASK) == 0 && ov.meta_tag >= INTR_COUNT) return false;
         if (ov.ret_type >= hdr->type_count && ov.ret_type != SYM_TYPE_ANY) return false;
         if (ov.ret_unit < SYM_UNIT_LOCK_NONE && ov.ret_unit >= eff_units) return false;
         for (uint8_t p = 0; p < ov.param_count; ++p) {
@@ -390,6 +393,7 @@ bool ext_validate_mathc_buf(const uint8_t *data, size_t len) {
     MathcHeader hdr;
     memcpy(&hdr, data, sizeof(MathcHeader));
     if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) return false;
+    if (hdr.intr_hash != delegate_intrinsic_table_hash()) return false;
     uint32_t expected_payload = calc_mathc_payload_bytes(&hdr);
     if (hdr.payload_bytes != expected_payload ||
         sizeof(MathcHeader) + (size_t)expected_payload > len) {
@@ -429,6 +433,10 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     memcpy(&hdr, data, sizeof(MathcHeader));
     if (hdr.magic != MATHC_MAGIC || hdr.version != MATHC_VERSION) {
         mem_err(mem, "Bad .mathc magic or version mismatch");
+        return false;
+    }
+    if (hdr.intr_hash != delegate_intrinsic_table_hash()) {
+        mem_err(mem, "Stale .mathc image: intrinsic table fingerprint mismatch");
         return false;
     }
 
@@ -521,7 +529,7 @@ bool ext_load_mathc_mem(MemArena *mem, SymTable *tab,
     tab->sym_count      = hdr.sym_count;
     tab->overload_count = hdr.overload_count;
     tab->const_count    = hdr.const_count;
-    tab->active_modules = (uint64_t)hdr.active_modules;
+    tab->active_modules = hdr.active_modules;
 
     /* Reconstruct ABI-specific Value representations for global constants IN-PLACE
        using their saved `pool_idx` (zero new pool allocations). */

@@ -10,7 +10,7 @@
 #include <string.h>
 
 #if !(defined(__has_include) && __has_include(<jni.h>))
-static char s_mock_str_ring[8][1024];
+static char s_mock_str_ring[8][65536];
 static int  s_mock_str_idx = 0;
 
 static const char *mock_get_str(JniMockEnv **env, jstring s, jboolean *isCopy) {
@@ -26,7 +26,7 @@ static jstring mock_new_str(JniMockEnv **env, const char *bytes) {
     if (!bytes) return NULL;
     char *dst = s_mock_str_ring[s_mock_str_idx];
     s_mock_str_idx = (s_mock_str_idx + 1) & 7;
-    snprintf(dst, 1024, "%s", bytes);
+    snprintf(dst, sizeof(s_mock_str_ring[0]), "%s", bytes);
     return dst;
 }
 static jsize mock_arr_len(JniMockEnv **env, jbyteArray arr) {
@@ -82,18 +82,65 @@ void mep_jni_mock_free_byte_array(jbyteArray arr) {
 }
 #endif
 
+/* Trim any incomplete trailing multi-byte UTF-8 sequence and replace bare NUL/0x80+
+ * continuation errors so `NewStringUTF` never aborts under Android CheckJNI. */
+static void jni_sanitize_utf8_inplace(char *s) {
+    if (!s) return;
+    size_t len = strlen(s);
+    size_t i = 0;
+    while (i < len) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < 0x80u) {
+            i++;
+            continue;
+        }
+        size_t seq_len = 0;
+        if ((c & 0xE0u) == 0xC0u) seq_len = 2;
+        else if ((c & 0xF0u) == 0xE0u) seq_len = 3;
+        else if ((c & 0xF8u) == 0xF0u) seq_len = 4;
+        else {
+            s[i++] = '?';
+            continue;
+        }
+        if (i + seq_len > len) {
+            /* Truncated multi-byte UTF-8 sequence at end of buffer: trim cleanly */
+            s[i] = '\0';
+            break;
+        }
+        bool valid_cont = true;
+        for (size_t k = 1; k < seq_len; ++k) {
+            if (((unsigned char)s[i + k] & 0xC0u) != 0x80u) {
+                valid_cont = false;
+                break;
+            }
+        }
+        if (!valid_cont) {
+            s[i++] = '?';
+            continue;
+        }
+        i += seq_len;
+    }
+}
+
+static jstring jni_new_safe_utf(JNIEnv *env, char *buf) {
+    if (!buf) return NULL;
+    jni_sanitize_utf8_inplace(buf);
+    return (*env)->NewStringUTF(env, buf);
+}
+
 static jstring jni_format_eval_reply(JNIEnv *env, Engine *eng, bool ok, Value out) {
-    char reply[1024];
+    char reply[4096];
     if (!ok) {
         snprintf(reply, sizeof(reply), "ERR|%s", eng_last_error(eng));
-        return (*env)->NewStringUTF(env, reply);
+        return jni_new_safe_utf(env, reply);
     }
-    char val_buf[768], type_buf[32], unit_buf[32];
+    char val_buf[3900], type_buf[32], unit_buf[32];
     eng_format_value(eng, out, val_buf, sizeof(val_buf));
+    jni_sanitize_utf8_inplace(val_buf);
     eng_type_name(eng, eng_val_type(eng, out), type_buf, sizeof(type_buf));
     eng_unit_name(eng, eng_val_unit(eng, out), unit_buf, sizeof(unit_buf));
     snprintf(reply, sizeof(reply), "OK|%s|%s|%s", type_buf, unit_buf, val_buf);
-    return (*env)->NewStringUTF(env, reply);
+    return jni_new_safe_utf(env, reply);
 }
 
 JNIEXPORT jlong JNICALL
@@ -207,19 +254,28 @@ Java_com_mathengine_MathEngineBridge_nativeSessionExportSnapshots(JNIEnv *env, j
     Engine *eng = (Engine *)(intptr_t)handle;
     if (!eng) return NULL;
     if (!eng_session_snapshot_rewind(eng, (int)sessionId)) return NULL;
-    char joined[8192];
-    size_t used = 0;
-    joined[0] = '\0';
+
+    size_t total_len = 0;
     const char *raw = NULL;
     while ((raw = eng_session_snapshot_next(eng, (int)sessionId)) != NULL) {
+        total_len += strlen(raw) + 1u;
+    }
+    char *joined = (char *)malloc(total_len + 1u);
+    if (!joined) return NULL;
+    joined[0] = '\0';
+
+    size_t used = 0;
+    (void)eng_session_snapshot_rewind(eng, (int)sessionId);
+    while ((raw = eng_session_snapshot_next(eng, (int)sessionId)) != NULL) {
         size_t rlen = strlen(raw);
-        if (used + rlen + 2 >= sizeof(joined)) break;
         if (used > 0) joined[used++] = '\n';
         memcpy(joined + used, raw, rlen);
         used += rlen;
         joined[used] = '\0';
     }
-    return (*env)->NewStringUTF(env, joined);
+    jstring jres = jni_new_safe_utf(env, joined);
+    free(joined);
+    return jres;
 }
 
 JNIEXPORT jint JNICALL
@@ -230,16 +286,25 @@ Java_com_mathengine_MathEngineBridge_nativeSessionRestore(JNIEnv *env, jclass cl
     if (!eng || !newlineJoinedSnapshots) return -1;
     const char *raw = (*env)->GetStringUTFChars(env, newlineJoinedSnapshots, NULL);
     if (!raw) return -1;
-    char buf[8192];
-    snprintf(buf, sizeof(buf), "%s", raw);
+    size_t raw_len = strlen(raw);
+    char *buf = (char *)malloc(raw_len + 1u);
+    if (!buf) {
+        (*env)->ReleaseStringUTFChars(env, newlineJoinedSnapshots, raw);
+        return -1;
+    }
+    memcpy(buf, raw, raw_len + 1u);
     (*env)->ReleaseStringUTFChars(env, newlineJoinedSnapshots, raw);
 
     const char *snaps[ENG_SESSION_MAX_EVALS];
     size_t count = 0;
     char *cur = buf;
-    while (*cur != '\0' && count < ENG_SESSION_MAX_EVALS) {
+    while (*cur != '\0') {
         while (*cur == '\n' || *cur == '\r') cur++;
         if (*cur == '\0') break;
+        if (count >= ENG_SESSION_MAX_EVALS) {
+            free(buf);
+            return -1;
+        }
         snaps[count++] = cur;
         while (*cur != '\0' && *cur != '\n' && *cur != '\r') cur++;
         if (*cur != '\0') {
@@ -247,8 +312,13 @@ Java_com_mathengine_MathEngineBridge_nativeSessionRestore(JNIEnv *env, jclass cl
             cur++;
         }
     }
-    if (count == 0) return -1;
-    return (jint)eng_session_restore(eng, snaps, count);
+    if (count == 0) {
+        free(buf);
+        return -1;
+    }
+    int sid = eng_session_restore(eng, snaps, count);
+    free(buf);
+    return (jint)sid;
 }
 
 JNIEXPORT jbyteArray JNICALL
@@ -321,10 +391,10 @@ Java_com_mathengine_MathEngineBridge_nativeSymSimplify(JNIEnv *env, jclass clazz
     if (!eng || !expr) return NULL;
     const char *c_expr = (*env)->GetStringUTFChars(env, expr, NULL);
     if (!c_expr) return NULL;
-    char out[512];
+    char out[4096];
     bool ok = eng_sym_simplify(eng, c_expr, out, sizeof(out));
     (*env)->ReleaseStringUTFChars(env, expr, c_expr);
-    return ok ? (*env)->NewStringUTF(env, out) : NULL;
+    return ok ? jni_new_safe_utf(env, out) : NULL;
 }
 
 JNIEXPORT jstring JNICALL
@@ -341,11 +411,53 @@ Java_com_mathengine_MathEngineBridge_nativeSymDiff(JNIEnv *env, jclass clazz,
         if (c_expr) (*env)->ReleaseStringUTFChars(env, expr, c_expr);
         return NULL;
     }
-    char out[512];
+    char out[4096];
     bool ok = eng_sym_diff(eng, c_var, c_expr, out, sizeof(out));
     (*env)->ReleaseStringUTFChars(env, varName, c_var);
     (*env)->ReleaseStringUTFChars(env, expr, c_expr);
-    return ok ? (*env)->NewStringUTF(env, out) : NULL;
+    return ok ? jni_new_safe_utf(env, out) : NULL;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mathengine_MathEngineBridge_nativeSymInteg(JNIEnv *env, jclass clazz,
+                                                    jlong handle, jstring varName,
+                                                    jstring expr) {
+    (void)clazz;
+    Engine *eng = (Engine *)(intptr_t)handle;
+    if (!eng || !varName || !expr) return NULL;
+    const char *c_var  = (*env)->GetStringUTFChars(env, varName, NULL);
+    const char *c_expr = (*env)->GetStringUTFChars(env, expr, NULL);
+    if (!c_var || !c_expr) {
+        if (c_var)  (*env)->ReleaseStringUTFChars(env, varName, c_var);
+        if (c_expr) (*env)->ReleaseStringUTFChars(env, expr, c_expr);
+        return NULL;
+    }
+    char out[4096];
+    bool ok = eng_sym_integ(eng, c_var, c_expr, out, sizeof(out));
+    (*env)->ReleaseStringUTFChars(env, varName, c_var);
+    (*env)->ReleaseStringUTFChars(env, expr, c_expr);
+    return ok ? jni_new_safe_utf(env, out) : NULL;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mathengine_MathEngineBridge_nativeSymSolve(JNIEnv *env, jclass clazz,
+                                                    jlong handle, jstring varName,
+                                                    jstring eq) {
+    (void)clazz;
+    Engine *eng = (Engine *)(intptr_t)handle;
+    if (!eng || !varName || !eq) return NULL;
+    const char *c_var = (*env)->GetStringUTFChars(env, varName, NULL);
+    const char *c_eq  = (*env)->GetStringUTFChars(env, eq, NULL);
+    if (!c_var || !c_eq) {
+        if (c_var) (*env)->ReleaseStringUTFChars(env, varName, c_var);
+        if (c_eq)  (*env)->ReleaseStringUTFChars(env, eq, c_eq);
+        return NULL;
+    }
+    char out[4096];
+    bool ok = eng_sym_solve(eng, c_var, c_eq, out, sizeof(out));
+    (*env)->ReleaseStringUTFChars(env, varName, c_var);
+    (*env)->ReleaseStringUTFChars(env, eq, c_eq);
+    return ok ? jni_new_safe_utf(env, out) : NULL;
 }
 
 JNIEXPORT jint JNICALL

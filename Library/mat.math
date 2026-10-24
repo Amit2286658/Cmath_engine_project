@@ -2,9 +2,10 @@
 # Library/mat.math — Multidimensional Matrices & Tensors (`$mat`)
 # =============================================================================
 # Dedicated module for 1D-4D dense matrices/tensors (`[a, b ; c, d]`),
-# matrix arithmetic, Hadamard elementwise operators (`.*`, `./`, `.^`),
-# linear system solver (`linsolve`), inverse (`inv`), determinant (`det`),
-# trace, transpose, constructors, and higher-order tensor pipelines.
+# pure MEP matrix arithmetic (`+`, `-`, scalar `*`/`/`, `transpose`),
+# Hadamard elementwise operators (`.*`, `./`, `.^`), linear system solver
+# (`linsolve`), inverse (`inv`), determinant (`det`), trace, constructors,
+# decompositions, and higher-order tensor pipelines.
 
 [mat]
 <[boot_types]
@@ -12,35 +13,21 @@
 <[arith]
 <[vec]
 
-# 1. Matrix Arithmetic, Scaling & Membership Operators
-"-" (m:mat, T)                 :80  -> mat, T = @mscal(m, -1)
-(a:mat, T)     "+"  (b:mat, T) :<50 -> mat, T = @madd(a, b)
-(a:mat, T)     "-"  (b:mat, T) :<50 -> mat, T = @msub(a, b)
-(a:mat, T)     into (b:mat, T) :>55 -> mat, T = @madd(a, b)
-(a:mat)        "*"  (b:mat)    :<60 -> mat    = @mmul(a, b)
-(m:mat, T)     "*"  (s)        :<60 -> mat, T = @mscal(m, s)
-(s)            "*"  (m:mat, T) :<60 -> mat, T = @mscal(m, s)
-(m:mat, T)     "/"  (s)        :<60 -> mat, T = @mscal(m, 1 / s)
-(item:real, T) in   (m:mat, T) :<42           = @vin(item, m)
-
-# 2. Elementwise (Hadamard) Matrix Operators (`.*`, `./`, `.^`)
-(a:mat)    ".*" (b:mat)  :<60 -> mat    = @mhadamard(a, b, 0)
-(a:mat)    "./" (b:mat)  :<60 -> mat    = @mhadamard(a, b, 1)
-(a:mat, T) ".^" (b:real) :>85 -> mat, T = @mhadamard(a, b, 2)
-(a:real)   ".^" (b:mat)  :>85 -> mat    = b.map(x => a ^ x)
-(a:mat)    ".^" (b:mat)  :>85 -> mat    = @mhadamard(a, b, 2)
-
-# 3. Matrix Constructors, Shape Queries, Reshaping & Linear Algebra (`det`, `trace`, `transpose`, `inv`, `linsolve`)
-mat_rows(m:mat)                      = @mrows(m)
-mat_cols(m:mat)                      = @mcols(m)
+# 1. Shape Queries, Reshaping & Higher-Order Functional Pipelines on `$mat`
 mat_rank(m:mat)                      = @mrank(m)
 mat_len(m:mat)                       = @mlen(m)
-mat_shape(m:mat)          -> vec     = @mshape(m)
+mat_dim(m:mat, axis)                 = @mdim(m, axis)
+mat_rows(m:mat)                      = @mdim(m, 0)
+mat_cols(m:mat)                      = (mat_rank(m) >= 2) ? @mdim(m, 1) : @mdim(m, 0)
+mat_shape(m:mat)          -> vec     = [@mdim(m, i) for i in 0..<mat_rank(m)]
 reshape(m:mat, r, c)      -> mat     = @mreshape(m, r, c)
 reshape(v:vec, r, c)      -> mat     = @mreshape(v, r, c)
 flatten(m:mat)            -> vec     = [x for x in m]
-mat_zeros(r, c)           -> mat     = @mzero(r, c)
-mat_fill(r, c, v:real, T) -> mat, T  = vec(r * c, v).reshape(r, c)
+mat_fill(r, c, v:real, T) -> mat, T  = {
+    if (r <= 0 || c <= 0) { error("Matrix dimensions must be positive") }
+    vec(r * c, v).reshape(r, c)
+}
+mat_zeros(r, c)           -> mat     = mat_fill(r, c, 0)
 mat_ones(r, c)            -> mat     = mat_fill(r, c, 1)
 mat_eye(n)                -> mat     = {
     if (n <= 0) { error("Identity matrix dimension must be positive") }
@@ -48,26 +35,8 @@ mat_eye(n)                -> mat     = {
     (i in 0..<n) { out[i, i] = 1 }
     out
 }
-transpose(m:mat, T)       -> mat, T  = @mtrans(m)
-trace(m:mat, T)           -> real, T = {
-    r := mat_rows(m)
-    if (mat_rank(m) != 2 || r != mat_cols(m) || r == 0) { error("trace() requires a non-empty square 2D matrix") }
-    s := 0 * m[0, 0]
-    (i in 0..<r) { s += m[i, i] }
-    s
-}
-det(m:mat)                           = @mdet(m)
-inv(m:mat)                -> mat     = @minv(m)
-linsolve(a:mat, b:mat)    -> mat     = @mlinsolve(a, b)
-linsolve(a:mat, b:vec)    -> vec     = @mlinsolve(a, b)
 
-# 4. Higher-Order Functional Pipelines on `$mat`
-map(m:mat, f:fn)          -> mat = {
-    if (mat_rank(m) == 2) {
-        return [f(x) for x in m].reshape(mat_rows(m), mat_cols(m))
-    }
-    [f(x) for x in m].reshape(1, mat_len(m))
-}
+map(m:mat, f:fn)          -> mat = @mreshape([f(x) for x in m], m, 0)
 filter(m:mat, f:fn)       -> vec = [x for x in m if f(x)]
 reduce(m:mat, f:fn)              = reduce(flatten(m), f)
 reduce(m:mat, init, f:fn)        = reduce(flatten(m), init, f)
@@ -76,6 +45,65 @@ any(m:mat, f:fn)                 = any(flatten(m), f)
 all(m:mat, f:fn)                 = all(flatten(m), f)
 find(m:mat, f:fn)                = find(flatten(m), f)
 count_if(m:mat, f:fn)            = count_if(flatten(m), f)
+
+mat_zip(a:mat, b:mat, f:fn) -> mat = {
+    if (mat_shape(a) != mat_shape(b)) { error("Matrix shape mismatch") }
+    va := [x for x in a]
+    vb := [x for x in b]
+    vr := [f(x, vb[i]) for i, x in va]
+    @mreshape(vr, a, 0)
+}
+
+# 2. Pure MEP Matrix Arithmetic, Scaling & Membership Operators
+"-" (m:mat, T)                 :80  -> mat, T = m.map(x => -x)
+(a:mat, T)     "+"  (b:mat, T) :<50 -> mat, T = mat_zip(a, b, (x, y) => x + y)
+(a:mat, T)     "-"  (b:mat, T) :<50 -> mat, T = mat_zip(a, b, (x, y) => x - y)
+(a:mat, T)     into (b:mat, T) :>55 -> mat, T = mat_zip(a, b, (x, y) => x + y)
+(a:mat)        "*"  (b:mat)    :<60 -> mat    = @mmul(a, b)
+(m:mat)        "*"  (s:real)   :<60 -> mat    = m.map(x => x * s)
+(s:real)       "*"  (m:mat)    :<60 -> mat    = m.map(x => s * x)
+(m:mat)        "/"  (s:real)   :<60 -> mat    = {
+    if (s == 0) { error("Division by zero in matrix scalar division") }
+    m.map(x => x / s)
+}
+(item:real, T) in   (m:mat, T) :<42           = @vin(item, m)
+
+# 3. Elementwise (Hadamard) Matrix Operators (`.*`, `./`, `.^`)
+(a:mat)  ".*" (b:mat)  :<60 -> mat = mat_zip(a, b, (x, y) => x * y)
+(a:mat)  "./" (b:mat)  :<60 -> mat = mat_zip(a, b, (x, y) => x / y)
+(a:mat)  ".^" (b:real) :>85 -> mat = a.map(x => x ^ b)
+(a:real) ".^" (b:mat)  :>85 -> mat = b.map(x => a ^ x)
+(a:mat)  ".^" (b:mat)  :>85 -> mat = mat_zip(a, b, (x, y) => x ^ y)
+
+# 4. Pure MEP `transpose` & `trace` + Core Linear Algebra (`det`, `inv`, `linsolve`)
+transpose(m:mat, T) -> mat, T = {
+    r := mat_rank(m)
+    if (r == 1) { return @mreshape(m, mat_len(m), 1) }
+    if (r != 2) { error("transpose() requires a 2D matrix") }
+    rows := mat_rows(m)
+    cols := mat_cols(m)
+    flat := vec(rows * cols)
+    (j in 0..<cols) {
+        (i in 0..<rows) {
+            m[i, j] into flat
+        }
+    }
+    @mreshape(flat, cols, rows)
+}
+
+trace(m:mat, T) -> real, T = {
+    r := mat_rows(m)
+    if (mat_rank(m) != 2 || r != mat_cols(m) || r == 0) { error("trace() requires a non-empty square 2D matrix") }
+    s := 0 * m[0, 0]
+    (i in 0..<r) { s += m[i, i] }
+    s
+}
+
+det(m:mat)                        = @mdet(m)
+inv(m:mat)             -> mat     = @minv(m)
+linsolve(a:mat, b:mat) -> mat     = @mlinsolve(a, b)
+linsolve(a:mat, b:vec) -> vec     = @mlinsolve(a, b)
+
 
 # 5. Diagonals, Reductions & Matrix Powers (`A ^ n`)
 
@@ -368,11 +396,11 @@ mat_norm_inf(m:mat) = {
 }
 
 (a:mat) "==" (b:mat) :<30 = {
-    if (mat_rows(a) != mat_rows(b) || mat_cols(a) != mat_cols(b)) { return 0 }
+    if (mat_shape(a) != mat_shape(b)) { return 0 }
     flatten(a) == flatten(b)
 }
 (a:mat) "!=" (b:mat) :<30 = !(a == b)
 (a:mat) "~"  (b:mat) :<30 = {
-    if (mat_rows(a) != mat_rows(b) || mat_cols(a) != mat_cols(b)) { return 0 }
+    if (mat_shape(a) != mat_shape(b)) { return 0 }
     flatten(a) ~ flatten(b)
 }

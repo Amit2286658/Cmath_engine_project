@@ -7,7 +7,7 @@
 <[trig]
 
 # Non-consuming struct type (fields default to :real)
-$complex(re, im)
+$complex(re, im) => @complex_type
 
 # Postfix imaginary operator `i` (precedence 95: binds tighter than `^`, `*`, `-`)
 # Preserves any unit tag `T` on `x` (so `(50m)i` has type `iota` and unit `distance`!)

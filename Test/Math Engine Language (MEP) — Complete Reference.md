@@ -1,6 +1,6 @@
 # Math Engine Language (MEP) — Complete Reference & Tutorial Guidebook
 
-*Verified against the engine source and a live sanitizer build (`gcc -std=c11 -Wall -Wextra -Wconversion -Werror -fsanitize=address,undefined`), 22 October 2026 (529 / 529 automated tests, 19 modules, 12 types, 35 unit groups, 28 constants, 1,359 operator & function overloads). This single reference & tutorial guidebook in `Test/` merges the complete language specification, chapter-by-chapter tutorial walkthroughs, and the exhaustive overload-by-overload reference.*
+*Verified against the engine source and a live sanitizer build (`gcc -std=c11 -Wall -Wextra -Wconversion -Werror -fsanitize=address,undefined`), 22 October 2026 (555 / 555 automated tests + Sections [1]–[15], 19 modules, 15 types, 35 unit groups, 30 constants, 1,336 stdlib / 1,380 total operator & function overloads). This single reference & tutorial guidebook in `Test/` merges the complete language specification, chapter-by-chapter tutorial walkthroughs, and the exhaustive overload-by-overload reference.*
 
 ## 1. Overview & Architecture
 
@@ -19,7 +19,7 @@ Key properties:
 - **`Core/compile/` (Compilation, Topological Linking, `.mathc` Binary & User Loader)**:
   - `compiler.h` / `compiler.c`: `[module]` unit staging (`ext_compile_unit`), duplicate module rejection, and declaration compiler (`ext_compile_slice`).
   - `linker.h` / `linker.c`: `<[dep]` dependency DAG resolution, missing/circular dependency detection via Kahn's topological sort, and transactional linking (`ext_link_units`, `ext_compile_and_link`, `ext_load_str`).
-  - `mathc_bin.h` / `mathc_bin.c`: 40-byte `MathcHeader`, FNV-1a checksum, pre-copy structural validator, and O(1) `.mathc` serializer/loader (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
+  - `mathc_bin.h` / `mathc_bin.c`: 48-byte `MathcHeader` (with `intr_hash` intrinsic enum fingerprint), FNV-1a checksum, pre-copy structural validator, and O(1) `.mathc` serializer/loader (`ext_save_mathc_mem`, `ext_load_mathc_mem`).
   - `user_loader.h` / `user_loader.c`: Host-facing user extension compile, link, and `.mathc` load API (`user_build_create`, `user_build_destroy`, `user_build_init`, `user_compile_unit`, `user_link_ext`, `user_link_ext_buf`, `user_compile_and_link`, `user_compile_ext`, `user_load_mathc`).
   - `ext_loader.h`: Umbrella header including `compiler.h`, `linker.h`, and `mathc_bin.h`.
 - **`Core/session/` (Parallel In-Memory Sessions & Order-Tagged Snapshots)**:
@@ -28,7 +28,7 @@ Key properties:
 - **`Core/lib/delegate/` (`delegate.h` / `delegate.c` — C `@` Intrinsics)**: Contains the `@<intrinsic>` registry and all C implementations behind `@` delegates (`@add`, `@sin`, `@vpush`, `@vshift`, `@tostr`, `@fromstr`, `@mmul`, `@mlinsolve`, `@mhadamard`, `@calc_integ`, `@calc_ode`…). Every section in `delegate.h` and `delegate.c` is annotated with `/*Below section is the C's native ...*/` and `/*Construct ...*/` banners (section 16).
 - **`Core/lib/hardcode/` (`hardcode.h` / `hardcode.c` — Hardcoded Grammar & Ergonomic Rules)**: Isolates the grammar rules fixed in C (newline statement separators, reserved words, implicit multiplication, undefined iterator variables `i in 1...5 {}` and `i, x in v {}`, dual unit/variable `"in"` disambiguation `25m in km`, parameterized containers `vec<T>()` / `list<T>()` / `stack<T>()` / `queue<T>()`, comprehensions, lambdas, and pattern-matched `switch`). Every section in `hardcode.h` and `hardcode.c` is annotated with `/*code section below manages hardcoding ...*/` and `/*Construct ...*/` banners (section 16).
 - **`Library/*.math` (Standard Library — 15 files, 17 module units)**: Order-independent `.math` modules (no numerical prefixes) compiled and linked by `Library/mathc.c` into `Core/Headers/stdlib_precompiled.h` (`Library/stdlib.mathc`) and loaded in one `memcpy` by `eng_init`.
-- **`Test/`**: Contains the host harness, CLI (`-e`/`--eval`, `--repl`, `--bench`), & 529-test verification suite (`Test/main.c`), sample user extension (`Test/user_physics.math`), and this canonical guidebook (`Test/Math Engine Language (MEP) — Complete Reference.md`).
+- **`Test/`**: Contains the host harness, CLI (`-e`/`--eval`, `--repl`, `--bench`), & 555-test verification suite (`Test/main.c`), sample user extension (`Test/user_physics.math`), and this canonical guidebook (`Test/Math Engine Language (MEP) — Complete Reference.md`).
 
 ## 2. Quick Start & Tutorial Tour
 
@@ -1859,7 +1859,7 @@ In addition to the `.math`-declared operators and functions in Sections 10.1–1
 4. **Symbolic Expression Differentiation, Algebraic Simplification & Symbolic Taylor Series**:
    - `sym_simplify(expr)` / `simplify(expr)`: Recursive algebraic identity reduction (`x + 0 -> x`, `x * 1 -> x`, `x * 0 -> 0`, `x - x -> 0`, `x / x -> 1`, `(x^a)^b -> x^(a*b)`), constant folding, and like-term combination (`2*x + 3*x -> 5 * x`).
    - `sym_diff(x, expr)` and `sym_diff_n(x, expr, order)`: Exact analytical differentiation across `+`, `-`, `*`, `/`, `^` (general power + logarithmic differentiation), `sin`, `cos`, `tan`, `sec`, `csc`, `cot`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `exp`, `ln`, `log10`, `log2`, `sqrt`/`√`, `cbrt`, `abs` with automatic simplification.
-   - `sym_eval(sym_str, x, val)` and `sym_taylor(x, expr, x0 = 0, order = 4)`, plus C APIs `eng_sym_simplify` and `eng_sym_diff`.
+   - `sym_integ(x, expr)`, `sym_solve(x, eq)`, `sym_eval(sym_str, x, val)`, and `sym_taylor(x, expr, x0 = 0, order = 4)`, plus C/JNI APIs `eng_sym_simplify`, `eng_sym_diff`, `eng_sym_integ`, and `eng_sym_solve` (`nativeSymInteg`, `nativeSymSolve`).
 5. **String Formatting (`fmt` / `format`), Backtracking Regex Engine & First-Class `$map` Dictionary Type**:
    - **Formatting & String Ops**: `fmt(template, ...)` (`{}`, `{:.2f}`, `{:x}`, `{:X}`, `{:b}`, `{:d}`, `{:e}`) and `format(template, ...)` (`%s`, `%d`, `%04d`, `%.2f`, `%g`, `%x`, `%X`, `%b`, `%%`), plus `upper`, `lower`, `trim`, `ltrim`, `rtrim`, `pad_left`, `pad_right`, `index_of`, `contains`, `str_count`, `replace`, `replace_first`, `split`, `lines`, `words`.
    - **Regex Engine**: `regex_match(s, pat)`, `regex_find(s, pat)`, `regex_find_all(s, pat)`, `regex_replace(s, pat, repl)`, `regex_split(s, pat)` supporting `^`, `$`, `.`, `*`, `+`, `?`, `[abc]`, `[a-z]`, `[^...]`, `\d`, `\D`, `\w`, `\W`, `\s`, `\S`, `(group)`, and `|`.

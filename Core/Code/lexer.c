@@ -65,8 +65,13 @@ static int match_single_atom(const MemArena *mem, const PatElem *pe,
         }
         case PAT_NOT_CHARS: {
             const char *excl = mem_str_ptr(mem, pe->chars);
+            bool excl_quote = false;
             for (uint16_t i = 0; i < pe->chars.len; ++i) {
+                if (excl[i] == '"') excl_quote = true;
                 if (src[pos] == excl[i]) return -1;
+            }
+            if (excl_quote && src[pos] == '\\' && pos + 1 < len) {
+                return 2;
             }
             int ulen = 1;
             if ((c & 0xE0) == 0xC0) ulen = 2;
@@ -149,17 +154,27 @@ static int match_pat_seq(const MemArena *mem, const SymTable *tab,
             if (sub_end < 0) return -1;
             return match_pat_seq(mem, tab, next_p, p_end, src, (uint16_t)sub_end, len);
         } else {
-            uint16_t ends[32];
+            uint16_t ends[64];
             int count = 0;
             if (quant == QUANT_STAR) ends[count++] = pos;
             uint16_t cur = pos;
-            while (count < 32) {
+            int matched_iters = 0;
+            while (cur < len) {
                 int sub_end = match_group_body(mem, tab, p_idx + 1, g_end, src, cur, len);
                 if (sub_end <= (int)cur) break;
                 cur = (uint16_t)sub_end;
-                ends[count++] = cur;
+                matched_iters++;
+                if (count < 64) {
+                    ends[count++] = cur;
+                } else {
+                    ends[count - 1] = cur;
+                }
             }
+            if (matched_iters == 0 && quant == QUANT_PLUS) return -1;
+            int rem_full = match_pat_seq(mem, tab, next_p, p_end, src, cur, len);
+            if (rem_full >= 0) return rem_full;
             for (int i = count - 1; i >= 0; --i) {
+                if (ends[i] == cur) continue;
                 int rem = match_pat_seq(mem, tab, next_p, p_end, src, ends[i], len);
                 if (rem >= 0) return rem;
             }
@@ -182,17 +197,27 @@ static int match_pat_seq(const MemArena *mem, const SymTable *tab,
         }
         return match_pat_seq(mem, tab, next_p, p_end, src, pos, len);
     } else {
-        uint16_t ends[128];
+        uint16_t ends[64];
         int count = 0;
         if (quant == QUANT_STAR) ends[count++] = pos;
         uint16_t cur = pos;
-        while (count < 128) {
+        int matched_iters = 0;
+        while (cur < len) {
             int step = match_single_atom(mem, pe, src, cur, len);
             if (step <= 0) break;
-            cur += (uint16_t)step;
-            ends[count++] = cur;
+            cur = (uint16_t)(cur + (uint16_t)step);
+            matched_iters++;
+            if (count < 64) {
+                ends[count++] = cur;
+            } else {
+                ends[count - 1] = cur;
+            }
         }
+        if (matched_iters == 0 && quant == QUANT_PLUS) return -1;
+        int rem_full = match_pat_seq(mem, tab, next_p, p_end, src, cur, len);
+        if (rem_full >= 0) return rem_full;
         for (int i = count - 1; i >= 0; --i) {
+            if (ends[i] == cur) continue;
             int rem = match_pat_seq(mem, tab, next_p, p_end, src, ends[i], len);
             if (rem >= 0) return rem;
         }
@@ -291,6 +316,7 @@ void lex_next(Lexer *lex) {
         lex->cur.len  = (uint16_t)best_type_len;
         lex->cur.val  = delegate_construct_token(mem, tab, best_type_id, lex->src, lex->pos, (uint16_t)best_type_len);
         lex->pos += (uint16_t)best_type_len;
+        lex->last_was_expr = true;
         return;
     }
 
@@ -321,6 +347,41 @@ void lex_next(Lexer *lex) {
         }
     }
 
+    /* Disambiguate `5--3` / `5++3`: when `--` or `++` (prefix/postfix only, no infix)
+     * follows an expression and is immediately followed on the same line by a primary
+     * operand starter (digit, `.digit`, identifier, `(`, or `√`), split off the leading
+     * binary `-` or `+` so `5--3` parses as `5 - (-3)` while `6-- + 1` stays postfix `--`. */
+    if (best_sym_len >= 2 && best_syntax_tag == 0 && lex->last_was_expr) {
+        const char *op_s = mem_str_ptr(mem, tab->syms[best_sym_id]);
+        bool all_minus = true, all_plus = true;
+        for (int k = 0; k < best_sym_len; ++k) {
+            if (op_s[k] != '-') all_minus = false;
+            if (op_s[k] != '+') all_plus  = false;
+        }
+        if ((all_minus || all_plus) &&
+            sym_get_active_prec(tab, best_sym_id, FIX_INFIX_LEFT) < 0 &&
+            sym_get_active_prec(tab, best_sym_id, FIX_INFIX_RIGHT) < 0) {
+            uint16_t look = (uint16_t)(lex->pos + (uint16_t)best_sym_len);
+            while (look < lex->len && (lex->src[look] == ' ' || lex->src[look] == '\t')) look++;
+            if (look < lex->len) {
+                unsigned char nc = (unsigned char)lex->src[look];
+                bool rhs_starts_primary = (nc >= '0' && nc <= '9') ||
+                                          (nc == '.' && look + 1 < lex->len &&
+                                           lex->src[look + 1] >= '0' && lex->src[look + 1] <= '9') ||
+                                          nc == '(' ||
+                                          lex_is_ident_start(nc);
+                if (rhs_starts_primary) {
+                    char single_ch = all_minus ? '-' : '+';
+                    int single_sid = sym_find(tab, mem, &single_ch, 1);
+                    if (single_sid >= 0 && sym_has_active_op(tab, (uint16_t)single_sid)) {
+                        best_sym_len = 1;
+                        best_sym_id  = (uint16_t)single_sid;
+                    }
+                }
+            }
+        }
+    }
+
     if (best_sym_len > 0) {
         lex->cur.len    = (uint16_t)best_sym_len;
         lex->cur.sym_id = best_sym_id;
@@ -329,25 +390,36 @@ void lex_next(Lexer *lex) {
         if (best_syntax_tag == INTR_LPAREN) {
             lex->paren_depth++;
             lex->cur.kind = TOK_LPAREN;
+            lex->last_was_expr = false;
         } else if (best_syntax_tag == INTR_RPAREN) {
             if (lex->paren_depth > 0) lex->paren_depth--;
             lex->cur.kind = TOK_RPAREN;
+            lex->last_was_expr = true;
         } else if (best_syntax_tag == INTR_LBRACE) {
             lex->paren_depth++;
             lex->cur.kind = TOK_LBRACE;
+            lex->last_was_expr = false;
         } else if (best_syntax_tag == INTR_RBRACE) {
             if (lex->paren_depth > 0) lex->paren_depth--;
             lex->cur.kind = TOK_RBRACE;
+            lex->last_was_expr = true;
         } else if (best_syntax_tag == INTR_LBRACK) {
             lex->paren_depth++;
             lex->cur.kind = TOK_LBRACK;
+            lex->last_was_expr = false;
         } else if (best_syntax_tag == INTR_RBRACK) {
             if (lex->paren_depth > 0) lex->paren_depth--;
             lex->cur.kind = TOK_RBRACK;
+            lex->last_was_expr = true;
         } else if (best_syntax_tag == INTR_COMMA) {
             lex->cur.kind = TOK_COMMA;
+            lex->last_was_expr = false;
         } else {
             lex->cur.kind = TOK_OP;
+            bool has_infix = (sym_get_active_prec(tab, best_sym_id, FIX_INFIX_LEFT) >= 0) ||
+                             (sym_get_active_prec(tab, best_sym_id, FIX_INFIX_RIGHT) >= 0);
+            bool has_post  = (sym_get_active_prec(tab, best_sym_id, FIX_POSTFIX) >= 0);
+            lex->last_was_expr = (has_post && !has_infix && lex->last_was_expr);
         }
         return;
     }
@@ -373,6 +445,7 @@ void lex_next(Lexer *lex) {
         }
         lex->cur.kind = TOK_IDENT;
         lex->cur.len  = lex->pos - start;
+        lex->last_was_expr = true;
         return;
     }
 

@@ -156,7 +156,8 @@ uint8_t sym_active_meta_tag(const SymTable *tab, uint16_t sym_id, OpFixity fix_f
             if (fix_filter == FIX_FUNC && ov->fixity != FIX_FUNC) continue;
             if ((fix_filter == FIX_PREFIX || fix_filter == FIX_POSTFIX) && ov->fixity != (uint8_t)fix_filter) continue;
             if (fix_filter != FIX_FUNC && (ov->fixity == FIX_FUNC || ov->fixity == FIX_SYNTAX)) continue;
-            if (ov->meta_tag >= INTR_SEQ && ov->meta_tag <= INTR_FIELD) {
+            if ((ov->meta_tag & SYM_META_LAZY_MASK) != 0 ||
+                delegate_is_meta_intrinsic((IntrinsicId)ov->meta_tag)) {
                 return ov->meta_tag;
             }
         }
@@ -169,10 +170,12 @@ bool sym_is_reserved_kw(const SymTable *tab, const MemArena *mem, const char *na
 }
 
 uint16_t sym_find_type(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
-    uint16_t wc = hardcode_resolve_wildcard_type(name, len);
+    uint16_t wc = hardcode_resolve_wildcard_type(tab, mem, name, len);
     if (wc != MEM_TYPE_VOID) return wc;
     for (uint16_t i = 1; i < tab->type_count; ++i) {
         if (!sym_mod_enabled(tab, tab->types[i].mod_id)) continue;
+        if (tab->types[i].parser_intr == INTR_ANY_TYPE ||
+            tab->types[i].parser_intr == INTR_NONE_UNIT) continue;
         StrSlice s = tab->types[i].name;
         if (s.len == len && memcmp(mem_str_ptr(mem, s), name, len) == 0) {
             return i;
@@ -182,7 +185,7 @@ uint16_t sym_find_type(const SymTable *tab, const MemArena *mem, const char *nam
 }
 
 uint8_t sym_find_unit(const SymTable *tab, const MemArena *mem, const char *name, uint16_t len) {
-    uint8_t wc = hardcode_resolve_wildcard_unit(name, len);
+    uint8_t wc = hardcode_resolve_wildcard_unit(tab, mem, name, len);
     if (wc != MEM_UNIT_NONE) return wc;
     for (uint8_t i = 1; i < tab->unit_count; ++i) {
         StrSlice s = tab->units[i];
@@ -225,7 +228,14 @@ bool sym_resolve_field(const SymTable *tab, const MemArena *mem, uint16_t type_i
 const char *sym_type_name(const SymTable *tab, const MemArena *mem, uint16_t type_id,
                           char *buf, size_t cap) {
     if (type_id == SYM_TYPE_ANY) {
-        snprintf(buf, cap, "T");
+        for (uint16_t i = 1; i < tab->type_count; ++i) {
+            if (tab->types[i].parser_intr == INTR_ANY_TYPE) {
+                StrSlice s = tab->types[i].name;
+                snprintf(buf, cap, "%.*s", (int)s.len, mem_str_ptr(mem, s));
+                return buf;
+            }
+        }
+        snprintf(buf, cap, "void");
         return buf;
     }
     if (type_id == 0 || type_id >= tab->type_count) {
@@ -240,11 +250,17 @@ const char *sym_type_name(const SymTable *tab, const MemArena *mem, uint16_t typ
 const char *sym_unit_name(const SymTable *tab, const MemArena *mem, uint8_t unit_id,
                           char *buf, size_t cap) {
     if (unit_id == SYM_UNIT_GENERIC || unit_id == SYM_UNIT_OMITTED) {
-        snprintf(buf, cap, "T");
-        return buf;
+        return sym_type_name(tab, mem, SYM_TYPE_ANY, buf, cap);
     }
     if (unit_id == 0 || unit_id == SYM_UNIT_LOCK_NONE || unit_id >= tab->unit_count) {
-        snprintf(buf, cap, "none");
+        for (uint16_t i = 1; i < tab->type_count; ++i) {
+            if (tab->types[i].parser_intr == INTR_NONE_UNIT) {
+                StrSlice s = tab->types[i].name;
+                snprintf(buf, cap, "%.*s", (int)s.len, mem_str_ptr(mem, s));
+                return buf;
+            }
+        }
+        snprintf(buf, cap, "void");
         return buf;
     }
     StrSlice s = tab->units[unit_id];

@@ -2,10 +2,12 @@
 # Library/bootstrap.math — Minimal Bootstrap Subset Hooked First by the C Core
 # =============================================================================
 # Defines syntax delimiters, consuming types (including scientific notation &
-# digit separators in `$real`), assignment/control operators, calculus & solver
-# constructs, first-class function invocation, introspection, and `_` / `error`.
-# Entity-specific operations for `$vec`, `$mat`, and `$str` live in their own
-# modular files (`Library/vec.math`, `Library/mat.math`, `Library/string.math`).
+# digit separators in `$real`), generic entity/unit wildcards (`$T`, `$any`,
+# `$none`), assignment/control operators, symbolic AST constructs, first-class
+# function invocation, introspection, and `_` / `error`.
+# Entity-specific operations for `$vec`, `$mat`, `$str`, and calculus live in
+# their own modular files (`Library/vec.math`, `Library/mat.math`,
+# `Library/string.math`, `Library/calculus.math`).
 
 [boot_syntax]
 
@@ -23,14 +25,18 @@
 <[boot_syntax]
 
 # 2. Consuming Lexical Types, Scalar Imaginary Type ($iota), Dynamic Vector ($vec),
-#    Multidimensional Matrix ($mat) & First-Class Lambda Closure ($fn)
-$real ~ ("0" [xX] [0123456789abcdefABCDEF]+ ("_" [0123456789abcdefABCDEF]+)* | "0" [bB] [01]+ ("_" [01]+)* | \d+ ("_" \d+)* ("." \d+ ("_" \d+)*)? ([eE] [+-]? \d+ ("_" \d+)*)?) => @f64
+#    Multidimensional Matrix ($mat), First-Class Lambda Closure ($fn), Dictionary ($map)
+#    & Polymorphic Type/Unit Wildcards ($T, $any, $none)
+$real ~ ("0" [xX] [0123456789abcdefABCDEF]+ ("_" [0123456789abcdefABCDEF]+)* | "0" [bB] [01]+ ("_" [01]+)* | "." \d+ ("_" \d+)* ([eE] [+-]? \d+ ("_" \d+)*)? | \d+ ("_" \d+)* ("." \d+ ("_" \d+)*)? ([eE] [+-]? \d+ ("_" \d+)*)?) => @f64
 $iota ~                      => @f64_trim1
 $str  ~ "\"" [^"]* "\""      => @str_slice
 $vec  ~                      => @vec_type
 $mat  ~                      => @mat_type
 $fn   ~                      => @fn_type
 $map  ~                      => @map_type
+$T    ~                      => @any_type
+$any  ~                      => @any_type
+$none ~                      => @none_unit
 
 
 [boot_control]
@@ -80,7 +86,7 @@ call(f:fn, a:T, b:T, c:T, d:T) -> T = @fcall(f, a, b)
 (a) "&" (b)        :<35 = @cand(a, b)
 (a) "|" (b)        :<34 = @cor(a, b)
 
-# 10. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `jump`, `run`,
+# 10. Multi-Branch `if ... or ... else`, `switch ... case ... else`, `for`/`in`, `jump`, `run`,
 #     `break`, `continue` & `return`
 if(cond, then_val, else_val) = @if(cond, then_val, else_val)
 or(cond, body)               = @or_branch(cond, body)
@@ -89,6 +95,8 @@ else(body)                   = @else_branch(body)
 default(body)                = @else_branch(body)
 switch(val, body)            = @switch_block(val, body)
 case(val, body)              = @case_branch(val, body)
+for(expr, body)              = @for_kw(expr, body)
+(item:T) in (v:vec)     :<42 = @vin(item, v)
 jump(tag)                    = @jump_tag(tag)
 run(tag)                     = @run_tag(tag)
 break()                      = @break_loop(0)
@@ -99,48 +107,28 @@ continue(tag)                = @continue_loop(tag)
 return()                     = @return_fn(0)
 return(val:T)           -> T = @return_fn(val)
 
-# 11. Expression-Based High School Calculus, Equation Solver, Extrema & RK4 ODE Constructs
-diff(var_x, expr, x0)                           = @calc_diff(var_x, expr, x0)
-diff2(var_x, expr, x0)                          = @calc_diff2(var_x, expr, x0)
-diff_n(var_x, expr, x0, order)                  = @calc_diffn(var_x, expr, x0)
-integrate(var_x, expr, a, b)                    = @calc_integ(var_x, expr, a)
-integrate(var_x, expr, a, b, steps)             = @calc_integ(var_x, expr, a)
-ntg(var_x, expr, a, b)                          = @calc_integ(var_x, expr, a)
-lim(var_x, expr, x0)                            = @calc_lim(var_x, expr, x0)
-lim_left(var_x, expr, x0)                       = @calc_lim_l(var_x, expr, x0)
-lim_right(var_x, expr, x0)                      = @calc_lim_r(var_x, expr, x0)
-sigma(var_k, expr, lo, hi)                      = @calc_sigma(var_k, expr, lo)
-prod(var_k, expr, lo, hi)                       = @calc_prod(var_k, expr, lo)
-solve(var_x, eq)                                = @calc_solve(var_x, eq)
-solve(var_x, eq, guess)                         = @calc_solve(var_x, eq, guess)
-solve(var_x, eq, a, b)                          = @calc_solve(var_x, eq, a)
-fmin(var_x, expr, a, b)                         = @calc_fmin(var_x, expr, a)
-fmax(var_x, expr, a, b)                         = @calc_fmax(var_x, expr, a)
-ode_rk4(var_t, var_y, expr, t0, y0, t1)                 = @calc_ode(var_t, var_y, expr)
-ode_rk4(var_t, var_y, expr, t0, y0, t1, steps)          = @calc_ode(var_t, var_y, expr)
-ode_rk4_vec(var_t, var_y, expr, t0, y0, t1)      -> vec = @calc_ode_vec(var_t, var_y, expr)
-ode_rk4_vec(var_t, var_y, expr, t0, y0, t1, steps)-> vec = @calc_ode_vec(var_t, var_y, expr)
-ode_rk4_sys(var_t, var_y, rhs_vec, t0, y0:vec, t1) -> vec = @calc_ode_sys(var_t, var_y, rhs_vec)
-ode_rk4_sys_traj(var_t, var_y, rhs_vec, t0, y0:vec, t1) -> mat = @calc_ode_sys(var_t, var_y, rhs_vec)
-ode_coupled2(var_t, var_x, var_y, dx, dy, t0, x0, y0) -> vec = @calc_ode_coupled(var_t, var_x, var_y)
-ode_coupled3(var_t, var_x, var_y, var_z, dx, dy, dz, t0) -> vec = @calc_ode_coupled(var_t, var_x, var_y)
+# 11. Symbolic Expression Differentiation, Integration, Equation Solving, Simplification, Evaluation & Taylor Polynomials
+sym_diff(var_x, expr)              -> str = @sym_diff(var_x, expr)
+sym_diff(var_x, expr, order)       -> str = @sym_diff(var_x, expr, order)
+sym_diff_n(var_x, expr, order)     -> str = @sym_diff(var_x, expr, order)
+sym_integ(var_x, expr)             -> str = @sym_integ(var_x, expr)
+sym_solve(var_x, eq)               -> str = @sym_solve(var_x, eq)
+sym_simplify(expr:T)               -> str = @sym_simplify(expr)
+simplify(expr:T)                   -> str = @sym_simplify(expr)
+sym_eval(expr_str:str, var_x, val)        = @sym_eval(expr_str, var_x, val)
+sym_taylor(var_x, expr, x0, order) -> str = @sym_taylor(var_x, expr, x0)
 
-# 11b. Symbolic Expression Differentiation, Simplification, Evaluation & Taylor Polynomials
-sym_diff(var_x, expr)                     -> str = @sym_diff(var_x, expr)
-sym_diff(var_x, expr, order)              -> str = @sym_diff(var_x, expr, order)
-sym_diff_n(var_x, expr, order)            -> str = @sym_diff(var_x, expr, order)
-sym_simplify(expr:T)                      -> str = @sym_simplify(expr)
-simplify(expr:T)                          -> str = @sym_simplify(expr)
-sym_eval(expr_str:str, var_x, val)               = @sym_eval(expr_str, var_x, val)
-sym_taylor(var_x, expr, x0, order)        -> str = @sym_taylor(var_x, expr, x0)
-
-# 12. Runtime Entity/Unit Introspection, Scratch Arena Compaction & Plain String Conversion Operators `_`
-type_of(x:T) -> str = @type_name(x)
-unit_of(x:T) -> str = @unit_name(x)
-gc_compact()        = @gc_compact(0)
-pool_used()         = @pool_used(0)
-(x:T) "_"   :95 -> str = @tostr(x)
-"_" (s:str) :85 -> T   = @fromstr(s)
+# 12. Runtime Entity/Unit Introspection, Unit Transfer (`raw_val`, `with_unit`),
+#     Scratch Arena Compaction & Plain String Conversion Operators `_`
+raw_val(x)           -> real, none = @raw(x)
+with_unit(val, donor)              = @raw(val, donor)
+type_of(x:T)         -> str        = @type_name(x)
+unit_of(x:T)         -> str        = @unit_name(x)
+unit_dim(x:T, axis)                = @unit_name(x, axis)
+gc_compact()                       = @gc_compact(0)
+pool_used()                        = @pool_used(0)
+(x:T) "_"   :95      -> str        = @tostr(x)
+"_" (s:str) :85      -> T          = @fromstr(s)
 
 # 13. Custom Runtime Error & Assertion Functions (`error("...")`, `assert(cond, "...")`)
 error(msg:str)        = @err(msg)

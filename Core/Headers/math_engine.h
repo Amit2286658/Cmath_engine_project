@@ -139,6 +139,10 @@ MATH_ENGINE_API uint16_t    eng_scratch_pool_used(const Engine *eng);
 MATH_ENGINE_API bool        eng_sym_simplify(Engine *eng, const char *expr, char *out_buf, size_t buf_cap);
 MATH_ENGINE_API bool        eng_sym_diff(Engine *eng, const char *var_name, const char *expr,
                                          char *out_buf, size_t buf_cap);
+MATH_ENGINE_API bool        eng_sym_integ(Engine *eng, const char *var_name, const char *expr,
+                                          char *out_buf, size_t buf_cap);
+MATH_ENGINE_API bool        eng_sym_solve(Engine *eng, const char *var_name, const char *eq,
+                                          char *out_buf, size_t buf_cap);
 
 #ifdef __cplusplus
 }

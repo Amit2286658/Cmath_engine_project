@@ -31,6 +31,7 @@
  */
 
 #include "parser.h"
+#include "../lib/delegate/delegate.h"
 #include "../lib/hardcode/hardcode.h"
 #include <string.h>
 
@@ -193,6 +194,13 @@ static bool lex_peek_is_lparen(const Lexer *lex) {
     return lex_at_is_syntax(lex, lex->pos, INTR_LPAREN);
 }
 
+static bool lex_match_in_kw_at(const Parser *P, uint16_t p) {
+    if (p >= P->lex.len || !lex_is_ident_start((unsigned char)P->lex.src[p])) return false;
+    uint16_t istart = p;
+    while (p < P->lex.len && lex_is_ident_cont((unsigned char)P->lex.src[p])) p++;
+    return hardcode_is_in_kw(P->lex.mem, P->lex.tab, P->lex.src + istart, (uint16_t)(p - istart));
+}
+
 static bool lex_peek_is_ident_in(const Parser *P) {
     uint16_t p = skip_raw_ws(P->lex.src, P->lex.pos, P->lex.len);
     if (p >= P->lex.len || !lex_is_ident_start((unsigned char)P->lex.src[p])) return false;
@@ -204,8 +212,7 @@ static bool lex_peek_is_ident_in(const Parser *P) {
         while (p < P->lex.len && lex_is_ident_cont((unsigned char)P->lex.src[p])) p++;
         p = skip_raw_ws(P->lex.src, p, P->lex.len);
     }
-    return (p + 2 <= P->lex.len && P->lex.src[p] == 'i' && P->lex.src[p + 1] == 'n' &&
-             (p + 2 == P->lex.len || !lex_is_ident_cont((unsigned char)P->lex.src[p + 2])));
+    return lex_match_in_kw_at(P, p);
 }
 
 static bool lex_is_two_var_in(const Parser *P) {
@@ -214,8 +221,7 @@ static bool lex_is_two_var_in(const Parser *P) {
     if (p >= lex->len || !lex_is_ident_start((unsigned char)lex->src[p])) return false;
     while (p < lex->len && lex_is_ident_cont((unsigned char)lex->src[p])) p++;
     p = skip_raw_ws(lex->src, p, lex->len);
-    return (p + 2 <= lex->len && lex->src[p] == 'i' && lex->src[p + 1] == 'n' &&
-            (p + 2 == lex->len || !lex_is_ident_cont((unsigned char)lex->src[p + 2])));
+    return lex_match_in_kw_at(P, p);
 }
 
 static bool lex_peek_is_branch_kw(const Parser *P) {
@@ -289,13 +295,42 @@ static bool lex_is_multi_lhs(const Parser *P) {
 
 static uint16_t resolve_annot_type(const SymTable *tab, const MemArena *mem,
                                    const char *name, uint16_t len) {
-    if (mem->vec_type_id != 0 &&
-        ((len == 4 && memcmp(name, "list", 4) == 0) ||
-         (len == 5 && memcmp(name, "stack", 5) == 0) ||
-         (len == 5 && memcmp(name, "queue", 5) == 0))) {
-        return mem->vec_type_id;
+    int sid = sym_find(tab, mem, name, len);
+    if (sid >= 0) {
+        if (mem->vec_type_id != 0 && hardcode_is_vec_ctor_sym(mem, tab, (uint16_t)sid)) {
+            return mem->vec_type_id;
+        }
+        if (mem->map_type_id != 0 && hardcode_is_map_ctor_sym(mem, tab, (uint16_t)sid)) {
+            return mem->map_type_id;
+        }
     }
     return sym_find_type(tab, mem, name, len);
+}
+
+static bool sym_has_non_lazy_func_ov(const SymTable *tab, uint16_t sym_id) {
+    if (sym_id >= tab->sym_count) return false;
+    for (uint16_t i = tab->sym_first_ov[sym_id]; i != MEM_NO_IDX; i = tab->ov_next[i]) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->fixity == FIX_FUNC && sym_mod_enabled(tab, ov->mod_id) &&
+            (ov->meta_tag & SYM_META_LAZY_MASK) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int find_active_sub_sym(const MemArena *mem, const SymTable *tab) {
+    for (uint16_t i = 0; i < tab->overload_count; ++i) {
+        const OpOverload *ov = &tab->overloads[i];
+        if (ov->fixity == FIX_INFIX_LEFT && ov->param_count == 2 &&
+            sym_mod_enabled(tab, ov->mod_id) && ov->body_ast != MEM_NO_IDX) {
+            const AstNode *root = mem_get_ast(mem, ov->body_ast);
+            if (root->kind == AST_INTRINSIC && root->sub == INTR_SUB) {
+                return (int)ov->sym_id;
+            }
+        }
+    }
+    return -1;
 }
 
 static bool parse_var_type_unit_annot(Parser *P, uint8_t *out_lock_type, uint8_t *out_lock_unit) {
@@ -597,6 +632,7 @@ static bool cur_is_seq_semicolon(const Parser *P) {
 
 static uint16_t parse_mat_literal(Parser *P) {
     MemArena *mem = P->lex.mem;
+    SymTable *tab = P->lex.tab;
 
     lex_next(&P->lex); /* consume '[' */
 
@@ -642,7 +678,7 @@ static uint16_t parse_mat_literal(Parser *P) {
             return MEM_NO_IDX;
         }
 
-        if (P->lex.cur.len != 3 || memcmp(P->lex.src + P->lex.cur.off, "for", 3) != 0) {
+        if (!hardcode_is_for_kw(mem, tab, P->lex.src + P->lex.cur.off, P->lex.cur.len)) {
             P->vis_count = saved_vis;
             P->scope_depth--;
             P->in_ternary_then = saved_ternary;
@@ -664,7 +700,7 @@ static uint16_t parse_mat_literal(Parser *P) {
         }
         lex_next(&P->lex); /* consume loop variable name */
 
-        if (P->lex.cur.len != 2 || memcmp(P->lex.src + P->lex.cur.off, "in", 2) != 0) {
+        if (!hardcode_is_in_kw(mem, tab, P->lex.src + P->lex.cur.off, P->lex.cur.len)) {
             P->vis_count = saved_vis;
             P->scope_depth--;
             P->in_ternary_then = saved_ternary;
@@ -2135,7 +2171,7 @@ static uint16_t parse_nud(Parser *P) {
             return parse_lambda_from_ident(P, id_str, id_len);
         }
 
-        /* 6a. Control-flow constructs bound in `00_bootstrap.math` */
+        /* 6a. Control-flow constructs bound in `Library/bootstrap.math` */
         if (fn_meta == INTR_IF) {
             return parse_if_construct(P, (uint16_t)sym_id);
         }
@@ -2169,6 +2205,10 @@ static uint16_t parse_nud(Parser *P) {
             mem_err(mem, "Unexpected 'case' outside of 'switch' block");
             return MEM_NO_IDX;
         }
+        if (fn_meta == INTR_FOR_KW) {
+            mem_err(mem, "Unexpected 'for' outside of '[expr for x in ...]' comprehension");
+            return MEM_NO_IDX;
+        }
 
         /* 6b. Colon-Tagged Scope or Loop (`Tag : { ... }`, `Tag : (i in 1...5) { ... }`, `Tag : i in 1...5 { ... }`) */
         if (P->in_ternary_then == 0 && cur_op_meta(P) == INTR_COLON &&
@@ -2185,7 +2225,7 @@ static uint16_t parse_nud(Parser *P) {
             P->labels[label_id].defined = true;
             uint16_t body = is_brace_scope ? parse_scope_block(P) : parser_parse_expr(P, 2);
             if (is_brace_scope && body != MEM_NO_IDX && !mem->has_error &&
-                (cur_op_meta(P) == INTR_WHILE || cur_op_meta(P) == INTR_DO_WHILE)) {
+                 (cur_op_meta(P) == INTR_WHILE || cur_op_meta(P) == INTR_DO_WHILE)) {
                 uint16_t op_sym = P->lex.cur.sym_id;
                 int do_sym = find_active_meta_sym(tab, INTR_DO_WHILE);
                 if (do_sym >= 0) op_sym = (uint16_t)do_sym;
@@ -2325,7 +2365,7 @@ static uint16_t parse_nud(Parser *P) {
 
         /* 6e. Single Local Variable or Parameter Slot (with direct `$fn` call support `f(x)`) */
         int vidx = find_local_idx(P, id_str, id_len);
-        bool is_assign = (P->lex.cur.kind == TOK_OP &&
+        bool is_assign = (P->in_symbolic_expr == 0 && P->lex.cur.kind == TOK_OP &&
                           sym_active_meta_tag(tab, P->lex.cur.sym_id, FIX_INFIX_RIGHT) == INTR_STORE);
         if (is_assign) {
             uint16_t lhs_ast = resolve_var_for_assign(P, id_str, id_len, P->lex.cur.sym_id, 0, 0);
@@ -2396,18 +2436,147 @@ static uint16_t parse_nud(Parser *P) {
             uint16_t tail = MEM_NO_IDX;
             uint8_t  argc = 0;
 
-            bool is_sym_call = (fn_meta == INTR_SYM_DIFF || fn_meta == INTR_SYM_SIMPLIFY ||
-                                fn_meta == INTR_SYM_TAYLOR || fn_meta == INTR_SYM_EVAL ||
-                                fn_meta == INTR_CALC_ODE_SYS || fn_meta == INTR_CALC_ODE_COUPLED);
+            bool use_lazy_call = false;
+            if (sym_id >= 0 && (fn_meta & SYM_META_LAZY_MASK) != 0) {
+                if (!sym_has_non_lazy_func_ov(tab, (uint16_t)sym_id)) {
+                    use_lazy_call = true;
+                } else {
+                    bool first_is_ident = (P->lex.cur.kind == TOK_IDENT ||
+                                           (P->lex.cur.kind == TOK_OP &&
+                                            lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off])));
+                    bool first_is_fn_local = false;
+                    if (first_is_ident && mem->fn_type_id != 0) {
+                        int lidx = find_local_idx(P, P->lex.src + P->lex.cur.off, P->lex.cur.len);
+                        if (lidx >= 0 && P->slot_types[P->locals[lidx].slot] == mem->fn_type_id) {
+                            first_is_fn_local = true;
+                        }
+                    }
+                    use_lazy_call = (first_is_ident && !first_is_fn_local);
+                }
+            }
+
+            bool parse_rest = (P->lex.cur.kind != TOK_RPAREN);
+            if (use_lazy_call && parse_rest) {
+                uint8_t v_cnt = (uint8_t)((fn_meta >> 3u) & 0x07u);
+                uint8_t e_cnt = (uint8_t)(fn_meta & 0x07u);
+                bool    is_eq = ((fn_meta & SYM_META_LAZY_EQ_BIT) != 0);
+
+                uint16_t z_pidx = mem_alloc_pool(mem, 1);
+                if (mem->has_error) {
+                    P->in_ternary_then = saved_ternary;
+                    return MEM_NO_IDX;
+                }
+                mem_write_pool(mem, z_pidx, 0.0);
+                uint16_t zero_lit = mem_alloc_ast(mem, AST_LIT, mem->fast_real_type, z_pidx, 0, 0);
+
+                const char *vnames[4];
+                uint16_t    vlens[4];
+                for (uint8_t v = 0; v < v_cnt; ++v) {
+                    if (P->lex.cur.kind != TOK_IDENT &&
+                        !(P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off]))) {
+                        P->in_ternary_then = saved_ternary;
+                        mem_err(mem, "Variable argument to '%.*s' must be an identifier (e.g. x)",
+                                (int)id_len, id_str);
+                        return MEM_NO_IDX;
+                    }
+                    vnames[v] = P->lex.src + P->lex.cur.off;
+                    vlens[v]  = P->lex.cur.len;
+                    lex_next(&P->lex);
+                    uint16_t zlink = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, zero_lit, MEM_NO_IDX);
+                    if (head == MEM_NO_IDX) head = zlink;
+                    else mem_get_ast_mut(mem, tail)->right = zlink;
+                    tail = zlink;
+                    argc++;
+                    if (P->lex.cur.kind != TOK_COMMA) {
+                        P->in_ternary_then = saved_ternary;
+                        mem_err(mem, "Calculus/solver construct '%.*s' requires an expression argument",
+                                (int)id_len, id_str);
+                        return MEM_NO_IDX;
+                    }
+                    lex_next(&P->lex);
+                }
+
+                uint8_t saved_vis  = P->vis_count;
+                uint8_t slot_start = P->local_count;
+                P->scope_depth++;
+                for (uint8_t v = 0; v < v_cnt; ++v) {
+                    (void)parser_add_local(P, vnames[v], vlens[v], mem->fast_real_type);
+                    if (mem->has_error) {
+                        P->vis_count       = saved_vis;
+                        P->scope_depth--;
+                        P->in_ternary_then = saved_ternary;
+                        return MEM_NO_IDX;
+                    }
+                }
+
+                uint16_t expr_asts[4];
+                for (uint8_t e = 0; e < e_cnt; ++e) {
+                    if (e > 0) {
+                        if (P->lex.cur.kind != TOK_COMMA) {
+                            P->vis_count       = saved_vis;
+                            P->scope_depth--;
+                            P->in_ternary_then = saved_ternary;
+                            mem_err(mem, "Expected ',' before expression argument in '%.*s'",
+                                    (int)id_len, id_str);
+                            return MEM_NO_IDX;
+                        }
+                        lex_next(&P->lex);
+                    }
+                    uint16_t east = parser_parse_expr(P, 0);
+                    if (mem->has_error || east == MEM_NO_IDX) {
+                        P->vis_count       = saved_vis;
+                        P->scope_depth--;
+                        P->in_ternary_then = saved_ternary;
+                        return MEM_NO_IDX;
+                    }
+                    if (is_eq && east != MEM_NO_IDX) {
+                        const AstNode *en = mem_get_ast(mem, east);
+                        if (en->kind == AST_BINARY && en->ref < tab->sym_count &&
+                            hardcode_is_rel_comparison_op(mem, tab, en->ref)) {
+                            int sub_sid = find_active_sub_sym(mem, tab);
+                            if (sub_sid >= 0) {
+                                east = mem_alloc_ast(mem, AST_BINARY, (uint8_t)FIX_INFIX_LEFT,
+                                                     (uint16_t)sub_sid, en->left, en->right);
+                            }
+                        }
+                    }
+                    expr_asts[e] = east;
+                }
+
+                uint8_t total_slots = (P->local_count > slot_start)
+                                      ? (uint8_t)(P->local_count - slot_start) : v_cnt;
+                P->vis_count = saved_vis;
+                P->scope_depth--;
+
+                uint16_t slot_range = (uint16_t)(((uint32_t)slot_start & 0xFFu) |
+                                                 (((uint32_t)total_slots & 0xFFu) << 8u));
+                for (uint8_t e = 0; e < e_cnt; ++e) {
+                    uint16_t lam  = mem_alloc_ast(mem, AST_LAMBDA, v_cnt, expr_asts[e], slot_range, MEM_NO_IDX);
+                    uint16_t link = mem_alloc_ast(mem, AST_ARG_LINK, 0, 0, lam, MEM_NO_IDX);
+                    if (head == MEM_NO_IDX) head = link;
+                    else mem_get_ast_mut(mem, tail)->right = link;
+                    tail = link;
+                    argc++;
+                }
+
+                if (P->lex.cur.kind == TOK_COMMA) {
+                    lex_next(&P->lex);
+                    parse_rest = true;
+                } else {
+                    parse_rest = false;
+                }
+            }
+
+            bool is_sym_call = delegate_is_sym_meta(fn_meta);
             if (is_sym_call) P->in_symbolic_expr++;
-            if (P->lex.cur.kind != TOK_RPAREN) {
+            if (parse_rest) {
                 while (1) {
                     uint16_t arg = MEM_NO_IDX;
-                    bool is_var_p = hardcode_is_calc_var_param(fn_meta, argc);
+                    bool is_var_p = hardcode_is_sym_var_param(fn_meta, argc);
                     if (is_var_p && is_sym_call &&
                         !(P->lex.cur.kind == TOK_IDENT ||
                           (P->lex.cur.kind == TOK_OP && lex_is_ident_start((unsigned char)P->lex.src[P->lex.cur.off])))) {
-                        is_var_p = false; /* allow string literal or lambda closure in sym_diff/ode_rk4_sys */
+                        is_var_p = false; /* allow string literal in sym_diff */
                     }
                     if (is_var_p) {
                         if (P->lex.cur.kind != TOK_IDENT &&
@@ -2459,7 +2628,9 @@ static uint16_t parse_nud(Parser *P) {
             uint16_t st_tid = sym_find_type(tab, mem, id_str, id_len);
             if (container_type_spec == MEM_NO_IDX &&
                 st_tid != MEM_TYPE_VOID && st_tid < tab->type_count &&
-                !tab->types[st_tid].is_consuming && tab->types[st_tid].parser_intr == INTR_NONE) {
+                !tab->types[st_tid].is_consuming &&
+                (tab->types[st_tid].parser_intr == INTR_NONE ||
+                 tab->types[st_tid].parser_intr == INTR_COMPLEX_TYPE)) {
                 return mem_alloc_ast(mem, AST_CONSTRUCT, argc, st_tid, head, MEM_NO_IDX);
             }
 
@@ -2500,9 +2671,8 @@ static uint16_t parse_nud(Parser *P) {
                 mem_err(mem, "Undefined function or struct '%.*s'", (int)id_len, id_str);
                 return MEM_NO_IDX;
             }
-            if (container_type_spec == MEM_NO_IDX && id_len == 4 &&
-                memcmp(id_str, "call", 4) == 0 && argc >= 1 && head != MEM_NO_IDX &&
-                sym_is_module_active(tab, mem, "boot_control")) {
+            if (container_type_spec == MEM_NO_IDX && fn_meta == INTR_FCALL &&
+                argc >= 1 && head != MEM_NO_IDX) {
                 const AstNode *first_link = mem_get_ast(mem, head);
                 return mem_alloc_ast(mem, AST_FN_CALL, (uint8_t)(argc - 1), 0,
                                      first_link->left, first_link->right);
@@ -2686,7 +2856,11 @@ static uint16_t parser_parse_expr_inner(Parser *P, int min_prec) {
                     }
                 }
                 if (mtag == INTR_STORE) {
-                    left = build_store_or_compound(P, t.sym_id, left, right);
+                    if (P->in_symbolic_expr > 0) {
+                        left = mem_alloc_ast(mem, AST_BINARY, (uint8_t)fix, t.sym_id, left, right);
+                    } else {
+                        left = build_store_or_compound(P, t.sym_id, left, right);
+                    }
                     continue;
                 }
                 if (hardcode_is_rel_comparison_op(mem, tab, t.sym_id)) {

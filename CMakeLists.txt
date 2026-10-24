@@ -120,8 +120,9 @@ target_link_libraries(mathengine PUBLIC m)
 
 # Test & demo executable (`myapp` / `cmath_tests`) linked against `mathengine`
 if(NOT ANDROID)
+    find_package(Threads REQUIRED)
     add_executable(myapp ${TEST_SOURCES})
-    target_link_libraries(myapp PRIVATE mathengine)
+    target_link_libraries(myapp PRIVATE mathengine Threads::Threads)
 
     include(CTest)
     enable_testing()

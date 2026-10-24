@@ -14,6 +14,7 @@
 
 #include "math_engine.h"
 #include "stdlib_precompiled.h"
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,8 @@ Engine *eng_create(void) {
 }
 
 void eng_destroy(Engine *eng) {
+    if (!eng) return;
+    mem_free_all_heap(&eng->mem);
     free(eng);
 }
 
@@ -197,20 +200,76 @@ uint16_t eng_scratch_pool_used(const Engine *eng) {
 bool eng_sym_simplify(Engine *eng, const char *expr, char *out_buf, size_t buf_cap) {
     if (!eng || !expr || !out_buf || buf_cap == 0) return false;
     out_buf[0] = '\0';
-    char qbuf[1024];
-    snprintf(qbuf, sizeof(qbuf), "sym_simplify(%s)", expr);
+    char qbuf[8192];
+    int n = snprintf(qbuf, sizeof(qbuf), "sym_simplify(%s)", expr);
+    if (n < 0 || (size_t)n >= sizeof(qbuf)) {
+        mem_err(&eng->mem, "Symbolic expression exceeds maximum length");
+        return false;
+    }
     Value v = val_void();
     if (!eng_eval(eng, qbuf, &v)) return false;
+    StrSlice s = val_get_str(&eng->mem, v);
+    if ((size_t)s.len + 1u > buf_cap) {
+        mem_err(&eng->mem, "Symbolic output exceeds caller buffer capacity (%zu bytes)", buf_cap);
+        return false;
+    }
     return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
 }
 
 bool eng_sym_diff(Engine *eng, const char *var_name, const char *expr, char *out_buf, size_t buf_cap) {
     if (!eng || !var_name || !expr || !out_buf || buf_cap == 0) return false;
     out_buf[0] = '\0';
-    char qbuf[1024];
-    snprintf(qbuf, sizeof(qbuf), "sym_diff(%s, %s)", var_name, expr);
+    char qbuf[8192];
+    int n = snprintf(qbuf, sizeof(qbuf), "sym_diff(%s, %s)", var_name, expr);
+    if (n < 0 || (size_t)n >= sizeof(qbuf)) {
+        mem_err(&eng->mem, "Symbolic expression exceeds maximum length");
+        return false;
+    }
     Value v = val_void();
     if (!eng_eval(eng, qbuf, &v)) return false;
+    StrSlice s = val_get_str(&eng->mem, v);
+    if ((size_t)s.len + 1u > buf_cap) {
+        mem_err(&eng->mem, "Symbolic output exceeds caller buffer capacity (%zu bytes)", buf_cap);
+        return false;
+    }
+    return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
+}
+
+bool eng_sym_integ(Engine *eng, const char *var_name, const char *expr, char *out_buf, size_t buf_cap) {
+    if (!eng || !var_name || !expr || !out_buf || buf_cap == 0) return false;
+    out_buf[0] = '\0';
+    char qbuf[8192];
+    int n = snprintf(qbuf, sizeof(qbuf), "sym_integ(%s, %s)", var_name, expr);
+    if (n < 0 || (size_t)n >= sizeof(qbuf)) {
+        mem_err(&eng->mem, "Symbolic expression exceeds maximum length");
+        return false;
+    }
+    Value v = val_void();
+    if (!eng_eval(eng, qbuf, &v)) return false;
+    StrSlice s = val_get_str(&eng->mem, v);
+    if ((size_t)s.len + 1u > buf_cap) {
+        mem_err(&eng->mem, "Symbolic output exceeds caller buffer capacity (%zu bytes)", buf_cap);
+        return false;
+    }
+    return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
+}
+
+bool eng_sym_solve(Engine *eng, const char *var_name, const char *eq, char *out_buf, size_t buf_cap) {
+    if (!eng || !var_name || !eq || !out_buf || buf_cap == 0) return false;
+    out_buf[0] = '\0';
+    char qbuf[8192];
+    int n = snprintf(qbuf, sizeof(qbuf), "sym_solve(%s, %s)", var_name, eq);
+    if (n < 0 || (size_t)n >= sizeof(qbuf)) {
+        mem_err(&eng->mem, "Symbolic expression exceeds maximum length");
+        return false;
+    }
+    Value v = val_void();
+    if (!eng_eval(eng, qbuf, &v)) return false;
+    StrSlice s = val_get_str(&eng->mem, v);
+    if ((size_t)s.len + 1u > buf_cap) {
+        mem_err(&eng->mem, "Symbolic output exceeds caller buffer capacity (%zu bytes)", buf_cap);
+        return false;
+    }
     return val_as_cstr(&eng->mem, v, out_buf, buf_cap);
 }
 
@@ -218,37 +277,51 @@ bool eng_sym_diff(Engine *eng, const char *var_name, const char *expr, char *out
  * HUMAN-READABLE VALUE FORMATTER (`eng_format_value`, `eng_format_mat_at`)
  * ============================================================================ */
 
+static void eng_buf_append(char *buf, size_t cap, size_t *used, const char *fmt, ...) {
+    if (!buf || cap == 0 || *used + 1 >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + *used, cap - *used, fmt, ap);
+    va_end(ap);
+    if (n <= 0) return;
+    if ((size_t)n >= cap - *used) {
+        *used = cap - 1;
+    } else {
+        *used += (size_t)n;
+    }
+}
+
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
                              uint8_t depth, char *buf, size_t cap);
 
-static void format_mat_slice(const Engine *eng, uint16_t data_idx,
+static void format_mat_slice(const Engine *eng, uint16_t data_idx, uint32_t base_off,
                              const uint16_t *dims, uint8_t rank, uint8_t axis,
                              bool high_prec, char *buf, size_t cap, size_t *used) {
-    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "[");
+    eng_buf_append(buf, cap, used, "[");
     if (axis + 1 >= rank) {
         uint16_t n = dims[axis];
-        for (uint16_t i = 0; i < n && *used < cap; ++i) {
-            double v = mem_read_pool(&eng->mem, (uint16_t)(data_idx + i));
+        for (uint16_t i = 0; i < n && *used + 1 < cap; ++i) {
+            double v = mem_data_read(&eng->mem, data_idx, base_off + i);
             if (v == 0.0) v = 0.0; /* normalize -0.0 */
-            *used += (size_t)snprintf(buf + *used, cap - *used,
-                                      high_prec ? "%s%.17g" : "%s%.6g",
-                                      (i > 0 ? ", " : ""), v);
+            eng_buf_append(buf, cap, used,
+                           high_prec ? "%s%.17g" : "%s%.6g",
+                           (i > 0 ? ", " : ""), v);
         }
     } else {
-        uint16_t stride = 1;
+        uint32_t stride = 1;
         for (uint8_t a = (uint8_t)(axis + 1); a < rank; ++a) {
-            stride = (uint16_t)(stride * dims[a]);
+            stride *= (uint32_t)dims[a];
         }
         uint16_t n = dims[axis];
-        for (uint16_t i = 0; i < n && *used < cap; ++i) {
-            if (i > 0 && *used < cap) {
-                *used += (size_t)snprintf(buf + *used, cap - *used, ", ");
+        for (uint16_t i = 0; i < n && *used + 1 < cap; ++i) {
+            if (i > 0) {
+                eng_buf_append(buf, cap, used, ", ");
             }
-            format_mat_slice(eng, (uint16_t)(data_idx + i * stride),
+            format_mat_slice(eng, data_idx, base_off + (uint32_t)i * stride,
                              dims, rank, (uint8_t)(axis + 1), high_prec, buf, cap, used);
         }
     }
-    if (*used < cap) *used += (size_t)snprintf(buf + *used, cap - *used, "]");
+    eng_buf_append(buf, cap, used, "]");
 }
 
 void eng_format_mat_at(const Engine *eng, uint16_t hdr_idx, bool high_prec,
@@ -264,7 +337,7 @@ void eng_format_mat_at(const Engine *eng, uint16_t hdr_idx, bool high_prec,
         return;
     }
     size_t used = 0;
-    format_mat_slice(eng, data_idx, dims, rank, 0, high_prec, buf, cap, &used);
+    format_mat_slice(eng, data_idx, 0, dims, rank, 0, high_prec, buf, cap, &used);
 }
 
 static void format_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
@@ -275,32 +348,33 @@ static void format_vec_at(const Engine *eng, uint16_t hdr_idx, uint8_t depth,
     }
     uint16_t raw_hdr0 = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 0));
     uint16_t elem_tid = (uint16_t)(raw_hdr0 & 0xFFu);
-    uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
+    uint32_t len      = (uint32_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 1));
     uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(hdr_idx + 3));
     uint16_t stride   = (elem_tid > 0 && elem_tid < eng->sym.type_count)
                         ? eng->sym.types[elem_tid].flat_size : 1;
 
-    size_t used = (size_t)snprintf(buf, cap, "[");
-    for (uint16_t i = 0; i < len && used < cap; ++i) {
-        uint16_t elem_pidx = (uint16_t)(data_idx + i * stride);
+    size_t used = 0;
+    if (cap > 0) buf[0] = '\0';
+    eng_buf_append(buf, cap, &used, "[");
+    for (uint32_t i = 0; i < len && used + 1 < cap; ++i) {
+        uint32_t off = i * (uint32_t)stride;
         char elem_str[96];
         if (elem_tid == eng->mem.str_type_id && elem_tid != 0) {
-            uint32_t packed = (uint32_t)mem_read_pool(&eng->mem, elem_pidx);
+            uint32_t packed = (uint32_t)mem_data_read(&eng->mem, data_idx, off);
             StrSlice s = { (uint16_t)(packed >> 16), (uint16_t)(packed & 0xFFFFu) };
             snprintf(elem_str, sizeof(elem_str), "\"%.*s\"",
                      (int)s.len, mem_str_ptr(&eng->mem, s));
         } else if (elem_tid == eng->mem.vec_type_id && elem_tid != 0) {
-            format_vec_at(eng, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+            format_vec_at(eng, (uint16_t)(data_idx + off), (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else if (elem_tid > 0 && elem_tid < eng->sym.type_count &&
                    !eng->sym.types[elem_tid].is_consuming) {
-            format_struct_at(eng, elem_tid, elem_pidx, (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
+            format_struct_at(eng, elem_tid, (uint16_t)(data_idx + off), (uint8_t)(depth + 1), elem_str, sizeof(elem_str));
         } else {
-            snprintf(elem_str, sizeof(elem_str), "%.6g", mem_read_pool(&eng->mem, elem_pidx));
+            snprintf(elem_str, sizeof(elem_str), "%.6g", mem_data_read(&eng->mem, data_idx, off));
         }
-        used += (size_t)snprintf(buf + used, cap - used, "%s%s",
-                                 (i > 0 ? ", " : ""), elem_str);
+        eng_buf_append(buf, cap, &used, "%s%s", (i > 0 ? ", " : ""), elem_str);
     }
-    if (used < cap) snprintf(buf + used, cap - used, "]");
+    eng_buf_append(buf, cap, &used, "]");
 }
 
 static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_idx,
@@ -325,18 +399,20 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
     if (type_id == eng->mem.map_type_id && type_id != 0) {
         uint16_t len      = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
         uint16_t data_idx = (uint16_t)mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 3));
-        size_t used = (size_t)snprintf(buf, cap, "{");
-        for (uint16_t i = 0; i < len && used < cap; ++i) {
+        size_t used = 0;
+        if (cap > 0) buf[0] = '\0';
+        eng_buf_append(buf, cap, &used, "{");
+        for (uint16_t i = 0; i < len && used + 1 < cap; ++i) {
             StrSlice kslice = mem_map_entry_key(&eng->mem, data_idx, i);
             Value    vval   = mem_map_entry_val(&eng->mem, data_idx, i);
             char vstr[96];
             eng_format_value(eng, vval, vstr, sizeof(vstr));
-            used += (size_t)snprintf(buf + used, cap - used, "%s\"%.*s\": %s",
-                                     (i > 0 ? ", " : ""),
-                                     (int)kslice.len, mem_str_ptr(&eng->mem, kslice),
-                                     vstr);
+            eng_buf_append(buf, cap, &used, "%s\"%.*s\": %s",
+                           (i > 0 ? ", " : ""),
+                           (int)kslice.len, mem_str_ptr(&eng->mem, kslice),
+                           vstr);
         }
-        if (used < cap) snprintf(buf + used, cap - used, "}");
+        eng_buf_append(buf, cap, &used, "}");
         return;
     }
 
@@ -344,7 +420,7 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
     char tname[32];
     eng_type_name(eng, type_id, tname, sizeof(tname));
 
-    if (strcmp(tname, "complex") == 0 && td->flat_size == 2) {
+    if (td->parser_intr == INTR_COMPLEX_TYPE && td->flat_size == 2) {
         double re = mem_read_pool(&eng->mem, pool_idx);
         double im = mem_read_pool(&eng->mem, (uint16_t)(pool_idx + 1));
         if (im >= 0.0) {
@@ -355,8 +431,10 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         return;
     }
 
-    size_t used = (size_t)snprintf(buf, cap, "%s(", tname);
-    for (uint8_t i = 0; i < td->field_count && used < cap; ++i) {
+    size_t used = 0;
+    if (cap > 0) buf[0] = '\0';
+    eng_buf_append(buf, cap, &used, "%s(", tname);
+    for (uint8_t i = 0; i < td->field_count && used + 1 < cap; ++i) {
         const FieldDef *fd = &eng->sym.fields[td->start_idx + i];
         char f_str[64];
         if (!eng->sym.types[fd->type_id].is_consuming) {
@@ -365,12 +443,12 @@ static void format_struct_at(const Engine *eng, uint16_t type_id, uint16_t pool_
         } else {
             snprintf(f_str, sizeof(f_str), "%.6g", mem_read_pool(&eng->mem, (uint16_t)(pool_idx + fd->flat_offset)));
         }
-        used += (size_t)snprintf(buf + used, cap - used, "%s%.*s=%s",
-                                 (i > 0 ? ", " : ""),
-                                 (int)fd->name.len, mem_str_ptr(&eng->mem, fd->name),
-                                 f_str);
+        eng_buf_append(buf, cap, &used, "%s%.*s=%s",
+                       (i > 0 ? ", " : ""),
+                       (int)fd->name.len, mem_str_ptr(&eng->mem, fd->name),
+                       f_str);
     }
-    if (used < cap) snprintf(buf + used, cap - used, ")");
+    eng_buf_append(buf, cap, &used, ")");
 }
 
 void eng_format_value(const Engine *eng, Value val, char *buf, size_t buf_cap) {

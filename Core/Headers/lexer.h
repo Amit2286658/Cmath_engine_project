@@ -52,6 +52,7 @@ typedef struct {
     uint16_t    pos;
     uint8_t     paren_depth;
     bool        stop_at_newline;
+    bool        last_was_expr;
     Token       cur;
 } Lexer;
 

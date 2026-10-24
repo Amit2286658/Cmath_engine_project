@@ -13,6 +13,7 @@
 #include "parser.h"
 #include "hardcode.h"
 #include "evaluator.h"
+#include "../lib/delegate/delegate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -219,28 +220,36 @@ static void ext_parse_type_decl(ExtLoader *L) {
             mem->str_type_id = (uint8_t)tid;
         } else if (td->parser_intr == INTR_VEC_TYPE) {
             td->is_consuming = 0;
+            td->field_count  = 0;
             td->flat_size    = MEM_VEC_HDR_SLOTS;
             if (mem->vec_type_id == 0) {
                 mem->vec_type_id = (uint8_t)tid;
             }
         } else if (td->parser_intr == INTR_MAT_TYPE) {
             td->is_consuming = 0;
+            td->field_count  = 0;
             td->flat_size    = MEM_MAT_HDR_SLOTS;
             if (mem->mat_type_id == 0) {
                 mem->mat_type_id = (uint8_t)tid;
             }
         } else if (td->parser_intr == INTR_FN_TYPE) {
             td->is_consuming = 0;
+            td->field_count  = 0;
             td->flat_size    = MEM_FN_HDR_SLOTS;
             if (mem->fn_type_id == 0) {
                 mem->fn_type_id = (uint8_t)tid;
             }
         } else if (td->parser_intr == INTR_MAP_TYPE) {
             td->is_consuming = 0;
+            td->field_count  = 0;
             td->flat_size    = MEM_MAP_HDR_SLOTS;
             if (mem->map_type_id == 0) {
                 mem->map_type_id = (uint8_t)tid;
             }
+        } else if (td->parser_intr == INTR_ANY_TYPE || td->parser_intr == INTR_NONE_UNIT) {
+            td->is_consuming = 0;
+            td->field_count  = 0;
+            td->flat_size    = 0;
         }
         if (tid < 64u) mem->type_stride[tid] = (uint8_t)td->flat_size;
     } else if (ext_match_char(L, '(')) {
@@ -288,6 +297,18 @@ static void ext_parse_type_decl(ExtLoader *L) {
         td->field_count = fcount;
         td->flat_size   = flat_off;
         if (tid < 64u) mem->type_stride[tid] = (uint8_t)flat_off;
+
+        /* Optional same-line `=> @type_intrinsic` tag on struct type (e.g. `$complex(re, im) => @complex_type`) */
+        while (L->pos < L->len && (L->src[L->pos] == ' ' || L->src[L->pos] == '\t')) L->pos++;
+        if (L->pos + 1 < L->len && L->src[L->pos] == '=' && L->src[L->pos + 1] == '>') {
+            L->pos = (uint16_t)(L->pos + 2);
+            if (!ext_match_char(L, '@')) {
+                mem_err(mem, "Expected '@type_intrinsic' after '=>' in struct type declaration");
+                return;
+            }
+            StrSlice iname = ext_read_ident(L);
+            td->parser_intr = (uint8_t)sym_lookup_intrinsic(mem_str_ptr(mem, iname), iname.len);
+        }
     } else {
         mem_err(mem, "Expected '~' (consuming/container) or '(' (struct) in type declaration");
     }
@@ -445,7 +466,7 @@ static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
     if (body_root != MEM_NO_IDX) {
         const AstNode *root = mem_get_ast(mem, body_root);
         if (root->kind == AST_INTRINSIC &&
-            root->sub >= INTR_SEQ && root->sub <= INTR_FIELD) {
+            delegate_is_meta_intrinsic((IntrinsicId)root->sub)) {
             ov->meta_tag = root->sub;
             return;
         }
@@ -473,6 +494,11 @@ static void ext_compile_body(ExtLoader *L, OpOverload *ov, StrSlice *pnames) {
             }
         }
     }
+}
+
+static bool ext_body_starts_with_sym_intrinsic(ExtLoader *L) {
+    ext_skip_ws(L);
+    return (L->pos + 5 <= L->len && memcmp(L->src + L->pos, "@sym_", 5) == 0);
 }
 
 static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
@@ -583,12 +609,12 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
         mem_err(mem, "Expected '(', ':', '=', or '=>' after symbol in declaration");
         return;
     }
-    StrSlice pnames[8];
-    uint16_t ptypes[8];
-    uint8_t  punits[8];
-    bool     has_def[8];
-    uint16_t def_start[8];
-    uint16_t def_end[8];
+    StrSlice pnames[SYM_MAX_OV_PARAMS];
+    uint16_t ptypes[SYM_MAX_OV_PARAMS];
+    uint8_t  punits[SYM_MAX_OV_PARAMS];
+    bool     has_def[SYM_MAX_OV_PARAMS];
+    uint16_t def_start[SYM_MAX_OV_PARAMS];
+    uint16_t def_end[SYM_MAX_OV_PARAMS];
     uint8_t  pcount    = 0;
     uint8_t  req_count = 0;
     bool     seen_def  = false;
@@ -596,7 +622,10 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
 
     while (L->pos < L->len && !mem->has_error) {
         if (ext_match_char(L, ')')) break;
-        if (pcount >= 8) { mem_err(mem, "Max 8 parameters supported"); break; }
+        if (pcount >= SYM_MAX_OV_PARAMS) {
+            mem_err(mem, "Max %d parameters supported", SYM_MAX_OV_PARAMS);
+            break;
+        }
         pnames[pcount] = ext_read_ident(L);
         if (sym_is_reserved_kw(tab, mem, mem_str_ptr(mem, pnames[pcount]), pnames[pcount].len)) {
             mem_err(mem, "Cannot use reserved keyword '%.*s' as a variable name",
@@ -653,6 +682,34 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
     if (!ext_parse_return_spec(L, &rtid, &ruid)) return;
     ext_match_char(L, '=');
 
+    /* Detect lazy bound-variable parameter prefix (`var_x`, `var_t, var_y`, etc.) on `.math` functions */
+    uint8_t lazy_mtag = 0;
+    if (fixity == FIX_FUNC && pcount >= 2 && !ext_body_starts_with_sym_intrinsic(L)) {
+        uint8_t v_cnt = 0;
+        while (v_cnt < pcount && v_cnt < 4u &&
+               pnames[v_cnt].len > 4u &&
+               memcmp(mem_str_ptr(mem, pnames[v_cnt]), "var_", 4) == 0) {
+            v_cnt++;
+        }
+        if (v_cnt >= 1u && v_cnt < pcount) {
+            uint8_t e_cnt = (v_cnt <= 2u) ? 1u : (uint8_t)(v_cnt - 1u);
+            if ((uint8_t)(v_cnt + e_cnt) > pcount) {
+                e_cnt = (uint8_t)(pcount - v_cnt);
+            }
+            for (uint8_t e = 0; e < e_cnt; ++e) {
+                if (mem->fn_type_id != 0) {
+                    ptypes[v_cnt + e] = mem->fn_type_id;
+                }
+            }
+            bool is_eq = (pnames[v_cnt].len == 2u &&
+                          memcmp(mem_str_ptr(mem, pnames[v_cnt]), "eq", 2) == 0);
+            lazy_mtag = (uint8_t)(SYM_META_LAZY_MASK |
+                                  (is_eq ? SYM_META_LAZY_EQ_BIT : 0u) |
+                                  ((v_cnt & 0x07u) << 3u) |
+                                  (e_cnt & 0x07u));
+        }
+    }
+
     if (ext_has_duplicate_overload(tab, sym_id, L->cur_mod, fixity, pcount, ptypes, punits)) {
         StrSlice s = tab->syms[sym_id];
         mem_err(mem, "Duplicate declaration of '%.*s' in module '[%.*s]'",
@@ -684,6 +741,9 @@ static void ext_parse_sym_decl(ExtLoader *L, uint16_t sym_id) {
 
     ext_compile_body(L, ov, pnames);
     if (mem->has_error) return;
+    if (lazy_mtag != 0 && ov->meta_tag == 0) {
+        ov->meta_tag = lazy_mtag;
+    }
 
     /* 4. Synthesize lower-arity overload wrappers for trailing default parameters */
     if (seen_def && fixity == FIX_FUNC && req_count < pcount) {
@@ -806,9 +866,9 @@ bool ext_compile_slice(MemArena *mem, SymTable *tab,
         }
 
         if (c == '(') {
-            StrSlice pnames[8];
-            uint16_t ptypes[8];
-            uint8_t  punits[8];
+            StrSlice pnames[SYM_MAX_OV_PARAMS];
+            uint16_t ptypes[SYM_MAX_OV_PARAMS];
+            uint8_t  punits[SYM_MAX_OV_PARAMS];
             if (!ext_parse_one_param(&L, &pnames[0], &ptypes[0], &punits[0])) break;
 
             ext_skip_ws(&L);
@@ -1027,7 +1087,7 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
                     ctx->units[cur_u].src_len = (uint16_t)((base_off + hdr_start) - ctx->units[cur_u].src_off);
                 }
                 if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
-                    return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+                    return build_fail(mem, ctx, "Maximum compilation unit count (64) exceeded");
                 }
                 cur_u = (int)ctx->unit_count++;
                 ExtCompiledUnit *u = &ctx->units[cur_u];
@@ -1044,7 +1104,7 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
                 uint16_t dep_stmt_start = pos;
                 if (cur_u < 0) {
                     if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
-                        return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+                        return build_fail(mem, ctx, "Maximum compilation unit count (64) exceeded");
                     }
                     cur_u = (int)ctx->unit_count++;
                     ExtCompiledUnit *u = &ctx->units[cur_u];
@@ -1092,7 +1152,7 @@ bool ext_compile_unit(MemArena *mem, const SymTable *tab,
         /* 5. Any declaration before an explicit `[module]` header creates an implicit `[default]` unit */
         if (cur_u < 0) {
             if (ctx->unit_count >= EXT_MAX_BUILD_UNITS) {
-                return build_fail(mem, ctx, "Maximum compilation unit count (32) exceeded");
+                return build_fail(mem, ctx, "Maximum compilation unit count (64) exceeded");
             }
             cur_u = (int)ctx->unit_count++;
             ExtCompiledUnit *u = &ctx->units[cur_u];

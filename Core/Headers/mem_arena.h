@@ -3,7 +3,8 @@
  *
  * Purpose:
  *   Encapsulates ALL memory allocation, string interning, float/struct/vector
- *   pools, AST node storage, call stack frames, scratch watermarks, and Value
+ *   pools, transparent Small-Buffer-Optimized (SBO) Arena-to-Heap spill blocks,
+ *   AST node storage, call stack frames, scratch watermarks, and Value
  *   bit packing (8-byte IEEE-754 NaN-boxing), including
  *   orthogonal Entity Type (`type_id`) and Unit Type (`unit_id`) tags.
  *
@@ -28,12 +29,19 @@ extern "C" {
  * ============================================================================ */
 
 #define MEM_SRC_BUF_CAP     49152   /* UTF-8 source buffer for interned strings   */
-#define MEM_MAX_AST_NODES   16384   /* 8-byte AST nodes (128 KB)                  */
+#define MEM_MAX_AST_NODES   24576   /* 8-byte AST nodes (128 KB)                  */
 #define MEM_MAX_F64_POOL     8192   /* Flat double pool for literals/structs/vecs */
-#define MEM_MAX_CALL_STACK    256   /* Evaluation & local variable stack slots    */
+#define MEM_MAX_CALL_STACK   2048   /* Evaluation & local variable stack slots    */
 #define MEM_MAX_LABELS         16   /* Max tagged scopes (`Tag : { ... }`)        */
-#define MEM_MAX_EVAL_DEPTH    128   /* Max recursive AST evaluation depth         */
+#define MEM_MAX_EVAL_DEPTH    640   /* Max recursive AST evaluation depth         */
 #define MEM_MAX_EVAL_STEPS 2000000u /* Global AST evaluation step budget per eval */
+
+/* Small-Buffer Optimization (SBO) & Transparent Heap Spill Tunables */
+#define MEM_SBO_MAX_SLOTS      64u  /* Containers <= 64 doubles use fast f64_pool */
+#define MEM_MAX_HEAP_BLOCKS   256u  /* Max concurrent heap-spilled containers     */
+#define MEM_MAX_HEAP_SLOTS 262144u  /* Max doubles per heap allocation (2 MB cap) */
+#define MEM_HEAP_IDX_BIT   0x8000u  /* Tag bit in `data_idx` for HeapBlock handle */
+#define MEM_HEAP_ID_MASK   0x7FFFu  /* Mask to extract `0..255` HeapBlock index   */
 
 #define MEM_NO_IDX        0xFFFFu  /* Null / failed 16-bit index sentinel        */
 #define MEM_TYPE_VOID          0u  /* Invalid / void entity type ID              */
@@ -56,7 +64,7 @@ typedef enum {
 } JumpKind;
 
 /* ============================================================================
- * 2. PRIMITIVE STORAGE TYPES (`StrSlice`, `Value`, `AstNode`)
+ * 2. PRIMITIVE STORAGE TYPES (`StrSlice`, `Value`, `AstNode`, `HeapBlock`)
  * ============================================================================ */
 
 /* 4-byte zero-copy UTF-8 slice into `MemArena.src_buf` */
@@ -81,6 +89,15 @@ typedef struct {
 
 _Static_assert(sizeof(AstNode) == 8, "AstNode must be strictly 8 bytes");
 
+/* Dynamically spilled heap payload block for large `$vec`, `$mat`, and `$map` containers */
+typedef struct {
+    double  *data;       /* malloc-backed array of `cap_slots` doubles (or NULL) */
+    uint32_t cap_slots;  /* Allocated capacity in 64-bit `double` slots          */
+    uint16_t owner_hdr;  /* Owning header index in `f64_pool`                    */
+    uint8_t  in_use;     /* 1 = active heap block, 0 = free slot                 */
+    uint8_t  marked;     /* Mark bit during `mem_compact_scratch` / scope GC     */
+} HeapBlock;
+
 /* ============================================================================
  * 3. MEMORY ARENA CONTEXT
  * ============================================================================ */
@@ -97,10 +114,15 @@ typedef struct {
     uint16_t    ast_count;
     uint16_t    perm_ast_count;
 
-    /* Flat 64-Bit Float, C-Struct & Dynamic Vector Pool */
+    /* Flat 64-Bit Float, C-Struct & SBO Container Pool */
     double      f64_pool[MEM_MAX_F64_POOL];
     uint16_t    pool_top;
     uint16_t    perm_pool_top;
+
+    /* Transparent SBO-to-Heap Spill Table (for payloads > MEM_SBO_MAX_SLOTS) */
+    HeapBlock   heap_blocks[MEM_MAX_HEAP_BLOCKS];
+    uint16_t    heap_active_count;
+    uint32_t    heap_total_slots;
 
     /* Call & Local Variable Stack + Optional Concrete Type/Unit Slot Locks */
     Value       stack[MEM_MAX_CALL_STACK];
@@ -147,6 +169,7 @@ typedef struct {
 
     /* Recursion & Global Step Budget State */
     uint16_t    eval_depth;
+    uint16_t    call_depth;
     uint32_t    eval_steps;
 
     /* Error state */
@@ -159,6 +182,7 @@ typedef struct {
  * ============================================================================ */
 
 void     mem_init(MemArena *mem);
+void     mem_free_all_heap(MemArena *mem);
 void     mem_err(MemArena *mem, const char *fmt, ...);
 void     mem_clear_err(MemArena *mem);
 
@@ -177,9 +201,18 @@ uint16_t mem_alloc_pool(MemArena *mem, uint16_t count);
 double   mem_read_pool(const MemArena *mem, uint16_t idx);
 void     mem_write_pool(MemArena *mem, uint16_t idx, double val);
 
+/* Unified SBO Arena / Heap Payload Accessors (transparently handles `MEM_HEAP_IDX_BIT`) */
+static inline bool mem_is_heap_idx(uint16_t data_idx) {
+    return (data_idx & MEM_HEAP_IDX_BIT) != 0 && data_idx != MEM_NO_IDX;
+}
+double       *mem_data_ptr(MemArena *mem, uint16_t data_idx, uint32_t offset);
+const double *mem_data_ptr_ro(const MemArena *mem, uint16_t data_idx, uint32_t offset);
+double        mem_data_read(const MemArena *mem, uint16_t data_idx, uint32_t offset);
+void          mem_data_write(MemArena *mem, uint16_t data_idx, uint32_t offset, double val);
+
 /* Dynamic Vector Header & Resizable Payload Management (`$vec` of any `T`) */
-uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint16_t init_cap);
-bool     mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint16_t min_cap);
+uint16_t mem_vec_alloc_hdr(MemArena *mem, uint16_t elem_tid, uint32_t init_cap);
+bool     mem_vec_reserve(MemArena *mem, uint16_t hdr_idx, uint16_t stride, uint32_t min_cap);
 void     mem_vec_shrink_to_fit(MemArena *mem, uint16_t hdr_idx, uint16_t stride);
 
 /* Multidimensional Matrix (`$mat`) Header & Contiguous Payload Allocation */
@@ -194,7 +227,7 @@ Value    mem_map_entry_val(const MemArena *mem, uint16_t data_idx, uint16_t entr
 void     mem_map_set_entry(MemArena *mem, uint16_t data_idx, uint16_t entry_i,
                            StrSlice key, Value val);
 
-/* Arena Scratch-Pool Mark-Sweep / Sliding Defragmentation Compaction */
+/* Arena Scratch-Pool & Heap-Block Mark-Sweep / Sliding Defragmentation Compaction */
 uint16_t mem_compact_scratch(MemArena *mem, Value *extra_roots, uint16_t extra_root_count);
 uint16_t mem_scratch_pool_used(const MemArena *mem);
 uint16_t mem_push_temp_root(MemArena *mem, Value *vptr);

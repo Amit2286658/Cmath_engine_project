@@ -100,7 +100,7 @@ build:
 	else \
 		mkdir -p $(BUILD_DIR); \
 		$(CC) -std=c11 $(WARN_FLAGS) $(CFLAGS_OPT) $(SAN_FLAGS) \
-			$(INCLUDES) $(CORE_SRCS) Test/main.c -lm -o $(BIN); \
+			$(INCLUDES) $(CORE_SRCS) Test/main.c -lm -pthread -o $(BIN); \
 	fi
 
 # Direct Android NDK cross-compilation (`make ndk` or `make android` / `make ndk release`)

@@ -1,12 +1,11 @@
 package com.mathengine;
 
 /**
- * Ready-to-Use Android Java Wrapper for the C11 Math Engine (MEP).
+ * Thread-Safe Android Java Wrapper for the C11 Math Engine (MEP).
  *
- * Wraps the native JNI lifecycle, stateless evaluation, parallel stateful
- * sessions, order-tagged FNV-1a snapshot export/restore, .math extension
- * compilation, .mathc binary cache loading, O(1) module toggling, symbolic
- * differentiation/simplification, and scratch pool Mark-Sweep compaction.
+ * All instance methods are `synchronized` and verify that the native handle is
+ * open before invoking JNI so concurrent `close()` and `eval()` calls across
+ * threads can never race or trigger a native use-after-free.
  */
 public final class MathEngineBridge implements AutoCloseable {
     static {
@@ -59,72 +58,87 @@ public final class MathEngineBridge implements AutoCloseable {
         }
     }
 
-    public EvalResult eval(String expr) {
-        return EvalResult.parseWire(nativeEval(handle, expr));
+    private long requireOpenHandle() {
+        if (handle == 0L) {
+            throw new IllegalStateException("MathEngineBridge has already been closed");
+        }
+        return handle;
     }
 
-    public int openSession() {
-        return nativeSessionOpen(handle);
+    public synchronized EvalResult eval(String expr) {
+        return EvalResult.parseWire(nativeEval(requireOpenHandle(), expr));
     }
 
-    public boolean closeSession(int sessionId) {
-        return nativeSessionClose(handle, sessionId);
+    public synchronized int openSession() {
+        return nativeSessionOpen(requireOpenHandle());
     }
 
-    public boolean resetSession(int sessionId) {
-        return nativeSessionReset(handle, sessionId);
+    public synchronized boolean closeSession(int sessionId) {
+        return nativeSessionClose(requireOpenHandle(), sessionId);
     }
 
-    public EvalResult evalSession(int sessionId, String expr) {
-        return EvalResult.parseWire(nativeSessionEval(handle, sessionId, expr));
+    public synchronized boolean resetSession(int sessionId) {
+        return nativeSessionReset(requireOpenHandle(), sessionId);
     }
 
-    public String exportSessionSnapshots(int sessionId) {
-        return nativeSessionExportSnapshots(handle, sessionId);
+    public synchronized EvalResult evalSession(int sessionId, String expr) {
+        return EvalResult.parseWire(nativeSessionEval(requireOpenHandle(), sessionId, expr));
     }
 
-    public int restoreSession(String newlineJoinedSnapshots) {
-        return nativeSessionRestore(handle, newlineJoinedSnapshots);
+    public synchronized String exportSessionSnapshots(int sessionId) {
+        return nativeSessionExportSnapshots(requireOpenHandle(), sessionId);
     }
 
-    public byte[] compileExtension(String mathSource) {
-        return nativeCompileExt(handle, mathSource);
+    public synchronized int restoreSession(String newlineJoinedSnapshots) {
+        return nativeSessionRestore(requireOpenHandle(), newlineJoinedSnapshots);
     }
 
-    public boolean loadMathc(byte[] mathcBytes) {
-        return nativeLoadMathc(handle, mathcBytes);
+    public synchronized byte[] compileExtension(String mathSource) {
+        return nativeCompileExt(requireOpenHandle(), mathSource);
     }
 
-    public boolean setModule(String moduleName, boolean enabled) {
-        return nativeSetModule(handle, moduleName, enabled);
+    public synchronized boolean loadMathc(byte[] mathcBytes) {
+        return nativeLoadMathc(requireOpenHandle(), mathcBytes);
     }
 
-    public boolean isModuleActive(String moduleName) {
-        return nativeIsModuleActive(handle, moduleName);
+    public synchronized boolean setModule(String moduleName, boolean enabled) {
+        return nativeSetModule(requireOpenHandle(), moduleName, enabled);
     }
 
-    public String simplify(String expr) {
-        return nativeSymSimplify(handle, expr);
+    public synchronized boolean isModuleActive(String moduleName) {
+        return nativeIsModuleActive(requireOpenHandle(), moduleName);
     }
 
-    public String diff(String varName, String expr) {
-        return nativeSymDiff(handle, varName, expr);
+    public synchronized String simplify(String expr) {
+        return nativeSymSimplify(requireOpenHandle(), expr);
     }
 
-    public int compactScratch() {
-        return nativeCompactScratch(handle);
+    public synchronized String diff(String varName, String expr) {
+        return nativeSymDiff(requireOpenHandle(), varName, expr);
     }
 
-    public int scratchPoolUsed() {
-        return nativeScratchPoolUsed(handle);
+    public synchronized String integ(String varName, String expr) {
+        return nativeSymInteg(requireOpenHandle(), varName, expr);
     }
 
-    public String lastError() {
-        return nativeLastError(handle);
+    public synchronized String solve(String varName, String eq) {
+        return nativeSymSolve(requireOpenHandle(), varName, eq);
+    }
+
+    public synchronized int compactScratch() {
+        return nativeCompactScratch(requireOpenHandle());
+    }
+
+    public synchronized int scratchPoolUsed() {
+        return nativeScratchPoolUsed(requireOpenHandle());
+    }
+
+    public synchronized String lastError() {
+        return nativeLastError(requireOpenHandle());
     }
 
     @Override
-    public void close() {
+    public synchronized void close() {
         if (handle != 0L) {
             nativeDestroy(handle);
             handle = 0L;
@@ -150,6 +164,8 @@ public final class MathEngineBridge implements AutoCloseable {
     public static native boolean nativeIsModuleActive(long handle, String modName);
     public static native String  nativeSymSimplify(long handle, String expr);
     public static native String  nativeSymDiff(long handle, String varName, String expr);
+    public static native String  nativeSymInteg(long handle, String varName, String expr);
+    public static native String  nativeSymSolve(long handle, String varName, String eq);
     public static native int     nativeCompactScratch(long handle);
     public static native int     nativeScratchPoolUsed(long handle);
 }
