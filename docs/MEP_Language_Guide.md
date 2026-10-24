@@ -245,14 +245,14 @@ Comparisons **chain left-associatively** with arithmetic precedence folding
 
 | Operator | Precedence | Signature (from `arith.math`) |
 |----------|-----------|-------------------------------|
-| `~` | `:‹30` | `(a:real, T) ~ (b:real, T)` — approx (`abs(a-b) ≤ 0.001+1e-12`); lifted per type in `[complex_ext] [vec] [mat] [geom_ext] [algebra]` |
-| `&&` / `and` | `:‹20` | short-circuit generative: `(a != 0) ? ((b != 0) ? 1 : 0) : 0` |
-| `xor`, `^^` | `:‹18` | `((a != 0) != (b != 0))` |
-| `||` / `or` | `:‹15` | `(a != 0) ? 1 : ((b != 0) ? 1 : 0)` |
-| `nand` | `:‹20` · `nor` | `:‹15` — negations |
+| `~` | `:<30` | `(a:real, T) ~ (b:real, T)` — approx (`abs(a-b) ≤ 0.001+1e-12`); lifted per type in `[complex_ext] [vec] [mat] [geom_ext] [algebra]` |
+| `&&` / `and` | `:<20` | short-circuit generative: `(a != 0) ? ((b != 0) ? 1 : 0) : 0` |
+| `xor`, `^^` | `:<18` | `((a != 0) != (b != 0))` |
+| `||` / `or` | `:<15` | `(a != 0) ? 1 : ((b != 0) ? 1 : 0)` |
+| `nand` | `:<20` · `nor` | `:<15` — negations |
 | `not(x)` | function `:25` | strict `@lnot` |
 | `!` prefix | `:80` | strict boolean prefix-`NOT` on `(a:real, none)` |
-| `&`, `|` | `:‹35`, `:‹34` | distributed-combinator forms (see §6.4) |
+| `&`, `|` | `:<35`, `:<34` | distributed-combinator forms (see §6.4) |
 
 `~` composes over containers and structs exactly like `==`:
 `vec(1,2) ~ vec(1.0001, 2.0001) ⟿ 1` (exact elementwise semantics in each
@@ -269,14 +269,14 @@ Nothing: use `==` for exact membership and `~` is *not* chained; `~=`
 
 | Form | Precedence | Definition |
 |------|-----------|------------|
-| `(a) "+" (b)` | `:‹50` | `@add` — **unit-propagating** (see §11) |
-| `(a) "-" (b)` | `:‹50` | `@sub` — unit-propagating |
-| `(a) "*" (b)` | `:‹60` | `@mul` (unit algebra multiplies) |
-| `(a) "/" (b)` | `:‹60` | `@div` — **real division**, no integer form |
-| `(a) "%" (b)` | `:‹60` | `@mod` — C-fmod semantics: sign of the *dividend* |
+| `(a) "+" (b)` | `:<50` | `@add` — **unit-propagating** (see §11) |
+| `(a) "-" (b)` | `:<50` | `@sub` — unit-propagating |
+| `(a) "*" (b)` | `:<60` | `@mul` (unit algebra multiplies) |
+| `(a) "/" (b)` | `:<60` | `@div` — **real division**, no integer form |
+| `(a) "%" (b)` | `:<60` | `@mod` — C-fmod semantics: sign of the *dividend* |
 | `(a) "^" (b)` | `:>85` | right-assoc exponentiation (`-x^2 = -(x^2)`) |
 | `(a) into (b)` | `:>55` | `@add` ("sum into") — one of *several* `into` meanings (§6.5) |
-| `(a) plus/minus (b)` | `:‹45` | inlined aliases for `+`/`-` |
+| `(a) plus/minus (b)` | `:<45` | inlined aliases for `+`/`-` |
 | `-(x)` / `+(x)` / `√(x)` | `:80` | `@neg` / identity / `@sqrt` |
 | `(x) "!"` postfix | `:90` | factorial (non-negative integer ≤ 170) |
 | `++x` `+++x` prefix | `:85` | `x+1` / `x+2` |
@@ -308,7 +308,8 @@ Every operator declared in `.math` carries a **signature**: `(a:real, T) "+" (b:
   the dispatch (evaluator's MULTIPLE DISPATCH: *type match 4/1 points, unit
   generic binds, unit locked +8, omitted +1*).
 - `-> real, T` — return type/unit (compound tags preserve physically).
-- `:‹/›N` — associativity & precedence (left/right).
+- `:<N` / `:>N` — left/right associativity & precedence (as pinned in the
+  `.math` declarations).
 - `@add` — the C intrinsic that *implements* the body (MEP never hardcodes
   math; bodies are either intrinsic calls or pure MEP expressions).
 
@@ -479,11 +480,11 @@ linspace(0, 1, 5) ⟿ [0, 0.25, 0.5, 0.75, 1]
 
 | Operator | Precedence | Semantics |
 |----------|-----------|-----------|
-| `a...b` | `:‹45` | inclusive `@vrange(a, b, 0)` |
-| `a..<b` | `:‹45` | excludes `b` (`@vrange(a, b, 1)`) |
-| `a<..b` | `:‹45` | excludes `a` (`@vrange(a, b, 2)`) — **needs both ends** (`<..5` alone is an error) |
-| `a..b` | `:‹45` | *exclusive both ends* (`@vrange(a, b, 3)`) — `[i^2 for i in 1..5] ⟿ [4, 9, 16]` |
-| `r by step` | `:‹44` | steps an existing range (`@vrange_step`) |
+| `a...b` | `:<45` | inclusive `@vrange(a, b, 0)` |
+| `a..<b` | `:<45` | excludes `b` (`@vrange(a, b, 1)`) |
+| `a<..b` | `:<45` | excludes `a` (`@vrange(a, b, 2)`) — **needs both ends** (`<..5` alone is an error) |
+| `a..b` | `:<45` | *exclusive both ends* (`@vrange(a, b, 3)`) — `[i^2 for i in 1..5] ⟿ [4, 9, 16]` |
+| `r by step` | `:<44` | steps an existing range (`@vrange_step`) |
 
 Negative steps count down naturally (`5...1 ⟿ [5,4,3,2,1]`).
 
@@ -641,7 +642,7 @@ limitations and in the architecture guide.)
 
 ### 10.1 Ternary
 
-`(cond) ? (a) : (b)` (`:›10`, lazy — only the selected branch evaluates):
+`(cond) ? (a) : (b)` (`:>10`, lazy — only the selected branch evaluates):
 
 ```text
 1 ? 2 : 3 ⟿ 2
@@ -874,7 +875,7 @@ det(mat2(1, 2, 3, 4)) ⟿ -2
 Geometry inventory (`[geom_ext]`): `dot dot3 cross2 cross3 vec2_mag
 vec2_dist vec3_mag vec3_dist lerp vec3_path_len move_circle circle_area
 circle_circum sphere_vol sphere_area`; the `**` operator is the vec3 dot
-product (`(a:vec3) "**" (b:vec3) :‹20 = a.x*b.x + a.y*b.y + a.z*b.z`).
+product (`(a:vec3) "**" (b:vec3) :<20 = a.x*b.x + a.y*b.y + a.z*b.z`).
 
 $mat2 (`[algebra]`): arithmetic, `det trace transpose inv_mat2`,
 `solve_2x2` (Cramer), quadratics:
