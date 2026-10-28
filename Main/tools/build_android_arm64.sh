@@ -1,5 +1,6 @@
 #!/bin/sh
-# Build Prebuilt/arm64-v8a/libmathengine.so (Android bionic, API 24).
+# Build precompiled/arm64-v8a/libmathengine.so (Android bionic, API 24)
+# and sync precompiled/stdlib.mathc.
 #
 # Usage:
 #   build_android_arm64.sh [NDK_TOOLCHAIN_BIN_DIR]
@@ -21,16 +22,19 @@ echo "using NDK toolchain: $NDK_BIN"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 API=24
 ABI=arm64-v8a
-OUT="$ROOT/Prebuilt/arm64-v8a"
-TMP="$ROOT/Prebuilt/.build-$ABI"
+PRECOMPILED="$ROOT/precompiled"
+OUT="$PRECOMPILED/$ABI"
+TMP="$PRECOMPILED/.build-$ABI"
 ARCH=aarch64
 CC="$NDK_BIN/${ARCH}-linux-android${API}-clang"
 LD="$NDK_BIN/lld"
 
 INCS="-I$ROOT/Core/Headers -I$ROOT/Core/compile -I$ROOT/Core/session -I$ROOT/Core/jni -I$ROOT/Core/lib/delegate -I$ROOT/Core/lib/hardcode"
 
+# Build with -DMATH_ENGINE_SEPARATE_STDLIB=1 so k_stdlib_mathc is not duplicated
+# inside libmathengine.so; the app loads precompiled/stdlib.mathc separately.
 CFLAGS="-O2 -std=c11 -fPIC -fvisibility=hidden -fstack-protector-strong \
- -DANDROID -DMATH_ENGINE_SHARED=1 -D_FORTIFY_SOURCE=2 -ffunction-sections"
+ -DANDROID -DMATH_ENGINE_SHARED=1 -DMATH_ENGINE_SEPARATE_STDLIB=1 -D_FORTIFY_SOURCE=2 -ffunction-sections"
 
 rm -rf "$TMP"; mkdir -p "$TMP" "$OUT"
 
@@ -64,4 +68,9 @@ done
 "$NDK_BIN/llvm-strip" "$TMP/libmathengine.so"
 mv "$TMP/libmathengine.so" "$OUT/libmathengine.so"
 rm -rf "$TMP"
-echo "built: $OUT/libmathengine.so"
+
+if [ -f "$ROOT/Library/stdlib.mathc" ]; then
+    cp "$ROOT/Library/stdlib.mathc" "$PRECOMPILED/stdlib.mathc"
+    echo "synced: $PRECOMPILED/stdlib.mathc"
+fi
+echo "built:  $OUT/libmathengine.so"

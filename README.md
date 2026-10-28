@@ -134,5 +134,6 @@ Main/Core/       engine core (parser, evaluator, compiler/linker, sessions,
 Main/Library/    the .math standard library + linked stdlib.mathc image
 Main/Test/       myapp CLI, 574-case test suite, user extension sample
 Main/docs/       the two deep references (architecture, language)
-Main/Prebuilt/   prebuilt Android binaries (arm64-v8a libmathengine.so)
+Main/precompiled/ separated precompiled Android engine (arm64-v8a/libmathengine.so) + stdlib.mathc
+Main/patches/     incremental .math extension patches & manifest.json
 ```

@@ -11,4 +11,4 @@ build-*/
 *.obj
 
 # Prebuilt intermediate dirs
-Prebuilt/.build-*/
+precompiled/.build-*/

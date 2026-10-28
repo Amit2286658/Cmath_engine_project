@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "patches": [
+    {
+      "file": "user_trig.math",
+      "sha256": "4570b8086679c84876e8c26d5e99d21c8024aba65baeb07efb35520fbeca8753",
+      "size": 672
+    }
+  ]
+}

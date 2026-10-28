@@ -58,6 +58,26 @@ public final class MathEngineBridge implements AutoCloseable {
         }
     }
 
+    /**
+     * Initializes a blank native MEP Engine and loads a separate precompiled
+     * `stdlib.mathc` binary image in O(1) `memcpy` time.
+     */
+    public MathEngineBridge(byte[] stdlibMathcBytes) {
+        if (stdlibMathcBytes == null || stdlibMathcBytes.length == 0) {
+            throw new IllegalArgumentException("stdlib.mathc byte array must not be null or empty");
+        }
+        long h = nativeCreateBlank();
+        if (h == 0L) {
+            throw new IllegalStateException("Failed to allocate blank native MEP Engine");
+        }
+        if (!nativeLoadMathc(h, stdlibMathcBytes)) {
+            String err = nativeLastError(h);
+            nativeDestroy(h);
+            throw new IllegalStateException("Failed to load stdlib.mathc: " + err);
+        }
+        this.handle = h;
+    }
+
     private long requireOpenHandle() {
         if (handle == 0L) {
             throw new IllegalStateException("MathEngineBridge has already been closed");
