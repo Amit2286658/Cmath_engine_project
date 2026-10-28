@@ -6,16 +6,19 @@ the entire scientific library is plain **`.math`** source compiled into a
 binary `.mathc` image and embedded at boot — so the numbers you ship are the
 numbers the host typed.
 
-This readme is just a map. The real documentation lives in `docs/`:
+This readme is just a map. The real documentation lives in `docs/` (under `Main/`):
 
 | doc | what it is |
 |---|---|
-| [`docs/complete engine architecture.md`](docs/complete%20engine%20architecture.md) | full architecture: runtime model, memory, sessions/snapshots, compile+link pipeline, C API |
-| [`docs/comprehensive language guide.md`](docs/comprehensive%20language%20guide.md) | full language: every construct, entity type, unit group, constant, and **all 1385 overloads** with live-tested examples |
+| [`docs/complete engine architecture.md`](Main/docs/complete%20engine%20architecture.md) | full architecture: runtime model, memory, sessions/snapshots, compile+link pipeline, C API |
+| [`docs/comprehensive language guide.md`](Main/docs/comprehensive%20language%20guide.md) | full language: every construct, entity type, unit group, constant, and **all 1385 overloads** with live-tested examples |
 
 ---
 
 ## 1. Getting started
+
+All project source and build steps live inside `Main/` — run the commands
+below from that directory.
 
 Build (CMake, static library + CLI):
 
@@ -55,7 +58,7 @@ Test suite (574 expression cases + engine-lifecycle/memory/thread suites):
 $ ./DebugBuild/myapp            # runs the full internal suite
 ```
 
-Embedding in C: include `Core/Headers/math_engine.h`, link the built
+Embedding in C: include `Main/Core/Headers/math_engine.h`, link the built
 `libmathengine.a`, then `eng_init` → `eng_eval` / `eng_session_open` → …
 (see the architecture doc, §C API).
 
@@ -91,7 +94,7 @@ the same session, in order.
    (`user_compile_ext` / `user_load_mathc`).
 
 Details, memory layout, snapshot format, and the C API:
-→ [`docs/complete engine architecture.md`](docs/complete%20engine%20architecture.md)
+→ [`docs/complete engine architecture.md`](Main/docs/complete%20engine%20architecture.md)
 
 ---
 
@@ -119,16 +122,17 @@ Details, memory layout, snapshot format, and the C API:
   session snapshots keep a tamper-evident audit trail.
 
 Full details, every overload, and per-module catalogs:
-→ [`docs/comprehensive language guide.md`](docs/comprehensive%20language%20guide.md)
+→ [`docs/comprehensive language guide.md`](Main/docs/comprehensive%20language%20guide.md)
 
 ---
 
 ## 4. Repository layout
 
 ```
-Core/       engine core (parser, evaluator, compiler/linker, sessions,
-            snapshots, hardcode grammar layer, @-intrinsics registry)
-Library/    the .math standard library + linked stdlib.mathc image
-Test/       myapp CLI, 574-case test suite, user extension sample
-docs/       the two deep references (architecture, language)
+Main/Core/       engine core (parser, evaluator, compiler/linker, sessions,
+                 snapshots, hardcode grammar layer, @-intrinsics registry)
+Main/Library/    the .math standard library + linked stdlib.mathc image
+Main/Test/       myapp CLI, 574-case test suite, user extension sample
+Main/docs/       the two deep references (architecture, language)
+Main/Prebuilt/   prebuilt Android binaries (arm64-v8a libmathengine.so)
 ```
