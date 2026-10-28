@@ -1,0 +1,14 @@
+# CMake / Make build output
+DebugBuild/
+ReleaseBuild/
+AArch64Build/
+*Build/
+build/
+build-*/
+
+# Compiler artifacts
+*.o
+*.obj
+
+# Prebuilt intermediate dirs
+Prebuilt/.build-*/
